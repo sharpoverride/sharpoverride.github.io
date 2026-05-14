@@ -1,0 +1,1548 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>The Seven Fundamental Laws · Monica Ion</title>
+  <style>/* The 7 Fundamental Laws — styles */
+
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,400&family=JetBrains+Mono:wght@300;400;500&display=swap');
+
+:root {
+  --bg: #060608;
+  --ink: #f2ecdc;
+  --ink-dim: rgba(242, 236, 220, 0.55);
+  --ink-faint: rgba(242, 236, 220, 0.25);
+  --serif: "Cormorant Garamond", Georgia, serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--serif);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  scroll-behavior: auto; /* we do our own smoothing */
+}
+
+body {
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+#root {
+  position: relative;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-weight: 400;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.small { font-size: 10px; }
+
+/* ─── Canvas & overlays ──────────────────────────────────────────── */
+.cosmic-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.vignette {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at center, transparent 30%, rgba(6,6,10,0.75) 85%, rgba(6,6,10,1) 100%),
+    linear-gradient(180deg, rgba(6,6,10,0.35) 0%, transparent 15%, transparent 85%, rgba(6,6,10,0.5) 100%);
+}
+
+/* Readability scrim that sits below chapter text but above the canvas.
+   Much darker on the left half so text is legible over bright visuals. */
+.readability {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    rgba(6,6,10,0.78) 0%,
+    rgba(6,6,10,0.55) 35%,
+    rgba(6,6,10,0.2) 65%,
+    rgba(6,6,10,0) 100%
+  );
+}
+
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0.06;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+}
+
+/* ─── HUD ────────────────────────────────────────────────────────── */
+.hud {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 10;
+  padding: 24px 40px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--ink-dim);
+  mix-blend-mode: screen;
+}
+.hud-left, .hud-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+}
+.hud-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  box-shadow: 0 0 8px currentColor;
+  transition: background-color 600ms ease;
+}
+.hud-sep { opacity: 0.3; }
+
+/* ─── Rail ──────────────────────────────────────────────────────── */
+.rail {
+  position: fixed;
+  right: 32px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: none;
+  border: 0;
+  color: var(--ink-faint);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  transition: color 300ms;
+}
+.rail-item:hover { color: var(--ink-dim); }
+.rail-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+  transition: all 400ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.rail-item--active {
+  color: var(--accent, var(--ink));
+}
+.rail-item--active .rail-dot {
+  width: 24px;
+  border-radius: 3px;
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent);
+}
+.rail-label {
+  display: flex;
+  gap: 8px;
+  font-size: 9px;
+  opacity: 0;
+  transform: translateX(-8px);
+  transition: opacity 300ms, transform 300ms;
+  white-space: nowrap;
+}
+.rail-item:hover .rail-label,
+.rail-item--active .rail-label {
+  opacity: 1;
+  transform: translateX(0);
+}
+.rail-num { opacity: 0.5; }
+
+/* Intro rail item uses the warm ink accent */
+.rail-item--intro.rail-item--active .rail-dot {
+  background: #f2ecdc;
+  box-shadow: 0 0 12px rgba(242,236,220,0.6);
+}
+
+/* ─── Stage ─────────────────────────────────────────────────────── */
+.stage {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+}
+/* Chapters are transparent to pointer events by default; only their text should take clicks */
+.chapter {
+  pointer-events: none;
+}
+.chapter-body,
+.chapter-meta {
+  pointer-events: auto;
+}
+.stage > .intro,
+.stage > .outro {
+  pointer-events: auto;
+}
+
+.stage > * {
+  pointer-events: auto;
+}
+
+/* ─── Intro ─────────────────────────────────────────────────────── */
+.intro {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 800ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.intro--gone {
+  opacity: 0;
+  pointer-events: none;
+}
+.intro-inner {
+  text-align: center;
+  max-width: 720px;
+  padding: 0 32px;
+}
+.tag {
+  color: var(--ink-dim);
+  font-size: 10px;
+  letter-spacing: 0.35em;
+  margin-bottom: 40px;
+}
+.title {
+  font-family: var(--serif);
+  font-weight: 300;
+  font-size: clamp(56px, 10vw, 144px);
+  line-height: 0.95;
+  letter-spacing: -0.02em;
+  margin: 0 0 40px;
+  color: var(--ink);
+}
+.title-line {
+  display: block;
+  font-style: italic;
+  font-weight: 300;
+}
+.title-em {
+  font-style: normal;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  background: linear-gradient(180deg, #f2ecdc 0%, #b8a879 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.sub {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(16px, 1.6vw, 22px);
+  line-height: 1.5;
+  color: var(--ink-dim);
+  margin: 0 auto 72px;
+  max-width: 520px;
+  text-wrap: pretty;
+}
+.scroll-hint {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  color: var(--ink-dim);
+  font-size: 10px;
+}
+.scroll-hint svg { color: var(--ink-dim); }
+.scroll-dot {
+  animation: scrollDot 2.4s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+@keyframes scrollDot {
+  0%   { transform: translateY(0); opacity: 1; }
+  50%  { transform: translateY(6px); opacity: 0.4; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+/* ─── Chapter ───────────────────────────────────────────────────── */
+.chapter {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 600ms cubic-bezier(0.16, 1, 0.3, 1);
+  padding: 0 80px;
+}
+
+.chapter-grid {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 640px);
+  gap: 64px;
+  align-items: start;
+  max-width: 1100px;
+  width: 100%;
+  position: relative;
+}
+
+/* Soft luminous card behind the body text for legibility over bright visuals */
+.chapter-body {
+  position: relative;
+}
+.chapter-body::before {
+  content: "";
+  position: absolute;
+  inset: -48px -56px -48px -48px;
+  background:
+    radial-gradient(ellipse at 30% 50%, rgba(242, 236, 220, 0.08) 0%, rgba(242, 236, 220, 0.04) 45%, transparent 80%),
+    linear-gradient(90deg, rgba(18, 16, 22, 0.72) 0%, rgba(18, 16, 22, 0.58) 55%, rgba(18, 16, 22, 0.1) 100%);
+  border-left: 1px solid rgba(242, 236, 220, 0.12);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: -1;
+  pointer-events: none;
+  mask-image: linear-gradient(90deg, #000 0%, #000 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 70%, transparent 100%);
+}
+
+.chapter-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  padding-top: 24px;
+}
+
+.num-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.num-roman {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: 72px;
+  line-height: 1;
+  color: var(--ink);
+  opacity: 0.9;
+}
+.num-mono {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+.glyph-wrap {
+  opacity: 0.85;
+}
+.lens {
+  color: var(--ink-dim);
+  font-size: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ink-faint);
+}
+
+.chapter-body {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 620px;
+}
+
+.ro {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+
+.chapter-title {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: clamp(48px, 6.5vw, 96px);
+  line-height: 0.98;
+  letter-spacing: -0.025em;
+  margin: 0;
+  text-wrap: balance;
+}
+
+.tagline {
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 400;
+  font-size: clamp(20px, 2vw, 28px);
+  line-height: 1.3;
+  margin: 0;
+  text-wrap: balance;
+  transition: color 700ms;
+}
+
+.body-text {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: clamp(16px, 1.25vw, 19px);
+  line-height: 1.65;
+  color: var(--ink-dim);
+  margin: 0;
+  max-width: 56ch;
+  text-wrap: pretty;
+}
+
+.aphorism {
+  margin: 16px 0 0;
+  padding: 0 0 0 24px;
+  border-left: 1px solid;
+  font-family: var(--serif);
+  font-style: italic;
+  font-weight: 300;
+  font-size: clamp(16px, 1.35vw, 20px);
+  line-height: 1.5;
+  color: var(--ink);
+  max-width: 52ch;
+  transition: border-color 700ms;
+}
+.aphorism-mark {
+  margin-right: 8px;
+  font-style: normal;
+  transition: color 700ms;
+}
+
+/* ─── Outro ─────────────────────────────────────────────────────── */
+.outro {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 800ms;
+}
+.outro-inner {
+  text-align: center;
+  max-width: 720px;
+  padding: 0 32px;
+}
+.outro-title {
+  font-family: var(--serif);
+  font-weight: 300;
+  font-style: italic;
+  font-size: clamp(48px, 7vw, 96px);
+  line-height: 1;
+  letter-spacing: -0.02em;
+  margin: 32px 0 32px;
+  color: var(--ink);
+  text-wrap: balance;
+}
+.outro-sub {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: clamp(16px, 1.5vw, 20px);
+  line-height: 1.5;
+  color: var(--ink-dim);
+  margin: 0 0 48px;
+  text-wrap: pretty;
+}
+.restart {
+  background: none;
+  border: 1px solid var(--ink-faint);
+  color: var(--ink-dim);
+  padding: 14px 28px;
+  cursor: pointer;
+  transition: all 300ms;
+  font-size: 10px;
+}
+.restart:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+  transform: translateY(-2px);
+}
+
+/* ─── Tweaks ────────────────────────────────────────────────────── */
+.tweaks {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 300px;
+  background: rgba(12, 12, 16, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 16px;
+  z-index: 100;
+  color: var(--ink);
+  font-family: var(--mono);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.tweaks-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.tweaks-close {
+  background: none;
+  border: 0;
+  color: var(--ink-dim);
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+}
+.tweaks-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tweaks-row label {
+  font-size: 9px;
+  color: var(--ink-dim);
+}
+.tweaks-row input[type="range"] {
+  width: 100%;
+  accent-color: #E8C878;
+}
+.tweaks-opts {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.tweaks-opt {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: var(--ink-dim);
+  padding: 6px 10px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: all 200ms;
+}
+.tweaks-opt:hover {
+  color: var(--ink);
+  border-color: rgba(255,255,255,0.2);
+}
+.tweaks-opt.on {
+  color: #060608;
+  background: #E8C878;
+  border-color: #E8C878;
+}
+
+/* ─── Scroll driver (invisible, drives page height) ─────────────── */
+.scroll-driver {
+  position: relative;
+  z-index: -1;
+  visibility: hidden;
+}
+
+/* ─── Responsive ────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .chapter { padding: 0 32px; }
+  .chapter-grid {
+    grid-template-columns: 1fr;
+    gap: 32px;
+  }
+  .chapter-meta {
+    flex-direction: row;
+    align-items: center;
+    gap: 20px;
+    padding-top: 0;
+  }
+  .lens { display: none; }
+  .rail { display: none; }
+  .hud { padding: 16px 20px; }
+}
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+
+  <script>// The 7 Fundamental Laws — data
+// Original synthesis inspired by Monica Ion's teaching on universal laws.
+window.LAWS = [
+  {
+    n: 1,
+    romanian: "Polaritatea",
+    english: "Polarity",
+    tagline: "Every force calls its opposite into being.",
+    body: "Light cannot exist without shadow, nor stillness without motion. Each experience carries twin currents — the one you celebrate and the one you refuse — and both are required for the whole to breathe. The practice is not to choose one, but to hold both without flinching.",
+    aphorism: "The gift of those who bring darkness is that they hold the role until you can hold it yourself.",
+    lens: "Complementary opposites",
+    hue: 198,   // cool teal-blue
+    hue2: 22,   // warm amber
+    accent: "#8FD5E8",
+    glyph: "◐"
+  },
+  {
+    n: 2,
+    romanian: "Transformarea",
+    english: "Transformation",
+    tagline: "Nothing is lost. Everything moves.",
+    body: "Energy does not disappear — it changes shape. What feels like collapse is the raw material of the next self. The crisis is not the ending of your story but the furnace in which the next chapter is forged.",
+    aphorism: "Stop fighting the current. You are not drowning. You are being rewritten.",
+    lens: "Flux and metamorphosis",
+    hue: 12,
+    hue2: 320,
+    accent: "#E89A7C",
+    glyph: "∞"
+  },
+  {
+    n: 3,
+    romanian: "Reflexia",
+    english: "Reflection",
+    tagline: "Everything you see in others lives also in you.",
+    body: "The world is a mirror polished to perfect clarity. What moves you in another — tenderness, rage, brilliance, shame — is the echo of a frequency already sounding within. To meet another with compassion is to meet yourself first.",
+    aphorism: "The microcosm of you is a perfect rendering of the macrocosm — in a singular handwriting.",
+    lens: "The mirrored self",
+    hue: 148,
+    hue2: 168,
+    accent: "#9BD4B4",
+    glyph: "⟷"
+  },
+  {
+    n: 4,
+    romanian: "Fractalii",
+    english: "Fractals",
+    tagline: "How you do one thing is how you do everything.",
+    body: "The pattern you live in the smallest gesture repeats at every scale of your life. Watch how you pour a cup of tea, how you answer a small hurt, how you enter a room — and you will find the architecture of your love, your work, your grief.",
+    aphorism: "The part is not smaller than the whole. It contains it.",
+    lens: "Self-similarity across scale",
+    hue: 268,
+    hue2: 288,
+    accent: "#B9A3E8",
+    glyph: "❋"
+  },
+  {
+    n: 5,
+    romanian: "Atracția",
+    english: "Attraction",
+    tagline: "What you emit is what returns.",
+    body: "You are a resonator. The frequency of your inner life — the steadiness of your values, the temperature of your attention — pulls its like toward you like iron filings to a magnet. Order within becomes order drawn near.",
+    aphorism: "Heal from coherence, not from force. Transmission matches state.",
+    lens: "Resonance and return",
+    hue: 42,
+    hue2: 18,
+    accent: "#E8C878",
+    glyph: "◉"
+  },
+  {
+    n: 6,
+    romanian: "Escaladarea",
+    english: "Escalation",
+    tagline: "What you flee pursues you harder.",
+    body: "When you cling only to the half you approve of, the other half grows louder. This is not punishment — it is the universe calling you back to wholeness. The practice is to turn and face what you cast out, and find, underneath the terror, a deeper grace.",
+    aphorism: "What you resist, persists. What you embrace, dissolves.",
+    lens: "The shadow's insistence",
+    hue: 0,
+    hue2: 348,
+    accent: "#E89595",
+    glyph: "⍻"
+  },
+  {
+    n: 7,
+    romanian: "Sincronicitatea",
+    english: "Synchronicity",
+    tagline: "Every gesture sends a signal through the whole.",
+    body: "There are no accidents — only the web of correspondence revealing itself. A chance meeting, a returning number, a book that falls open: the universe is not sending you messages, it is the message. Your task is to learn its grammar.",
+    aphorism: "Coincidence is the signature of a law you have not yet named.",
+    lens: "Correspondence and signal",
+    hue: 78,
+    hue2: 188,
+    accent: "#C8E894",
+    glyph: "◈"
+  }
+];
+  </script>
+  <script>// Canvas visualizations for each of the 7 laws.
+// Each export is a function (ctx, t, w, h, law) that draws one frame.
+// t = seconds, continuous. law = data object from laws.js.
+
+(function () {
+  const TAU = Math.PI * 2;
+
+  function hexA(hex, a) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+  function hsl(h, s, l, a = 1) { return `hsla(${h},${s}%,${l}%,${a})`; }
+
+  // 1. Polarity — two orbs on a shared axis, orbiting a calm center, bleeding into each other.
+  function drawPolarity(ctx, t, w, h, law) {
+    const cx = w / 2, cy = h / 2;
+    const R = Math.min(w, h) * 0.22;
+
+    // faint axis
+    ctx.save();
+    ctx.globalAlpha = 0.08;
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, TAU);
+    ctx.stroke();
+    ctx.restore();
+
+    const angle = t * 0.35;
+    const orbR = Math.min(w, h) * 0.18;
+
+    for (let i = 0; i < 2; i++) {
+      const a = angle + i * Math.PI;
+      const x = cx + Math.cos(a) * R;
+      const y = cy + Math.sin(a) * R * 0.55;
+      const hue = i === 0 ? law.hue : law.hue2;
+
+      // soft halo
+      const grad = ctx.createRadialGradient(x, y, 0, x, y, orbR * 1.8);
+      grad.addColorStop(0, hsl(hue, 70, 65, 0.9));
+      grad.addColorStop(0.5, hsl(hue, 70, 55, 0.25));
+      grad.addColorStop(1, hsl(hue, 70, 50, 0));
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(x, y, orbR * 1.8, 0, TAU);
+      ctx.fill();
+
+      // core
+      const core = ctx.createRadialGradient(x, y, 0, x, y, orbR * 0.6);
+      core.addColorStop(0, hsl(hue, 30, 95, 1));
+      core.addColorStop(1, hsl(hue, 70, 60, 0.0));
+      ctx.fillStyle = core;
+      ctx.beginPath();
+      ctx.arc(x, y, orbR * 0.6, 0, TAU);
+      ctx.fill();
+    }
+
+    // central seam — soft vertical bleed
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    const seam = ctx.createLinearGradient(cx - 2, 0, cx + 2, 0);
+    seam.addColorStop(0, hsl(law.hue, 60, 60, 0));
+    seam.addColorStop(0.5, hsl((law.hue + law.hue2) / 2, 60, 75, 0.12));
+    seam.addColorStop(1, hsl(law.hue2, 60, 60, 0));
+    ctx.fillStyle = seam;
+    ctx.fillRect(cx - 180, 0, 360, h);
+    ctx.restore();
+  }
+
+  // 2. Transformation — a river of particles that morphs between a circle, an infinity curve, and a line.
+  const TRANS_PARTICLES = [];
+  function ensureTransParticles(n) {
+    while (TRANS_PARTICLES.length < n) TRANS_PARTICLES.push({ seed: Math.random() });
+  }
+  function drawTransformation(ctx, t, w, h, law) {
+    const N = 320;
+    ensureTransParticles(N);
+    const cx = w / 2, cy = h / 2;
+    const R = Math.min(w, h) * 0.26;
+
+    // morph phase 0..1 cycling through 3 shapes
+    const cycle = (t * 0.12) % 3;
+    const stage = Math.floor(cycle);
+    const k = cycle - stage; // 0..1 within stage
+    // smoothstep
+    const s = k * k * (3 - 2 * k);
+
+    function shape(idx, p) {
+      // p is 0..1 along
+      const tau = p * TAU;
+      if (idx === 0) {
+        // circle
+        return [cx + Math.cos(tau) * R, cy + Math.sin(tau) * R];
+      } else if (idx === 1) {
+        // lemniscate (infinity)
+        const scale = R * 1.3;
+        const denom = 1 + Math.sin(tau) * Math.sin(tau);
+        return [cx + (scale * Math.cos(tau)) / denom, cy + (scale * Math.sin(tau) * Math.cos(tau)) / denom];
+      } else {
+        // flowing sine line
+        return [cx + (p - 0.5) * R * 2.6, cy + Math.sin(tau * 2 + t) * R * 0.3];
+      }
+    }
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = 0; i < N; i++) {
+      const p = i / N;
+      const jitter = Math.sin(t * 0.6 + i * 1.3) * 3;
+      const [x1, y1] = shape(stage, p);
+      const [x2, y2] = shape((stage + 1) % 3, p);
+      const x = x1 + (x2 - x1) * s + jitter;
+      const y = y1 + (y2 - y1) * s + jitter * 0.6;
+
+      const hueShift = Math.sin(p * TAU + t * 0.3);
+      const hue = law.hue + hueShift * ((law.hue2 - law.hue) * 0.5);
+      const a = 0.5 + 0.4 * Math.sin(p * TAU * 3 + t);
+
+      ctx.fillStyle = hsl(hue, 60, 70, a * 0.85);
+      ctx.beginPath();
+      ctx.arc(x, y, 1.6 + Math.sin(i + t) * 0.6, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // 3. Reflection — a waveform and its perfect mirror, with a thin meeting line.
+  function drawReflection(ctx, t, w, h, law) {
+    const cy = h / 2;
+    const amp = h * 0.18;
+
+    ctx.save();
+    // mirror axis
+    ctx.strokeStyle = hsl(law.hue, 40, 80, 0.15);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, cy);
+    ctx.lineTo(w, cy);
+    ctx.stroke();
+
+    for (let band = 0; band < 3; band++) {
+      const phase = t * (0.35 + band * 0.1);
+      const bandAmp = amp * (1 - band * 0.25);
+      const opacity = 0.7 - band * 0.2;
+
+      // top wave
+      ctx.beginPath();
+      for (let x = 0; x <= w; x += 4) {
+        const k = x / w;
+        const y = cy - Math.sin(k * 6 + phase + band) * bandAmp * (0.6 + 0.4 * Math.sin(k * 2 + t * 0.2));
+        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = hsl(law.hue, 55, 70, opacity);
+      ctx.lineWidth = 2 - band * 0.4;
+      ctx.stroke();
+
+      // bottom mirror
+      ctx.beginPath();
+      for (let x = 0; x <= w; x += 4) {
+        const k = x / w;
+        const y = cy + Math.sin(k * 6 + phase + band) * bandAmp * (0.6 + 0.4 * Math.sin(k * 2 + t * 0.2));
+        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = hsl(law.hue2, 55, 70, opacity);
+      ctx.lineWidth = 2 - band * 0.4;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // 4. Fractals — recursive branching tree, living.
+  function drawBranch(ctx, x, y, len, angle, depth, t, law) {
+    if (depth <= 0 || len < 2) return;
+    const sway = Math.sin(t * 0.4 + depth * 1.2) * 0.08;
+    const a = angle + sway;
+    const x2 = x + Math.cos(a) * len;
+    const y2 = y + Math.sin(a) * len;
+
+    const hue = law.hue + (law.hue2 - law.hue) * ((6 - depth) / 6);
+    ctx.strokeStyle = hsl(hue, 50, 60 + depth * 3, 0.5 + depth * 0.06);
+    ctx.lineWidth = Math.max(0.5, depth * 0.6);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+
+    // node
+    if (depth <= 3) {
+      ctx.fillStyle = hsl(hue, 50, 75, 0.8);
+      ctx.beginPath();
+      ctx.arc(x2, y2, Math.max(0.8, depth * 0.6), 0, TAU);
+      ctx.fill();
+    }
+
+    const branchAngle = 0.55 + Math.sin(t * 0.2) * 0.08;
+    const scale = 0.72;
+    drawBranch(ctx, x2, y2, len * scale, a - branchAngle, depth - 1, t, law);
+    drawBranch(ctx, x2, y2, len * scale, a + branchAngle, depth - 1, t, law);
+    // tertiary spine
+    if (depth > 2) drawBranch(ctx, x2, y2, len * scale * 0.7, a, depth - 1, t, law);
+  }
+  function drawFractals(ctx, t, w, h, law) {
+    const cx = w / 2;
+    ctx.save();
+    // center tree
+    drawBranch(ctx, cx, h * 0.92, Math.min(w, h) * 0.18, -Math.PI / 2, 7, t, law);
+    // side echoes (smaller fractals)
+    drawBranch(ctx, cx - w * 0.28, h * 0.82, Math.min(w, h) * 0.1, -Math.PI / 2 + 0.15, 6, t + 1.3, law);
+    drawBranch(ctx, cx + w * 0.28, h * 0.82, Math.min(w, h) * 0.1, -Math.PI / 2 - 0.15, 6, t + 2.7, law);
+    ctx.restore();
+  }
+
+  // 5. Attraction — particles drawn into an invisible gravity well.
+  const ATTR_PARTS = [];
+  function ensureAttr(n, w, h) {
+    while (ATTR_PARTS.length < n) {
+      ATTR_PARTS.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        vx: (Math.random() - 0.5) * 0.2,
+        vy: (Math.random() - 0.5) * 0.2,
+        life: Math.random(),
+        trail: [],
+      });
+    }
+  }
+  function drawAttraction(ctx, t, w, h, law) {
+    const N = 140;
+    ensureAttr(N, w, h);
+    const cx = w / 2 + Math.sin(t * 0.25) * w * 0.04;
+    const cy = h / 2 + Math.cos(t * 0.22) * h * 0.05;
+
+    // well glow
+    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.min(w, h) * 0.35);
+    glow.addColorStop(0, hsl(law.hue, 70, 70, 0.35));
+    glow.addColorStop(0.4, hsl(law.hue, 70, 60, 0.12));
+    glow.addColorStop(1, hsl(law.hue, 70, 50, 0));
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = 0; i < N; i++) {
+      const p = ATTR_PARTS[i];
+      const dx = cx - p.x;
+      const dy = cy - p.y;
+      const d2 = dx * dx + dy * dy;
+      const d = Math.sqrt(d2) + 20;
+      const g = 140 / d;
+      p.vx += (dx / d) * g * 0.012;
+      p.vy += (dy / d) * g * 0.012;
+      // tangential (to spiral, not just fall)
+      p.vx += (-dy / d) * g * 0.006;
+      p.vy += (dx / d) * g * 0.006;
+
+      p.vx *= 0.985;
+      p.vy *= 0.985;
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life -= 0.003;
+
+      // respawn if dead or too close to center
+      if (p.life <= 0 || d < 12 || p.x < -20 || p.x > w + 20 || p.y < -20 || p.y > h + 20) {
+        const ang = Math.random() * TAU;
+        const rad = Math.min(w, h) * 0.5;
+        p.x = cx + Math.cos(ang) * rad;
+        p.y = cy + Math.sin(ang) * rad;
+        p.vx = -Math.cos(ang) * 0.6 + (Math.random() - 0.5) * 0.3;
+        p.vy = -Math.sin(ang) * 0.6 + (Math.random() - 0.5) * 0.3;
+        p.life = 0.8 + Math.random() * 0.4;
+      }
+
+      const hue = law.hue + (d < 120 ? 15 : 0);
+      const alpha = Math.min(1, p.life) * 0.9;
+      ctx.strokeStyle = hsl(hue, 60, 70, alpha * 0.6);
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(p.x - p.vx * 4, p.y - p.vy * 4);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+
+      ctx.fillStyle = hsl(hue, 40, 85, alpha);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 1.2, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // 6. Escalation — a wave building in amplitude, then releasing. The shadow that grows with flight.
+  function drawEscalation(ctx, t, w, h, law) {
+    const cy = h / 2;
+    // phase 0..1: build then release
+    const cyc = (t * 0.22) % 1;
+    // ease: build quadratic, release fast
+    const tension = cyc < 0.75 ? Math.pow(cyc / 0.75, 1.6) : 1 - (cyc - 0.75) / 0.25;
+    const amp = h * 0.05 + h * 0.28 * tension;
+
+    // tension field (vertical bars getting louder)
+    ctx.save();
+    const barCount = 64;
+    for (let i = 0; i < barCount; i++) {
+      const x = (i / barCount) * w;
+      const localT = t * 2 + i * 0.15;
+      const bh = (Math.sin(localT) * 0.5 + 0.5) * amp * (0.5 + Math.random() * 0.05);
+      const hue = law.hue + tension * 20;
+      ctx.fillStyle = hsl(hue, 60, 55, 0.15 + tension * 0.35);
+      ctx.fillRect(x - 1, cy - bh, 2, bh * 2);
+    }
+
+    // main chaos wave
+    for (let band = 0; band < 4; band++) {
+      ctx.beginPath();
+      const phase = t * (0.6 + band * 0.2);
+      for (let x = 0; x <= w; x += 3) {
+        const k = x / w;
+        const noise = Math.sin(k * 14 + phase) * Math.sin(k * 3 + phase * 0.5);
+        const y = cy + noise * amp * (1 - band * 0.15);
+        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = hsl(law.hue + band * 6, 60, 65, 0.7 - band * 0.15);
+      ctx.lineWidth = 2 - band * 0.3;
+      ctx.stroke();
+    }
+
+    // release flash
+    if (cyc > 0.73 && cyc < 0.78) {
+      ctx.fillStyle = hsl(law.hue2, 30, 90, (0.78 - cyc) * 6);
+      ctx.fillRect(0, 0, w, h);
+    }
+    ctx.restore();
+  }
+
+  // 7. Synchronicity — concentric ripples from several synchronized pulse points.
+  function drawSynchronicity(ctx, t, w, h, law) {
+    const points = [
+      { x: w * 0.3, y: h * 0.38, phase: 0 },
+      { x: w * 0.7, y: h * 0.62, phase: 1.5 },
+      { x: w * 0.55, y: h * 0.3, phase: 3 },
+    ];
+    const maxR = Math.min(w, h) * 0.45;
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (const p of points) {
+      for (let i = 0; i < 6; i++) {
+        const tt = ((t * 0.25 + p.phase + i * 0.6) % 3) / 3; // 0..1
+        if (tt <= 0) continue;
+        const r = tt * maxR;
+        const alpha = (1 - tt) * 0.55;
+        const hue = law.hue + (law.hue2 - law.hue) * tt;
+        ctx.strokeStyle = hsl(hue, 55, 70, alpha);
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, TAU);
+        ctx.stroke();
+      }
+      // core
+      ctx.fillStyle = hsl(law.hue, 40, 90, 0.8);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 3, 0, TAU);
+      ctx.fill();
+    }
+
+    // connecting filaments
+    ctx.strokeStyle = hsl(law.hue, 40, 70, 0.12);
+    ctx.lineWidth = 1;
+    for (let i = 0; i < points.length; i++) {
+      for (let j = i + 1; j < points.length; j++) {
+        ctx.beginPath();
+        ctx.moveTo(points[i].x, points[i].y);
+        ctx.lineTo(points[j].x, points[j].y);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  window.LAW_VISUALS = {
+    1: drawPolarity,
+    2: drawTransformation,
+    3: drawReflection,
+    4: drawFractals,
+    5: drawAttraction,
+    6: drawEscalation,
+    7: drawSynchronicity,
+  };
+})();
+  </script>
+  <script type="text/babel" data-presets="react">// App.jsx — The 7 Fundamental Laws, fluid scroll experience.
+
+const { useEffect, useRef, useState, useCallback, useLayoutEffect } = React;
+
+// Smooth lerp hook for a value (for smoothed scroll position)
+function useSmoothed(target, stiffness = 0.08) {
+  const [val, setVal] = useState(target);
+  const raf = useRef(null);
+  const current = useRef(target);
+  const goal = useRef(target);
+  useEffect(() => {
+    goal.current = target;
+    const step = () => {
+      const diff = goal.current - current.current;
+      if (Math.abs(diff) < 0.0005) {
+        current.current = goal.current;
+        setVal(current.current);
+        raf.current = null;
+        return;
+      }
+      current.current += diff * stiffness;
+      setVal(current.current);
+      raf.current = requestAnimationFrame(step);
+    };
+    if (!raf.current) raf.current = requestAnimationFrame(step);
+    return () => {
+      if (raf.current) cancelAnimationFrame(raf.current);
+      raf.current = null;
+    };
+  }, [target, stiffness]);
+  return val;
+}
+
+// (scroll mapping is done inline in App)
+
+
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const smooth = (t) => t * t * (3 - 2 * t);
+
+// Full-screen canvas that renders blended visuals crossfading between adjacent laws.
+function CosmicCanvas({ scrollProgress }) {
+  const canvasRef = useRef(null);
+  const raf = useRef(null);
+  const timeRef = useRef(0);
+  const lastTs = useRef(null);
+  const progRef = useRef(scrollProgress);
+
+  useEffect(() => { progRef.current = scrollProgress; }, [scrollProgress]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+    const resize = () => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      canvas.width = Math.floor(w * dpr);
+      canvas.height = Math.floor(h * dpr);
+      canvas.style.width = w + "px";
+      canvas.style.height = h + "px";
+    };
+    resize();
+    window.addEventListener("resize", resize);
+
+    const loop = (ts) => {
+      if (lastTs.current == null) lastTs.current = ts;
+      const dt = (ts - lastTs.current) / 1000;
+      lastTs.current = ts;
+      timeRef.current += dt;
+
+      const w = canvas.width / dpr;
+      const h = canvas.height / dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      // fade previous frame gently for trails
+      ctx.fillStyle = "rgba(6, 6, 10, 0.18)";
+      ctx.fillRect(0, 0, w, h);
+
+      const p = progRef.current; // 0..LAWS.length (intro at -0.5..0)
+      const total = window.LAWS.length;
+
+      // which two laws to crossfade between?
+      // Map scrollProgress (0..total) into active law indices.
+      // During intro (p < 0), show law 0 dimly.
+      const pp = Math.max(0, Math.min(total - 0.001, p));
+      const i0 = Math.floor(pp);
+      const i1 = Math.min(total - 1, i0 + 1);
+      const k = pp - i0; // 0..1 transition
+      // spend most time on each law (ease curve)
+      const ease = k < 0.5 ? 0 : smooth((k - 0.5) * 2);
+
+      const lawA = window.LAWS[i0];
+      const lawB = window.LAWS[i1];
+
+      // intro dimming
+      const introFade = p < 0 ? 1 + p : 1; // p=-1 → 0, p=0 → 1
+      const aA = (1 - ease) * Math.max(0.3, introFade);
+      const aB = ease;
+
+      ctx.globalAlpha = aA;
+      window.LAW_VISUALS[lawA.n](ctx, timeRef.current, w, h, lawA);
+      if (lawA !== lawB) {
+        ctx.globalAlpha = aB;
+        window.LAW_VISUALS[lawB.n](ctx, timeRef.current, w, h, lawB);
+      }
+      ctx.globalAlpha = 1;
+
+      raf.current = requestAnimationFrame(loop);
+    };
+    raf.current = requestAnimationFrame(loop);
+
+    return () => {
+      window.removeEventListener("resize", resize);
+      if (raf.current) cancelAnimationFrame(raf.current);
+    };
+  }, []);
+
+  return <canvas ref={canvasRef} className="cosmic-canvas" />;
+}
+
+// Small inline glyph — subtle SVG mark for each law
+function LawGlyph({ law, size = 64 }) {
+  const stroke = law.accent;
+  const commonProps = { width: size, height: size, viewBox: "0 0 64 64", fill: "none", strokeLinecap: "round", strokeLinejoin: "round" };
+  switch (law.n) {
+    case 1: return (
+      <svg {...commonProps}>
+        <circle cx="22" cy="32" r="14" stroke={stroke} strokeWidth="1.2" opacity="0.8"/>
+        <circle cx="42" cy="32" r="14" stroke={stroke} strokeWidth="1.2" opacity="0.8"/>
+      </svg>
+    );
+    case 2: return (
+      <svg {...commonProps}>
+        <path d="M10 32 Q22 14 32 32 T54 32" stroke={stroke} strokeWidth="1.2"/>
+        <path d="M10 32 Q22 50 32 32 T54 32" stroke={stroke} strokeWidth="1.2" opacity="0.6"/>
+      </svg>
+    );
+    case 3: return (
+      <svg {...commonProps}>
+        <path d="M8 32 L56 32" stroke={stroke} strokeWidth="0.8" opacity="0.5"/>
+        <path d="M12 22 Q22 12 32 22 T52 22" stroke={stroke} strokeWidth="1.2"/>
+        <path d="M12 42 Q22 52 32 42 T52 42" stroke={stroke} strokeWidth="1.2"/>
+      </svg>
+    );
+    case 4: {
+      const branch = (x, y, len, ang, d, path) => {
+        if (d === 0) return null;
+        const x2 = x + Math.cos(ang) * len;
+        const y2 = y + Math.sin(ang) * len;
+        return (
+          <g key={path}>
+            <line x1={x} y1={y} x2={x2} y2={y2} stroke={stroke} strokeWidth={Math.max(0.6, d * 0.35)} opacity={0.4 + d * 0.12}/>
+            {branch(x2, y2, len * 0.7, ang - 0.5, d - 1, path + "L")}
+            {branch(x2, y2, len * 0.7, ang + 0.5, d - 1, path + "R")}
+          </g>
+        );
+      };
+      return <svg {...commonProps}>{branch(32, 56, 12, -Math.PI / 2, 4, "r")}</svg>;
+    }
+    case 5: return (
+      <svg {...commonProps}>
+        <circle cx="32" cy="32" r="3" fill={stroke}/>
+        <circle cx="32" cy="32" r="10" stroke={stroke} strokeWidth="1" opacity="0.5"/>
+        <circle cx="32" cy="32" r="18" stroke={stroke} strokeWidth="1" opacity="0.3"/>
+        <circle cx="32" cy="32" r="26" stroke={stroke} strokeWidth="1" opacity="0.15"/>
+      </svg>
+    );
+    case 6: return (
+      <svg {...commonProps}>
+        <path d="M6 32 L14 20 L22 44 L30 16 L38 48 L46 24 L58 32" stroke={stroke} strokeWidth="1.2"/>
+      </svg>
+    );
+    case 7: return (
+      <svg {...commonProps}>
+        <circle cx="20" cy="24" r="2" fill={stroke}/>
+        <circle cx="44" cy="40" r="2" fill={stroke}/>
+        <circle cx="38" cy="18" r="2" fill={stroke}/>
+        <line x1="20" y1="24" x2="44" y2="40" stroke={stroke} strokeWidth="0.8" opacity="0.5"/>
+        <line x1="20" y1="24" x2="38" y2="18" stroke={stroke} strokeWidth="0.8" opacity="0.5"/>
+        <line x1="44" y1="40" x2="38" y2="18" stroke={stroke} strokeWidth="0.8" opacity="0.5"/>
+      </svg>
+    );
+    default: return null;
+  }
+}
+
+// ─── Intro ──────────────────────────────────────────────────────────────
+function Intro({ visible }) {
+  return (
+    <section className={`intro ${visible ? "" : "intro--gone"}`}>
+      <div className="intro-inner">
+        <div className="mono tag">Cele 7 Legi Fundamentale</div>
+        <h1 className="title">
+          <span className="title-line">The Seven</span>
+          <span className="title-line title-em">Fundamental</span>
+          <span className="title-line">Laws</span>
+        </h1>
+        <p className="sub">
+          A quiet map of the currents that move beneath every life —
+          drawn from the teaching of Monica Ion.
+        </p>
+        <div className="scroll-hint">
+          <span className="mono">Scroll to begin</span>
+          <svg width="14" height="22" viewBox="0 0 14 22" fill="none">
+            <rect x="0.5" y="0.5" width="13" height="21" rx="6.5" stroke="currentColor" opacity="0.5"/>
+            <circle cx="7" cy="6" r="1.5" fill="currentColor" className="scroll-dot"/>
+          </svg>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Chapter (one law) ─────────────────────────────────────────────────
+function Chapter({ law, index, scrollProgress, introGone }) {
+  const local = scrollProgress - index;
+  const translateY = local * -30;
+  const absLocal = Math.abs(local);
+  let opacity = absLocal < 0.35 ? 1 : clamp(1 - (absLocal - 0.35) * 3.5, 0, 1);
+  // Keep chapter 1 fully hidden until the intro has faded out.
+  if (index === 0 && !introGone) opacity = 0;
+
+  return (
+    <section
+      className="chapter"
+      data-screen-label={`${String(law.n).padStart(2, "0")} ${law.english}`}
+      style={{
+        opacity,
+        transform: `translateY(${translateY}px)`,
+        pointerEvents: opacity > 0.5 ? "auto" : "none",
+      }}
+    >
+      <div className="chapter-grid">
+        <div className="chapter-meta">
+          <div className="num-row">
+            <span className="num-roman">{["I","II","III","IV","V","VI","VII"][law.n - 1]}</span>
+            <span className="num-mono mono">LAW · 0{law.n} / 07</span>
+          </div>
+          <div className="glyph-wrap" style={{ color: law.accent }}>
+            <LawGlyph law={law} size={72} />
+          </div>
+          <div className="mono lens">{law.lens.toUpperCase()}</div>
+        </div>
+
+        <div className="chapter-body">
+          <div className="ro mono">{law.romanian}</div>
+          <h2 className="chapter-title" style={{ color: "#fff" }}>
+            {law.english}
+          </h2>
+          <p className="tagline" style={{ color: law.accent }}>
+            {law.tagline}
+          </p>
+          <p className="body-text">{law.body}</p>
+          <blockquote className="aphorism" style={{ borderColor: law.accent }}>
+            <span className="aphorism-mark" style={{ color: law.accent }}>—</span>
+            {law.aphorism}
+          </blockquote>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Outro ─────────────────────────────────────────────────────────────
+function Outro({ scrollProgress }) {
+  const total = window.LAWS.length;
+  const local = scrollProgress - total;
+  const opacity = clamp(local * 1.2, 0, 1);
+  return (
+    <section
+      className="outro"
+      style={{ opacity, pointerEvents: opacity > 0.3 ? "auto" : "none" }}
+    >
+      <div className="outro-inner">
+        <div className="mono tag">·  ·  ·</div>
+        <h2 className="outro-title">
+          Seven currents.<br/>
+          One movement.
+        </h2>
+        <p className="outro-sub">
+          The laws do not stand in sequence — they braid. Live one, and you brush against the others.
+        </p>
+        <button className="restart" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>
+          <span className="mono">Return to the beginning ↑</span>
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// ─── Chapter rail (right-side nav) ─────────────────────────────────────
+function Rail({ scrollProgress, onJump }) {
+  const total = window.LAWS.length;
+  // Intro is index -1 on the rail; active while in intro band.
+  const introActive = scrollProgress < 0.1;
+  return (
+    <nav className="rail" aria-label="Laws">
+      <button
+        key="intro"
+        className={`rail-item rail-item--intro ${introActive ? "rail-item--active" : ""}`}
+        style={{ "--accent": "#f2ecdc" }}
+        onClick={() => onJump(-1)}
+        title="Introduction"
+      >
+        <span className="rail-dot" />
+        <span className="rail-label mono">
+          <span className="rail-num">00</span>
+          <span className="rail-name">Intro</span>
+        </span>
+      </button>
+      {window.LAWS.map((law, i) => {
+        const local = scrollProgress - i;
+        const active = !introActive && Math.abs(local) < 0.5;
+        return (
+          <button
+            key={law.n}
+            className={`rail-item ${active ? "rail-item--active" : ""}`}
+            style={{ "--accent": law.accent }}
+            onClick={() => onJump(i)}
+            title={`${law.n}. ${law.english}`}
+          >
+            <span className="rail-dot" />
+            <span className="rail-label mono">
+              <span className="rail-num">0{law.n}</span>
+              <span className="rail-name">{law.english}</span>
+            </span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+// ─── Top HUD ───────────────────────────────────────────────────────────
+function Hud({ scrollProgress }) {
+  const total = window.LAWS.length;
+  const introActive = scrollProgress < 0.1;
+  const pp = clamp(scrollProgress, 0, total);
+  const pct = Math.round(((scrollProgress + 0.1) / (total + 0.1)) * 100);
+  const active = window.LAWS[Math.max(0, Math.min(total - 1, Math.floor(pp)))];
+
+  return (
+    <header className="hud">
+      <div className="hud-left mono">
+        <span className="hud-dot" style={{ background: introActive ? "#f2ecdc" : active.accent }} />
+        <span>Monica Ion · The Seven</span>
+      </div>
+      <div className="hud-right mono">
+        <span>{introActive ? "00" : String(Math.min(total, Math.floor(pp) + 1)).padStart(2, "0")} / 07</span>
+        <span className="hud-sep">·</span>
+        <span>{pct.toString().padStart(2, "0")}%</span>
+      </div>
+    </header>
+  );
+}
+
+// (tweaks removed)
+
+// ─── Root ──────────────────────────────────────────────────────────────
+function App() {
+  const total = window.LAWS.length;
+  const [rawProgress, setRawProgress] = useState(0);
+  const scrollProgress = useSmoothed(rawProgress, 0.09);
+
+
+  // Force EB Garamond
+  useEffect(() => {
+    document.documentElement.style.setProperty("--serif", `"EB Garamond", Georgia, serif`);
+  }, []);
+
+  // Persist scroll
+  useEffect(() => {
+    const stored = parseFloat(localStorage.getItem("laws:scroll") || "0");
+    if (isFinite(stored) && stored > 0) {
+      requestAnimationFrame(() => window.scrollTo(0, stored));
+    }
+  }, []);
+
+  // Scroll listener
+  // Mapping:
+  //   0%  → rawProgress = -0.1   (pure intro)
+  //   5%  → rawProgress = 0      (polarity just revealing; intro done)
+  //  10%  → rawProgress = 0      (polarity centered / locked)
+  // After that each 4% of page scroll advances one law.
+  const LAW_STEP = 0.04;
+  const INTRO_END = 0.05;
+  const POLARITY_LOCK = 0.08; // hold polarity from 5%..8%
+  useEffect(() => {
+    const onScroll = () => {
+      const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+      const pct = scrollable > 0 ? window.scrollY / scrollable : 0;
+      let mapped;
+      if (pct < INTRO_END) {
+        mapped = -0.1 + (pct / INTRO_END) * 0.1; // -0.1 → 0
+      } else if (pct < POLARITY_LOCK) {
+        mapped = 0; // hold polarity entrance
+      } else {
+        mapped = (pct - POLARITY_LOCK) / LAW_STEP;
+      }
+      setRawProgress(mapped);
+      localStorage.setItem("laws:scroll", String(window.scrollY));
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [total]);
+
+  // Keyboard nav
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.target.tagName === "INPUT") return;
+      const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+      const lawStep = scrollable * LAW_STEP;
+      const nudge = lawStep * 0.25;
+      if (e.key === "ArrowDown" || e.key === " ") {
+        e.preventDefault();
+        window.scrollTo({ top: window.scrollY + (e.shiftKey ? lawStep : nudge), behavior: "smooth" });
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        window.scrollTo({ top: window.scrollY - (e.shiftKey ? lawStep : nudge), behavior: "smooth" });
+      } else if (e.key === "PageDown") {
+        e.preventDefault();
+        window.scrollTo({ top: window.scrollY + lawStep, behavior: "smooth" });
+      } else if (e.key === "PageUp") {
+        e.preventDefault();
+        window.scrollTo({ top: window.scrollY - lawStep, behavior: "smooth" });
+      } else if (e.key === "Home") {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } else if (e.key === "End") {
+        window.scrollTo({ top: scrollable, behavior: "smooth" });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [total]);
+
+  const jumpTo = (index) => {
+    const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+    if (index < 0) {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    const target = (POLARITY_LOCK + index * LAW_STEP) * scrollable;
+    window.scrollTo({ top: target, behavior: "smooth" });
+  };
+
+  const introVisible = rawProgress < 0.08;
+  const introGone = rawProgress > 0.1;
+
+  return (
+    <>
+      <CosmicCanvas scrollProgress={scrollProgress} />
+      <div className="vignette" />
+      <div className="readability" />
+      <div className="grain" />
+
+      <Hud scrollProgress={scrollProgress} />
+      <Rail scrollProgress={scrollProgress} onJump={jumpTo} />
+
+      {/* Fixed stage that pins all chapters on top of each other */}
+      <div className="stage">
+        <Intro visible={introVisible} />
+        {window.LAWS.map((law, i) => (
+          <Chapter key={law.n} law={law} index={i} scrollProgress={scrollProgress} introGone={introGone} />
+        ))}
+        <Outro scrollProgress={scrollProgress} />
+      </div>
+
+      {/* Tall spacer drives scroll — more vh per law so each chapter lingers */}
+      <div className="scroll-driver" style={{ height: `${(total + 2) * 180}vh` }} />
+
+
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
