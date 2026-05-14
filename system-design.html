@@ -1,0 +1,1898 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>System Design Academy — Interactive Index</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles/academy.css" />
+<style>
+  /* index-specific overrides */
+  body { background-image:
+    linear-gradient(var(--rule) 1px, transparent 1px),
+    linear-gradient(90deg, var(--rule) 1px, transparent 1px);
+    background-size: 56px 56px; background-position: -1px -1px; background-attachment: fixed; }
+  body::before { content:""; position: fixed; inset:0; background: var(--paper); opacity:.94; pointer-events:none; z-index:0; }
+  .wrap { z-index: 1; }
+
+  .hero { padding: 64px 0 36px; }
+
+  /* ── Featured deep dives ─────────────────────────────────────────────── */
+  .featured-section {
+    margin: 28px 0 52px;
+  }
+  .feat-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    border-top: 1px solid var(--ink);
+    padding: 24px 0 22px;
+    margin-bottom: 0;
+  }
+  .feat-head h2 {
+    font-family: 'Instrument Serif', serif; font-weight: 400;
+    font-size: clamp(34px, 4vw, 48px); margin: 0;
+    letter-spacing: -0.015em; line-height: 1;
+  }
+  .feat-head h2 .ital { font-style: italic; color: var(--accent); }
+  .feat-head .meta {
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.14em; color: var(--ink-mute);
+  }
+  .feat-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0;
+    border: 1px solid var(--ink);
+    border-top: none;
+  }
+  .feat-card {
+    border-right: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+    padding: 26px 26px 24px;
+    text-decoration: none; color: inherit;
+    background: var(--paper);
+    display: flex; flex-direction: column;
+    min-height: 320px;
+    position: relative;
+    transition: background 0.15s;
+  }
+  .feat-card:nth-child(4n) { border-right: none; }
+  .feat-card:nth-last-child(-n+4) { border-bottom: none; }
+  @media (max-width: 1200px) {
+    .feat-grid { grid-template-columns: repeat(3, 1fr); }
+    .feat-card { border-right: 1px solid var(--ink) !important; border-bottom: 1px solid var(--ink) !important; }
+    .feat-card:nth-child(3n) { border-right: none !important; }
+    .feat-card:nth-last-child(-n+2) { border-bottom: none !important; }
+  }
+  .feat-card:hover { background: var(--highlight); }
+  .feat-card .feat-num {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase;
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 22px;
+  }
+  .feat-card .feat-num .badge {
+    background: var(--accent); color: var(--paper);
+    padding: 3px 7px; font-size: 9px; letter-spacing: 0.14em;
+  }
+  .feat-card .feat-svg {
+    margin: 0 0 20px;
+    height: 90px;
+    display: flex; align-items: center;
+  }
+  .feat-card .feat-svg svg { width: 100%; height: 100%; display: block; }
+  .feat-card h3 {
+    font-family: 'Instrument Serif', serif; font-weight: 400;
+    font-size: 32px; line-height: 1.05; margin: 0 0 12px;
+    letter-spacing: -0.01em;
+  }
+  .feat-card:hover h3 { color: var(--accent-deep); }
+  .feat-card p {
+    font-size: 14px; line-height: 1.5; color: var(--ink-soft);
+    margin: 0 0 20px;
+  }
+  .feat-card .feat-foot {
+    margin-top: auto;
+    display: flex; justify-content: space-between; align-items: center;
+    padding-top: 14px; border-top: 1px dashed var(--rule);
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.12em; color: var(--ink-mute);
+  }
+  .feat-card .feat-foot .arrow { font-size: 16px; color: var(--accent); transition: transform 0.2s; }
+  .feat-card:hover .feat-foot .arrow { transform: translate(4px, -4px); }
+  @media (max-width: 900px) {
+    .feat-grid { grid-template-columns: repeat(2, 1fr); }
+    .feat-card { border-right: 1px solid var(--ink) !important; }
+    .feat-card:nth-child(2n) { border-right: none !important; }
+    .feat-card:nth-last-child(-n+3) { border-bottom: 1px solid var(--ink); }
+    .feat-card:nth-last-child(-n+2) { border-bottom: none; }
+  }
+  @media (max-width: 620px) {
+    .feat-grid { grid-template-columns: 1fr; }
+    .feat-card { border-right: none !important; border-bottom: 1px solid var(--ink) !important; min-height: 240px; }
+    .feat-card:last-child { border-bottom: none !important; }
+  }
+
+  /* ── Controls ────────────────────────────────────────────────────────── */
+  .controls { display: flex; flex-direction: column; gap: 18px; margin-bottom: 32px; }
+  .search-row { display: flex; gap: 12px; align-items: stretch; }
+  .search { flex: 1; position: relative; border: 1px solid var(--ink); background: var(--paper); }
+  .search input {
+    width: 100%; border: 0; background: transparent;
+    padding: 18px 20px 18px 52px;
+    font-family: 'Instrument Serif', serif; font-size: 22px;
+    color: var(--ink); outline: none;
+  }
+  .search input::placeholder { color: var(--ink-mute); font-style: italic; }
+  .search .ico { position: absolute; left: 20px; top: 50%; transform: translateY(-50%); color: var(--ink-mute); }
+  .random-btn {
+    border: 1px solid var(--ink); background: var(--ink); color: var(--paper);
+    padding: 0 22px; cursor: pointer; font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.18em;
+    transition: all 0.15s; white-space: nowrap;
+  }
+  .random-btn:hover { background: var(--accent); border-color: var(--accent); }
+  .random-btn .arrow { display: inline-block; transition: transform 0.4s; margin-left: 6px; }
+  .random-btn:hover .arrow { transform: rotate(360deg); }
+
+  .cats { display: flex; flex-wrap: wrap; gap: 8px; }
+  .cat {
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.12em;
+    padding: 9px 14px; border: 1px solid var(--rule);
+    background: transparent; color: var(--ink-soft); cursor: pointer;
+    transition: all 0.15s;
+  }
+  .cat:hover { border-color: var(--ink); color: var(--ink); }
+  .cat.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .cat .count { opacity: 0.6; margin-left: 6px; font-size: 10px; }
+
+  .letters { display: flex; flex-wrap: wrap; gap: 4px; }
+  .letter {
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500;
+    width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+    border: 1px solid transparent; background: transparent; color: var(--ink-soft);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .letter:hover:not(:disabled) { border-color: var(--ink); color: var(--ink); }
+  .letter.active { background: var(--accent); color: var(--paper); border-color: var(--accent); }
+  .letter:disabled { color: var(--rule); cursor: not-allowed; }
+  .letter.all { width: auto; padding: 0 12px; }
+
+  .resultbar {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin: 14px 0 20px; padding-top: 18px; border-top: 1px solid var(--rule);
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.14em; color: var(--ink-mute);
+  }
+  .resultbar .count-big {
+    font-family: 'Instrument Serif', serif; font-size: 32px;
+    color: var(--ink); text-transform: none; letter-spacing: -0.01em;
+  }
+  .resultbar button.clear {
+    background: none; border: none; cursor: pointer; color: var(--accent);
+    font-family: inherit; font-size: inherit; letter-spacing: inherit; text-transform: inherit;
+    text-decoration: underline; text-underline-offset: 4px;
+  }
+  .resultbar button.clear:hover { color: var(--accent-deep); }
+
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 0;
+    border-top: 1px solid var(--ink);
+    border-left: 1px solid var(--ink);
+  }
+  .card {
+    border-right: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+    padding: 22px 22px 20px;
+    background: var(--paper);
+    text-decoration: none; color: inherit;
+    display: flex; flex-direction: column; gap: 12px;
+    min-height: 180px;
+    position: relative;
+    transition: background 0.15s;
+  }
+  .card:hover { background: var(--highlight); }
+  .card:hover .card-title { color: var(--accent-deep); }
+  .card:hover .arr { transform: translate(4px, -4px); color: var(--accent); }
+  .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .tag {
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.14em; color: var(--ink-mute);
+  }
+  .tag .dot { color: var(--accent); margin: 0 6px; }
+  .tag .deep-badge {
+    background: var(--accent); color: var(--paper);
+    padding: 2px 6px; margin-left: 8px;
+    font-size: 9px; letter-spacing: 0.14em;
+  }
+  .arr { font-family: 'JetBrains Mono', monospace; font-size: 18px; color: var(--ink-soft); transition: all 0.2s; line-height: 1; }
+  .card-title {
+    font-family: 'Instrument Serif', serif;
+    font-size: 24px; line-height: 1.15; font-weight: 400;
+    color: var(--ink); margin: 0;
+    transition: color 0.15s;
+  }
+  .card-foot {
+    margin-top: auto; padding-top: 12px;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    color: var(--ink-mute); text-transform: lowercase; letter-spacing: 0.04em;
+    border-top: 1px dashed var(--rule);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .card-foot .num { font-variant-numeric: tabular-nums; opacity: 0.6; }
+
+  .empty { text-align: center; padding: 80px 20px; border: 1px dashed var(--rule); background: rgba(255,255,255,0.4); }
+  .empty h3 { font-family: 'Instrument Serif', serif; font-size: 40px; font-style: italic; color: var(--ink-mute); margin: 0 0 8px; font-weight: 400; }
+  .empty p { color: var(--ink-mute); font-size: 14px; margin: 0; }
+
+  @media (max-width: 560px) {
+    .wrap { padding: 0 18px 60px; }
+    .hero { padding: 40px 0 24px; }
+    .card { padding: 18px; min-height: 150px; }
+    .card-title { font-size: 20px; }
+    .search input { font-size: 18px; padding: 14px 16px 14px 44px; }
+    .search .ico { left: 14px; }
+    .random-btn { padding: 0 14px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <span>System Design Academy</span>
+    </div>
+    <nav>
+      <a href="#featured">Deep Dives</a>
+      <a href="#index">Index</a>
+      <a href="https://github.com/systemdesign42/system-design-academy" target="_blank" rel="noopener">↗ source</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <div class="eyebrow">a curated technical index · edition 2026</div>
+    <h1 class="hero-h1">How the <span class="ital">internet</span><br/>actually works.</h1>
+    <p class="lede">One hundred and fifty case studies and primers from the engineers who built it, with <em>six deep dives</em> covering the patterns you will be asked about in any senior interview — diagrams, production-grade .NET, and the tradeoffs nobody puts in the brochure.</p>
+  </section>
+
+  <div class="stats" id="stats"></div>
+
+  <!-- ── FEATURED DEEP DIVES ─────────────────────────────────────────── -->
+  <section class="featured-section" id="featured">
+    <div class="feat-head">
+      <h2>Featured <span class="ital">deep dives</span></h2>
+      <span class="meta">22 deep dives · 18 case studies · 18 fundamentals · 10 interviews · 8 AI · 3 white papers · 2026</span>
+    </div>
+    <div class="feat-grid">
+
+      <a class="feat-card" href="topics/rate-limiting.html">
+        <div class="feat-num"><span>Chapter 01</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="20" width="22" height="50" fill="#1a1814"/>
+            <rect x="34"  y="34" width="22" height="36" fill="#c2410c"/>
+            <rect x="62"  y="14" width="22" height="56" fill="#1a1814"/>
+            <rect x="90"  y="44" width="22" height="26" fill="#c2410c"/>
+            <rect x="118" y="24" width="22" height="46" fill="#1a1814"/>
+            <rect x="146" y="54" width="22" height="16" fill="#c2410c"/>
+            <rect x="174" y="38" width="22" height="32" fill="#1a1814"/>
+            <line x1="0" y1="14" x2="200" y2="14" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="4 3"/>
+            <text x="200" y="11" text-anchor="end" font-family="JetBrains Mono" font-size="7" fill="#c2410c" letter-spacing="0.1em">LIMIT</text>
+          </svg>
+        </div>
+        <h3>Rate limiting</h3>
+        <p>Token bucket, sliding window, distributed Redis Lua scripts. How Stripe shapes 1B+ daily requests without melting downstream services.</p>
+        <div class="feat-foot"><span>4 algorithms · 6 vendors</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/caching-patterns.html">
+        <div class="feat-num"><span>Chapter 02</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6" y="20" width="50" height="50" fill="#1a1814"/>
+            <rect x="60" y="34" width="50" height="36" fill="#c2410c"/>
+            <rect x="114" y="20" width="50" height="50" fill="#1a1814"/>
+            <text x="31" y="55" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1" letter-spacing="0.1em">APP</text>
+            <text x="85" y="58" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1a1814" letter-spacing="0.1em">CACHE</text>
+            <text x="139" y="55" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1" letter-spacing="0.1em">DB</text>
+            <path d="M168 45 L182 45" stroke="#c2410c" stroke-width="2"/>
+            <polyline points="178,41 182,45 178,49" fill="none" stroke="#c2410c" stroke-width="2"/>
+          </svg>
+        </div>
+        <h3>Caching patterns</h3>
+        <p>Cache-aside, write-through, write-behind. Two-tier L1/L2 with IMemoryCache + Redis. Why 99% of cache bugs are invalidation bugs.</p>
+        <div class="feat-foot"><span>5 patterns · L1/L2 stack</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/message-queues.html">
+        <div class="feat-num"><span>Chapter 03</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6" y="34" width="30" height="22" fill="#c2410c"/>
+            <rect x="42" y="20" width="116" height="50" fill="#1a1814"/>
+            <rect x="164" y="34" width="30" height="22" fill="#c2410c"/>
+            <g fill="#c2410c">
+              <rect x="50"  y="38" width="14" height="14"/>
+              <rect x="68"  y="38" width="14" height="14"/>
+              <rect x="86"  y="38" width="14" height="14"/>
+              <rect x="104" y="38" width="14" height="14" opacity="0.5"/>
+              <rect x="122" y="38" width="14" height="14" opacity="0.3"/>
+              <rect x="140" y="38" width="14" height="14" opacity="0.2"/>
+            </g>
+          </svg>
+        </div>
+        <h3>Message queues</h3>
+        <p>Kafka vs RabbitMQ vs Azure Service Bus vs SQS. Producer reliability, consumer idempotency, the transactional outbox done right in EF Core.</p>
+        <div class="feat-foot"><span>4 brokers · outbox</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/consistency-patterns.html">
+        <div class="feat-num"><span>Chapter 04</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <polygon points="100,8 192,68 8,68" fill="none" stroke="#1a1814" stroke-width="2"/>
+            <text x="100" y="6" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1a1814" letter-spacing="0.14em">C</text>
+            <text x="6" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1a1814" letter-spacing="0.14em">A</text>
+            <text x="194" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1a1814" letter-spacing="0.14em">P</text>
+            <circle cx="100" cy="48" r="10" fill="#c2410c"/>
+            <text x="100" y="51" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">PICK 2</text>
+          </svg>
+        </div>
+        <h3>Consistency patterns</h3>
+        <p>CAP isn't enough. Strong, eventual, read-your-writes, monotonic, bounded staleness — mapped to Cosmos DB levels & EF Core isolation.</p>
+        <div class="feat-foot"><span>5 levels · Cosmos DB</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/api-gateway.html">
+        <div class="feat-num"><span>Chapter 05</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6" y="34" width="28" height="22" fill="#1a1814"/>
+            <rect x="48" y="34" width="28" height="22" fill="#c2410c"/>
+            <line x1="34" y1="45" x2="48" y2="45" stroke="#1a1814" stroke-width="2"/>
+            <rect x="90" y="6" width="40" height="22" fill="#1a1814"/>
+            <rect x="90" y="34" width="40" height="22" fill="#1a1814"/>
+            <rect x="90" y="62" width="40" height="22" fill="#1a1814"/>
+            <line x1="76" y1="45" x2="90" y2="17"  stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="76" y1="45" x2="90" y2="45"  stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="76" y1="45" x2="90" y2="73"  stroke="#c2410c" stroke-width="1.5"/>
+            <text x="62" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">GW</text>
+          </svg>
+        </div>
+        <h3>API gateway, LB &amp; proxy</h3>
+        <p>What each layer actually does. YARP-based gateway with auth, rate limit, routing. When you need three; when you need one.</p>
+        <div class="feat-foot"><span>3 layers · YARP</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/consistent-hashing.html">
+        <div class="feat-num"><span>Chapter 06</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="100" cy="45" r="36" fill="none" stroke="#1a1814" stroke-width="2"/>
+            <circle cx="100" cy="9"  r="5" fill="#c2410c"/>
+            <circle cx="131" cy="27" r="5" fill="#c2410c"/>
+            <circle cx="131" cy="63" r="5" fill="#c2410c"/>
+            <circle cx="100" cy="81" r="5" fill="#c2410c"/>
+            <circle cx="69"  cy="63" r="5" fill="#c2410c"/>
+            <circle cx="69"  cy="27" r="5" fill="#c2410c"/>
+            <circle cx="118" cy="18" r="3" fill="#1a1814"/>
+            <circle cx="138" cy="45" r="3" fill="#1a1814"/>
+            <circle cx="118" cy="72" r="3" fill="#1a1814"/>
+            <circle cx="82"  cy="72" r="3" fill="#1a1814"/>
+            <circle cx="62"  cy="45" r="3" fill="#1a1814"/>
+            <circle cx="82"  cy="18" r="3" fill="#1a1814"/>
+          </svg>
+        </div>
+        <h3>Consistent hashing</h3>
+        <p>The ring, virtual nodes, and why your shard rebalance shouldn't be a Friday-night incident. Built from scratch in C# for shard routing.</p>
+        <div class="feat-foot"><span>ring + vnodes</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/database-sharding.html">
+        <div class="feat-num"><span>Chapter 07</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="8"  width="188" height="22" fill="#1a1814"/>
+            <text x="100" y="23" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1" letter-spacing="0.14em">ID 0..100M</text>
+            <rect x="6"   y="50" width="44" height="32" fill="#c2410c"/>
+            <rect x="54"  y="50" width="44" height="32" fill="#c2410c"/>
+            <rect x="102" y="50" width="44" height="32" fill="#c2410c"/>
+            <rect x="150" y="50" width="44" height="32" fill="#c2410c"/>
+            <line x1="28"  y1="30" x2="28"  y2="48" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="76"  y1="30" x2="76"  y2="48" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="124" y1="30" x2="124" y2="48" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="172" y1="30" x2="172" y2="48" stroke="#c2410c" stroke-width="1.5"/>
+            <text x="100" y="40" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c" letter-spacing="0.12em">SHARD KEY</text>
+          </svg>
+        </div>
+        <h3>Database sharding</h3>
+        <p>Range vs hash vs directory. EF Core multi-context router with virtual nodes, online resharding without downtime, and the cost ledger.</p>
+        <div class="feat-foot"><span>3 schemes · 6 vendors</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/idempotency-keys.html">
+        <div class="feat-num"><span>Chapter 08</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="32" width="40" height="26" fill="#1a1814"/>
+            <text x="26"  y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">REQ</text>
+            <rect x="62"  y="20" width="50" height="50" fill="#c2410c"/>
+            <text x="87"  y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">SETNX</text>
+            <text x="87"  y="54" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">KEY</text>
+            <rect x="128" y="6"  width="62" height="34" fill="#1a1814"/>
+            <text x="159" y="26" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">EXECUTE</text>
+            <rect x="128" y="50" width="62" height="34" fill="#c2410c"/>
+            <text x="159" y="70" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">REPLAY</text>
+            <line x1="46"  y1="45" x2="60"  y2="45" stroke="#c2410c" stroke-width="2"/>
+            <line x1="112" y1="30" x2="126" y2="23" stroke="#1a1814" stroke-width="1.5"/>
+            <line x1="112" y1="60" x2="126" y2="67" stroke="#c2410c" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <h3>Idempotency keys</h3>
+        <p>Stripe-style header, Redis SETNX lock, response cache, and the EF Core unique index belt-and-braces that survives a Redis outage.</p>
+        <div class="feat-foot"><span>3 paths · 6 stores</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/saga-pattern.html">
+        <div class="feat-num"><span>Chapter 09</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="34" width="34" height="22" fill="#1a1814"/>
+            <rect x="56"  y="34" width="34" height="22" fill="#1a1814"/>
+            <rect x="106" y="34" width="34" height="22" fill="#1a1814"/>
+            <rect x="156" y="34" width="34" height="22" fill="#c2410c"/>
+            <line x1="40"  y1="45" x2="56"  y2="45" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="90"  y1="45" x2="106" y2="45" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="140" y1="45" x2="156" y2="45" stroke="#c2410c" stroke-width="1.5"/>
+            <path d="M173 56 C 173 74, 23 74, 23 56" fill="none" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 2"/>
+            <polyline points="27,52 23,56 27,60" fill="none" stroke="#c2410c" stroke-width="1.5"/>
+            <text x="100" y="14" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c" letter-spacing="0.12em">FORWARD →</text>
+            <text x="100" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c" letter-spacing="0.12em">← COMPENSATE</text>
+          </svg>
+        </div>
+        <h3>Saga pattern</h3>
+        <p>Orchestration vs choreography, compensating actions, and the MassTransit state machine that survives every crash mid-checkout.</p>
+        <div class="feat-foot"><span>6 engines · MassTransit</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/realtime-channels.html">
+        <div class="feat-num"><span>Chapter 10</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="34" width="38" height="22" fill="#1a1814"/>
+            <text x="25"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">CLI</text>
+            <rect x="156" y="34" width="38" height="22" fill="#1a1814"/>
+            <text x="175" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">SRV</text>
+            <rect x="60"  y="14" width="80" height="14" fill="#c2410c"/>
+            <text x="100" y="24" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">CLIENT→SERVER</text>
+            <rect x="60"  y="62" width="80" height="14" fill="#c2410c"/>
+            <text x="100" y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">SERVER→CLIENT</text>
+            <line x1="44"  y1="40" x2="60"  y2="20" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="140" y1="20" x2="156" y2="40" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="44"  y1="50" x2="60"  y2="69" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="140" y1="69" x2="156" y2="50" stroke="#c2410c" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <h3>WebSockets, SSE &amp; long polling</h3>
+        <p>SignalR with a Redis backplane, when SSE wins, when long-polling is still the right answer — and what 100k concurrent connections costs you.</p>
+        <div class="feat-foot"><span>3 transports · 7 vendors</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/resilience-polly.html">
+        <div class="feat-num"><span>Chapter 11</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="100" cy="45" r="32" fill="none" stroke="#1a1814" stroke-width="3"/>
+            <path d="M68 45 a32 32 0 0 1 64 0" fill="none" stroke="#c2410c" stroke-width="3"/>
+            <line x1="100" y1="13" x2="100" y2="45" stroke="#1a1814" stroke-width="2"/>
+            <line x1="100" y1="45" x2="122" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <text x="100" y="83" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c" letter-spacing="0.14em">OPEN · HALF · CLOSED</text>
+          </svg>
+        </div>
+        <h3>Resilience &amp; circuit breakers</h3>
+        <p>Polly v8 pipelines — timeout, retry with jitter, bulkhead, breaker — composed once and applied everywhere through HttpClientFactory.</p>
+        <div class="feat-foot"><span>4 strategies · Polly v8</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/monolith-vs-microservices.html">
+        <div class="feat-num"><span>Chapter 12</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="20" width="56" height="50" fill="#1a1814"/>
+            <text x="34" y="50" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">MONO</text>
+            <rect x="74"  y="20" width="56" height="50" fill="#c2410c" stroke="#f1ece1" stroke-width="1" stroke-dasharray="2 2"/>
+            <text x="102" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">module</text>
+            <text x="102" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">module</text>
+            <g>
+              <rect x="142" y="14" width="22" height="22" fill="#1a1814"/>
+              <rect x="168" y="14" width="22" height="22" fill="#1a1814"/>
+              <rect x="142" y="40" width="22" height="22" fill="#1a1814"/>
+              <rect x="168" y="40" width="22" height="22" fill="#1a1814"/>
+            </g>
+            <text x="100" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c" letter-spacing="0.14em">MONO · MODULAR · MICRO</text>
+          </svg>
+        </div>
+        <h3>Monolith vs microservices</h3>
+        <p>Shopify's 30 TB/min on a modular monolith. The cost ledger of the split. When you actually need to extract — and the strangler pattern that doesn't break things.</p>
+        <div class="feat-foot"><span>3 shapes · cost ledger</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/event-sourcing-cqrs.html">
+        <div class="feat-num"><span>Chapter 13</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="40" width="22" height="14" fill="#c2410c"/>
+            <rect x="30"  y="40" width="22" height="14" fill="#c2410c"/>
+            <rect x="54"  y="40" width="22" height="14" fill="#c2410c"/>
+            <rect x="78"  y="40" width="22" height="14" fill="#c2410c"/>
+            <rect x="102" y="40" width="22" height="14" fill="#c2410c"/>
+            <rect x="126" y="40" width="22" height="14" fill="#c2410c"/>
+            <rect x="150" y="40" width="22" height="14" fill="#c2410c"/>
+            <rect x="174" y="40" width="20" height="14" fill="#c2410c"/>
+            <text x="100" y="32" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c" letter-spacing="0.14em">EVENT STREAM →</text>
+            <rect x="20"  y="70" width="50" height="16" fill="#1a1814"/>
+            <text x="45"  y="82" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">summary</text>
+            <rect x="76"  y="70" width="50" height="16" fill="#1a1814"/>
+            <text x="101" y="82" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">index</text>
+            <rect x="132" y="70" width="50" height="16" fill="#1a1814"/>
+            <text x="157" y="82" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">report</text>
+            <line x1="45"  y1="56" x2="45"  y2="68" stroke="#c2410c" stroke-width="1"/>
+            <line x1="101" y1="56" x2="101" y2="68" stroke="#c2410c" stroke-width="1"/>
+            <line x1="157" y1="56" x2="157" y2="68" stroke="#c2410c" stroke-width="1"/>
+          </svg>
+        </div>
+        <h3>Event sourcing &amp; CQRS</h3>
+        <p>Marten on Postgres, EventStoreDB, projections rebuilt from event zero. Snapshot once, project forever. The audit log is the database.</p>
+        <div class="feat-foot"><span>6 stores · Marten</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/bloom-filters.html">
+        <div class="feat-num"><span>Chapter 14</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g>
+              <rect x="6"   y="30" width="16" height="30" fill="#f1ece1" stroke="#1a1814"/>
+              <rect x="24"  y="30" width="16" height="30" fill="#c2410c" stroke="#1a1814"/>
+              <rect x="42"  y="30" width="16" height="30" fill="#f1ece1" stroke="#1a1814"/>
+              <rect x="60"  y="30" width="16" height="30" fill="#c2410c" stroke="#1a1814"/>
+              <rect x="78"  y="30" width="16" height="30" fill="#f1ece1" stroke="#1a1814"/>
+              <rect x="96"  y="30" width="16" height="30" fill="#c2410c" stroke="#1a1814"/>
+              <rect x="114" y="30" width="16" height="30" fill="#f1ece1" stroke="#1a1814"/>
+              <rect x="132" y="30" width="16" height="30" fill="#f1ece1" stroke="#1a1814"/>
+              <rect x="150" y="30" width="16" height="30" fill="#c2410c" stroke="#1a1814"/>
+              <rect x="168" y="30" width="16" height="30" fill="#f1ece1" stroke="#1a1814"/>
+            </g>
+            <text x="100" y="22" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c" letter-spacing="0.14em">10 BITS / ITEM · 1% FP · 0% FN</text>
+          </svg>
+        </div>
+        <h3>Bloom filters</h3>
+        <p>10 bits per item, 1% false positives, zero false negatives. From scratch in C# with the Kirsch–Mitzenmacher trick. Plus RedisBloom for multi-pod.</p>
+        <div class="feat-foot"><span>6 stores · BF.* commands</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/service-discovery.html">
+        <div class="feat-num"><span>Chapter 15</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="34" width="42" height="22" fill="#1a1814"/>
+            <text x="27" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">CLI</text>
+            <rect x="70"  y="20" width="60" height="50" fill="#c2410c"/>
+            <text x="100" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">DNS /</text>
+            <text x="100" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">REG</text>
+            <rect x="152" y="14" width="42" height="22" fill="#1a1814"/>
+            <text x="173" y="29" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">pod</text>
+            <rect x="152" y="40" width="42" height="22" fill="#1a1814"/>
+            <text x="173" y="55" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">pod</text>
+            <rect x="152" y="66" width="42" height="22" fill="#1a1814"/>
+            <text x="173" y="81" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">pod</text>
+            <line x1="48" y1="45" x2="68" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <line x1="130" y1="40" x2="150" y2="25" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="130" y1="45" x2="150" y2="51" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="130" y1="50" x2="150" y2="77" stroke="#c2410c" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <h3>Service discovery</h3>
+        <p>DNS vs registry. K8s ClusterIP, Consul, Service Fabric. The PooledConnectionLifetime line that prevents your <code>HttpClient</code> from dialling a dead pod.</p>
+        <div class="feat-foot"><span>6 systems · K8s DNS</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/leader-election.html">
+        <div class="feat-num"><span>Chapter 16</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="40"  cy="45" r="18" fill="#1a1814"/>
+            <text x="40"  y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">F</text>
+            <circle cx="100" cy="45" r="18" fill="#c2410c"/>
+            <text x="100" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">LEAD</text>
+            <circle cx="160" cy="45" r="18" fill="#1a1814"/>
+            <text x="160" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">F</text>
+            <line x1="58" y1="45" x2="82" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <line x1="118" y1="45" x2="142" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <text x="100" y="20" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c" letter-spacing="0.14em">LEASE · FENCE · ELECT</text>
+            <text x="100" y="82" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">heartbeat</text>
+          </svg>
+        </div>
+        <h3>Leader election</h3>
+        <p>DistributedLock on whatever store you already run. When Raft (etcd, ZooKeeper) is worth it. Why fencing tokens — not locks — are the actual safety.</p>
+        <div class="feat-foot"><span>7 stores · fencing</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/change-data-capture.html">
+        <div class="feat-num"><span>Chapter 17</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="32" width="42" height="26" fill="#1a1814"/>
+            <text x="27" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">DB</text>
+            <path d="M48 45 C 75 25, 95 25, 110 45" fill="none" stroke="#c2410c" stroke-width="2"/>
+            <polyline points="106,41 110,45 106,49" fill="none" stroke="#c2410c" stroke-width="2"/>
+            <rect x="110" y="32" width="42" height="26" fill="#c2410c"/>
+            <text x="131" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">CDC</text>
+            <line x1="152" y1="45" x2="172" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <rect x="172" y="32" width="22" height="26" fill="#1a1814"/>
+            <text x="183" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">K</text>
+            <text x="100" y="22" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c" letter-spacing="0.14em">ROW · WAL · TOPIC</text>
+          </svg>
+        </div>
+        <h3>CDC &amp; outbox</h3>
+        <p>Debezium vs Azure SQL CDC vs the EF Core transactional outbox. When the WAL is the stream — and when the outbox shapes the contract better.</p>
+        <div class="feat-foot"><span>6 patterns · outbox</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/search-architecture.html">
+        <div class="feat-num"><span>Chapter 18</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="14" width="60" height="14" fill="#1a1814"/>
+            <text x="36" y="24" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">doc 1</text>
+            <rect x="6"   y="32" width="60" height="14" fill="#1a1814"/>
+            <text x="36" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">doc 2</text>
+            <rect x="6"   y="50" width="60" height="14" fill="#1a1814"/>
+            <text x="36" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">doc 3</text>
+            <line x1="68" y1="40" x2="92" y2="40" stroke="#c2410c" stroke-width="2"/>
+            <polyline points="88,36 92,40 88,44" fill="none" stroke="#c2410c" stroke-width="2"/>
+            <rect x="96"  y="14" width="100" height="60" fill="#c2410c"/>
+            <text x="146" y="32" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">run → [d1,d3]</text>
+            <text x="146" y="46" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">shoe → [d1,d2]</text>
+            <text x="146" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">red → [d1]</text>
+          </svg>
+        </div>
+        <h3>Search architecture</h3>
+        <p>Inverted index, BM25, hybrid retrieval. Elasticsearch vs OpenSearch vs Azure AI Search vs Postgres FTS. And the indexing pipeline that keeps it fresh.</p>
+        <div class="feat-foot"><span>6 engines · hybrid</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/geographic-distribution.html">
+        <div class="feat-num"><span>Chapter 19</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="40"  cy="45" r="22" fill="#c2410c"/>
+            <text x="40" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">US</text>
+            <circle cx="100" cy="45" r="22" fill="#c2410c"/>
+            <text x="100" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">EU</text>
+            <circle cx="160" cy="45" r="22" fill="#c2410c"/>
+            <text x="160" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">APAC</text>
+            <path d="M62 38 Q 80 25, 78 38" fill="none" stroke="#1a1814" stroke-width="1.5"/>
+            <path d="M122 38 Q 140 25, 138 38" fill="none" stroke="#1a1814" stroke-width="1.5"/>
+            <path d="M62 52 Q 80 65, 78 52" fill="none" stroke="#1a1814" stroke-width="1.5"/>
+            <path d="M122 52 Q 140 65, 138 52" fill="none" stroke="#1a1814" stroke-width="1.5"/>
+            <text x="100" y="82" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c" letter-spacing="0.14em">ACTIVE / ACTIVE</text>
+          </svg>
+        </div>
+        <h3>Geographic distribution</h3>
+        <p>Active/passive vs active/active vs partition-by-region. Cosmos multi-master, Spanner, LWW vs CRDT. The question nobody on the architecture review asks: do you actually need it?</p>
+        <div class="feat-foot"><span>3 shapes · 7 vendors</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/cdn-architecture.html">
+        <div class="feat-num"><span>Chapter 20</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="170" y="34" width="22" height="22" fill="#1a1814"/>
+            <text x="181" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">ORIG</text>
+            <g fill="#c2410c">
+              <rect x="6"   y="34" width="20" height="22"/>
+              <rect x="32"  y="34" width="20" height="22"/>
+              <rect x="58"  y="34" width="20" height="22"/>
+              <rect x="84"  y="34" width="20" height="22"/>
+              <rect x="110" y="34" width="20" height="22"/>
+              <rect x="136" y="34" width="20" height="22"/>
+            </g>
+            <text x="80" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1" letter-spacing="0.16em">EDGE POPS</text>
+            <line x1="156" y1="45" x2="168" y2="45" stroke="#1a1814" stroke-width="1.5"/>
+            <text x="100" y="22" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c" letter-spacing="0.14em">99.5% AT THE EDGE</text>
+          </svg>
+        </div>
+        <h3>CDN architecture</h3>
+        <p>Pull vs push, signed URLs, <code>Cache-Control</code> depth. Why Giphy's edge hit rate is 99.5% and yours is 60%. Hashed filenames, alias swaps, edge functions.</p>
+        <div class="feat-foot"><span>6 vendors · hit-rate tuning</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/jwt-vs-sessions.html">
+        <div class="feat-num"><span>Chapter 21</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="20" width="84" height="50" fill="#1a1814"/>
+            <text x="48"  y="40" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">SESSION</text>
+            <text x="48"  y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1" opacity="0.6">id → redis</text>
+            <rect x="110" y="20" width="84" height="50" fill="#c2410c"/>
+            <text x="152" y="40" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">JWT</text>
+            <text x="152" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">signed payload</text>
+            <text x="100" y="84" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c" letter-spacing="0.14em">POINT  ·  CONTAIN</text>
+          </svg>
+        </div>
+        <h3>JWT vs sessions</h3>
+        <p>Short access + opaque refresh, server sessions, and revocation strategies that don't melt the auth DB. The honest tradeoff with names.</p>
+        <div class="feat-foot"><span>6 stores · revocation</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/grpc-rest-graphql.html">
+        <div class="feat-num"><span>Chapter 22</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="20" width="58" height="50" fill="#1a1814"/>
+            <text x="35"  y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">REST</text>
+            <text x="35"  y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1" opacity="0.6">JSON</text>
+            <rect x="71"  y="20" width="58" height="50" fill="#c2410c"/>
+            <text x="100" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">gRPC</text>
+            <text x="100" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">Protobuf</text>
+            <rect x="136" y="20" width="58" height="50" fill="#1a1814"/>
+            <text x="165" y="40" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">Graph</text>
+            <text x="165" y="52" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">QL</text>
+            <text x="165" y="64" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1" opacity="0.6">SDL</text>
+          </svg>
+        </div>
+        <h3>gRPC vs REST vs GraphQL</h3>
+        <p>LinkedIn cut 60% latency with Protobuf — and paid a tooling bill for it. Pick the protocol by who's on the other side of the wire, not by hype.</p>
+        <div class="feat-foot"><span>3 protocols · HotChocolate</span><span class="arrow">↗</span></div>
+      </a>
+
+    </div>
+  </section>
+
+  <!-- ── CASE STUDIES ────────────────────────────────────────────────── -->
+  <section style="margin-top: 24px;">
+    <div class="feat-head" id="cases">
+      <h2>Case <span class="ital">studies</span></h2>
+      <span class="meta">8 studies · problem · scale · solution · numbers</span>
+    </div>
+    <div class="feat-grid">
+
+      <a class="feat-card" href="topics/case-discord-cassandra.html">
+        <div class="feat-num"><span>Case · Discord</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="34" width="40" height="22" fill="#1a1814"/>
+            <text x="26"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">MONGO</text>
+            <rect x="58"  y="34" width="40" height="22" fill="#c2410c"/>
+            <text x="78"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">CASS</text>
+            <rect x="110" y="34" width="40" height="22" fill="#c2410c"/>
+            <text x="130" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">SCYLLA</text>
+            <rect x="154" y="34" width="40" height="22" fill="#1a1814"/>
+            <text x="174" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">1T msgs</text>
+            <line x1="46" y1="45" x2="58" y2="45" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="98" y1="45" x2="110" y2="45" stroke="#c2410c" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <h3>Trillion-message database</h3>
+        <p>Mongo → Cassandra → ScyllaDB. Two migrations. 900 nodes → 177 → 72. The lessons aren't about the databases.</p>
+        <div class="feat-foot"><span>2015→2023 · 1T msgs</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-figma-postgres.html">
+        <div class="feat-num"><span>Case · Figma</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="20" width="100" height="50" fill="#1a1814"/>
+            <text x="56"  y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">PG 1</text>
+            <rect x="118" y="20" width="36" height="22" fill="#c2410c"/>
+            <rect x="158" y="20" width="36" height="22" fill="#c2410c"/>
+            <rect x="118" y="48" width="36" height="22" fill="#c2410c"/>
+            <rect x="158" y="48" width="36" height="22" fill="#c2410c"/>
+            <line x1="106" y1="45" x2="116" y2="31" stroke="#c2410c" stroke-width="1.2"/>
+            <line x1="106" y1="45" x2="116" y2="59" stroke="#c2410c" stroke-width="1.2"/>
+            <text x="100" y="84" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">VERTICAL → HORIZONTAL</text>
+          </svg>
+        </div>
+        <h3>Scaling Postgres to 4M users</h3>
+        <p>Vertical first (biggest RDS), then horizontal. Logical shard ID. The migration that didn't leave Postgres.</p>
+        <div class="feat-foot"><span>2020→2024 · 10× / yr</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-stripe-rate-limiting.html">
+        <div class="feat-num"><span>Case · Stripe</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="34" width="42" height="22" fill="#c2410c"/>
+            <text x="27"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">RATE</text>
+            <rect x="54"  y="34" width="42" height="22" fill="#c2410c"/>
+            <text x="75"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">CONCUR</text>
+            <rect x="102" y="34" width="42" height="22" fill="#1a1814"/>
+            <text x="123" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">FLEET</text>
+            <rect x="150" y="34" width="42" height="22" fill="#1a1814"/>
+            <text x="171" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">ROUTE</text>
+            <text x="100" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">FOUR LIMITERS</text>
+          </svg>
+        </div>
+        <h3>Four rate limiters</h3>
+        <p>Per-user rate. Per-user concurrency. Fleet cap. Per-endpoint backstop. Each catches what the others miss.</p>
+        <div class="feat-foot"><span>1B+ daily req · Redis Lua</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-netflix-chaos.html">
+        <div class="feat-num"><span>Case · Netflix</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="40"  cy="45" r="14" fill="#c2410c"/>
+            <circle cx="80"  cy="45" r="14" fill="#1a1814"/>
+            <circle cx="120" cy="45" r="14" fill="#c2410c"/>
+            <circle cx="160" cy="45" r="14" fill="#1a1814"/>
+            <line x1="40" y1="59" x2="40" y2="74" stroke="#c2410c" stroke-width="2"/>
+            <text x="40"  y="84" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#c2410c">KILL</text>
+            <line x1="120" y1="59" x2="120" y2="74" stroke="#c2410c" stroke-width="2"/>
+            <text x="120" y="84" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#c2410c">KILL</text>
+            <text x="100" y="20" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">CHAOS MONKEY</text>
+          </svg>
+        </div>
+        <h3>Chaos engineering</h3>
+        <p>Break it on a Tuesday, not a Sunday. Chaos Monkey → Gorilla → Kong → ChAP. Hypothesise · vary · production · minimise blast.</p>
+        <div class="feat-foot"><span>2011 → today · 4 principles</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-cloudflare-postgres.html">
+        <div class="feat-num"><span>Case · Cloudflare</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="34" width="120" height="22" fill="#1a1814"/>
+            <text x="66"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">55M RPS edge</text>
+            <line x1="126" y1="45" x2="140" y2="45" stroke="#c2410c" stroke-width="1.5"/>
+            <rect x="140" y="34" width="54" height="22" fill="#c2410c"/>
+            <text x="167" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">15× PG</text>
+            <text x="100" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">CONTROL PLANE</text>
+          </svg>
+        </div>
+        <h3>55M RPS on 15 Postgres clusters</h3>
+        <p>Postgres as control plane. Edge as data plane. Partition before shard. pgbouncer or die.</p>
+        <div class="feat-foot"><span>2023 · 15 clusters</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-hotstar-concurrent.html">
+        <div class="feat-num"><span>Case · Hotstar</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <line x1="6" y1="76" x2="194" y2="76" stroke="#1a1814" stroke-width="1.5"/>
+            <path d="M6 70 L 80 68 L 100 50 L 130 14 L 194 18" fill="none" stroke="#c2410c" stroke-width="3"/>
+            <text x="50"  y="40" font-family="JetBrains Mono" font-size="6" fill="#1a1814">PRE-WARM</text>
+            <text x="140" y="80" font-family="JetBrains Mono" font-size="6" fill="#1a1814">59M concurrent</text>
+          </svg>
+        </div>
+        <h3>59M concurrent viewers</h3>
+        <p>0 → 25M in 5 minutes. Auto-scaling can't fill that gap. Pre-position. Cache the first 30s. Degrade gracefully.</p>
+        <div class="feat-foot"><span>2023 · 236 Tbps</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-paypal-actor.html">
+        <div class="feat-num"><span>Case · PayPal</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g fill="#c2410c">
+              <rect x="6"   y="26" width="14" height="10"/>
+              <rect x="22"  y="26" width="14" height="10"/>
+              <rect x="38"  y="26" width="14" height="10"/>
+              <rect x="54"  y="26" width="14" height="10"/>
+              <rect x="70"  y="26" width="14" height="10"/>
+              <rect x="86"  y="26" width="14" height="10"/>
+              <rect x="102" y="26" width="14" height="10"/>
+              <rect x="118" y="26" width="14" height="10"/>
+              <rect x="134" y="26" width="14" height="10"/>
+              <rect x="150" y="26" width="14" height="10"/>
+              <rect x="166" y="26" width="14" height="10"/>
+              <rect x="182" y="26" width="12" height="10"/>
+            </g>
+            <rect x="6" y="44" width="188" height="14" fill="#1a1814"/>
+            <text x="100" y="54" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">SHARED THREAD POOL</text>
+            <text x="100" y="84" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">8 VMs · 1B txn</text>
+          </svg>
+        </div>
+        <h3>1B transactions, 8 VMs</h3>
+        <p>Akka actors over Java/Tomcat. 50 VMs → 8. The concurrency primitive is the architecture.</p>
+        <div class="feat-foot"><span>2014–2018 · Scala + Akka</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-shopify-flash.html">
+        <div class="feat-num"><span>Case · Shopify</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="14" width="92" height="22" fill="#1a1814"/>
+            <text x="52"  y="29" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">POD 1</text>
+            <rect x="6"   y="40" width="92" height="22" fill="#1a1814"/>
+            <text x="52"  y="55" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">POD 2</text>
+            <rect x="6"   y="66" width="92" height="20" fill="#1a1814"/>
+            <text x="52"  y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">POD …</text>
+            <rect x="106" y="14" width="88" height="72" fill="#c2410c"/>
+            <text x="150" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">Rails</text>
+            <text x="150" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">monolith</text>
+          </svg>
+        </div>
+        <h3>Black Friday on a monolith</h3>
+        <p>32M RPM peak. Pods + cell architecture. Each merchant lives in one pod. No microservices. The counter-example.</p>
+        <div class="feat-foot"><span>2022 BFCM · 533k RPS</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-uber-nearby.html">
+        <div class="feat-num"><span>Case · Uber</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g fill="#c2410c"><polygon points="60,20 90,20 105,45 90,70 60,70 45,45"/></g>
+            <g fill="#1a1814"><polygon points="120,20 150,20 165,45 150,70 120,70 105,45"/></g>
+            <g fill="#c2410c"><polygon points="120,80 150,80 165,105 150,130 120,130 105,105" transform="translate(0,-50)"/></g>
+            <text x="100" y="14" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">H3 HEX GRID</text>
+          </svg>
+        </div>
+        <h3>"Nearby drivers" at 1M RPS</h3>
+        <p>H3 hexagonal grid. In-memory spatial index. Shard by hex prefix. Adaptive resolution for hot zones.</p>
+        <div class="feat-foot"><span>1M RPS · 7M drivers</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-instagram-scale.html">
+        <div class="feat-num"><span>Case · Instagram</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="40" y="14" width="120" height="62" fill="none" stroke="#1a1814" stroke-width="3" rx="10"/>
+            <circle cx="100" cy="45" r="18" fill="none" stroke="#c2410c" stroke-width="3"/>
+            <circle cx="140" cy="26" r="3" fill="#c2410c"/>
+            <text x="100" y="84" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">DJANGO · 2.5B</text>
+          </svg>
+        </div>
+        <h3>2.5B users on a Django monolith</h3>
+        <p>Postgres sharded by user-id. 8192 logical shards embedded in the primary key. Memcached for the feed.</p>
+        <div class="feat-foot"><span>since 2010 · still Python</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-slack.html">
+        <div class="feat-num"><span>Case · Slack</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g><rect x="14" y="14" width="40" height="62" fill="#1a1814"/><text x="34" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">WS 1</text></g>
+            <g><rect x="60" y="14" width="40" height="62" fill="#c2410c"/><text x="80" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">WS 2</text></g>
+            <g><rect x="106" y="14" width="40" height="62" fill="#1a1814"/><text x="126" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">WS 3</text></g>
+            <g><rect x="152" y="14" width="40" height="62" fill="#c2410c"/><text x="172" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">WS N</text></g>
+          </svg>
+        </div>
+        <h3>Workspace-sharded chat</h3>
+        <p>Per-workspace MySQL + Solr. WebSocket fleet (flannel). Lazy presence. The cell-architecture predecessor.</p>
+        <div class="feat-foot"><span>~32M DAU · 12M concurrent</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-google-docs.html">
+        <div class="feat-num"><span>Case · Docs</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="20" y="14" width="160" height="62" fill="#1a1814"/>
+            <line x1="30" y1="30" x2="170" y2="30" stroke="#f1ece1" stroke-width="1"/>
+            <line x1="30" y1="42" x2="140" y2="42" stroke="#f1ece1" stroke-width="1"/>
+            <line x1="30" y1="54" x2="160" y2="54" stroke="#c2410c" stroke-width="2"/>
+            <line x1="30" y1="66" x2="120" y2="66" stroke="#f1ece1" stroke-width="1"/>
+            <circle cx="100" cy="54" r="3" fill="#c2410c"/>
+            <circle cx="140" cy="54" r="3" fill="#c2410c"/>
+          </svg>
+        </div>
+        <h3>Real-time collaborative editing</h3>
+        <p>Operational Transformation in 2007. CRDTs as the modern alternative. Convergence is the entire engineering problem.</p>
+        <div class="feat-foot"><span>OT vs CRDT · billions of docs</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-bitly.html">
+        <div class="feat-num"><span>Case · Bitly</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="14" y="34" width="76" height="22" fill="#1a1814"/>
+            <text x="52" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">bit.ly/Abc</text>
+            <line x1="90" y1="45" x2="110" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <rect x="110" y="34" width="76" height="22" fill="#c2410c"/>
+            <text x="148" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">long URL</text>
+            <text x="100" y="20" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">10B clicks/mo</text>
+          </svg>
+        </div>
+        <h3>URL shortener at scale</h3>
+        <p>Pre-generated keys. Memcached &gt;95% hit. Async analytics. The interview question, lived.</p>
+        <div class="feat-foot"><span>~10B clicks/mo · base-62</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-dropbox.html">
+        <div class="feat-num"><span>Case · Dropbox</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="14" y="20" width="40" height="50" fill="#1a1814"/>
+            <text x="34" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">FILE</text>
+            <g fill="#c2410c"><rect x="80" y="22" width="20" height="14"/><rect x="80" y="38" width="20" height="14"/><rect x="80" y="54" width="20" height="14"/></g>
+            <rect x="130" y="20" width="56" height="50" fill="#1a1814"/>
+            <text x="158" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">MAGIC</text>
+            <text x="158" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">POCKET</text>
+          </svg>
+        </div>
+        <h3>File sync &amp; Magic Pocket</h3>
+        <p>Block-level dedup. Content-defined chunking. The bold move off AWS to custom exabyte storage.</p>
+        <div class="feat-foot"><span>~700M users · ~exabyte</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-tinder.html">
+        <div class="feat-num"><span>Case · Tinder</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="40" y="14" width="120" height="62" fill="#c2410c" rx="6"/>
+            <text x="100" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">SWIPE</text>
+            <path d="M155 45 L 175 35" stroke="#1a1814" stroke-width="3"/>
+            <path d="M155 45 L 175 55" stroke="#1a1814" stroke-width="3"/>
+            <path d="M45 45 L 25 35" stroke="#1a1814" stroke-width="3"/>
+            <path d="M45 45 L 25 55" stroke="#1a1814" stroke-width="3"/>
+          </svg>
+        </div>
+        <h3>1.6B swipes / day</h3>
+        <p>Geo-indexed candidates. Match detection via reverse index. Push notification is the conversion event.</p>
+        <div class="feat-foot"><span>~75M users · ~26M matches/day</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-zoom.html">
+        <div class="feat-num"><span>Case · Zoom</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="100" cy="45" r="20" fill="#c2410c"/>
+            <text x="100" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">SFU</text>
+            <g><rect x="14" y="14" width="22" height="16" fill="#1a1814"/><rect x="14" y="60" width="22" height="16" fill="#1a1814"/><rect x="164" y="14" width="22" height="16" fill="#1a1814"/><rect x="164" y="60" width="22" height="16" fill="#1a1814"/></g>
+            <line x1="36" y1="22" x2="82" y2="40" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="36" y1="68" x2="82" y2="50" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="164" y1="22" x2="118" y2="40" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="164" y1="68" x2="118" y2="50" stroke="#c2410c" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <h3>20× in three months</h3>
+        <p>SFU architecture. Simulcast. Cross-DC routing. The infrastructure investment that paid off in 2020.</p>
+        <div class="feat-foot"><span>300M daily · 20× spike</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-apple-pay.html">
+        <div class="feat-num"><span>Case · Apple Pay</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="40" y="14" width="120" height="62" fill="#1a1814" rx="6"/>
+            <rect x="60" y="30" width="80" height="30" fill="#c2410c"/>
+            <text x="100" y="50" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">TOKEN</text>
+            <text x="100" y="84" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">NOT YOUR PAN</text>
+          </svg>
+        </div>
+        <h3>Pay without your card number</h3>
+        <p>Tokenisation. Secure Element. Biometric authorisation. The model that changed payment-card security.</p>
+        <div class="feat-foot"><span>~41M txn/day · ~$6T volume</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/case-whatsapp-engineering.html">
+        <div class="feat-num"><span>Case · WhatsApp</span><span class="badge">Case study</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <text x="100" y="40" text-anchor="middle" font-family="JetBrains Mono" font-size="22" font-weight="bold" fill="#c2410c">32</text>
+            <text x="100" y="64" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#1a1814">engineers</text>
+            <text x="100" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#1a1814">50B msgs/day</text>
+            <text x="100" y="14" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#c2410c">ERLANG · FreeBSD</text>
+          </svg>
+        </div>
+        <h3>50B msgs/day on 32 engineers</h3>
+        <p>Erlang/OTP. FreeBSD-tuned. Live code reload. Vertical scale before horizontal. The era you can't reproduce.</p>
+        <div class="feat-foot"><span>~2014 · pre-acquisition</span><span class="arrow">↗</span></div>
+      </a>
+
+    </div>
+  </section>
+
+  <!-- ── FUNDAMENTALS ─────────────────────────────────────────────────── -->
+  <section style="margin-top: 24px;">
+    <div class="feat-head" id="fundamentals">
+      <h2>Fundamentals <span class="ital">deep dives</span></h2>
+      <span class="meta">8 chapters · how the building blocks actually work</span>
+    </div>
+    <div class="feat-grid">
+
+      <a class="feat-card" href="topics/fundamental-https.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="76" y="34" width="48" height="40" fill="#1a1814"/>
+            <rect x="68" y="22" width="64" height="22" fill="#c2410c"/>
+            <path d="M86 22 Q 86 8, 100 8 Q 114 8, 114 22" fill="none" stroke="#1a1814" stroke-width="3"/>
+            <text x="100" y="84" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">TLS 1.3</text>
+          </svg>
+        </div>
+        <h3>HTTPS</h3>
+        <p>The TLS 1.3 handshake in one round-trip. ECDHE, forward secrecy, the cert chain, Let's Encrypt. The lock means a long list of attacks didn't work.</p>
+        <div class="feat-foot"><span>handshake · trust chain</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-dns.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="100" cy="20" r="8" fill="#1a1814"/>
+            <line x1="100" y1="28" x2="60" y2="40" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="100" y1="28" x2="100" y2="40" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="100" y1="28" x2="140" y2="40" stroke="#c2410c" stroke-width="1.5"/>
+            <circle cx="60"  cy="44" r="6" fill="#c2410c"/>
+            <circle cx="100" cy="44" r="6" fill="#c2410c"/>
+            <circle cx="140" cy="44" r="6" fill="#c2410c"/>
+            <line x1="60"  y1="50" x2="48"  y2="64" stroke="#1a1814" stroke-width="1"/>
+            <line x1="60"  y1="50" x2="72"  y2="64" stroke="#1a1814" stroke-width="1"/>
+            <line x1="100" y1="50" x2="88"  y2="64" stroke="#1a1814" stroke-width="1"/>
+            <line x1="100" y1="50" x2="112" y2="64" stroke="#1a1814" stroke-width="1"/>
+            <line x1="140" y1="50" x2="128" y2="64" stroke="#1a1814" stroke-width="1"/>
+            <line x1="140" y1="50" x2="152" y2="64" stroke="#1a1814" stroke-width="1"/>
+            <g fill="#1a1814">
+              <rect x="44"  y="64" width="8" height="8"/>
+              <rect x="68"  y="64" width="8" height="8"/>
+              <rect x="84"  y="64" width="8" height="8"/>
+              <rect x="108" y="64" width="8" height="8"/>
+              <rect x="124" y="64" width="8" height="8"/>
+              <rect x="148" y="64" width="8" height="8"/>
+            </g>
+          </svg>
+        </div>
+        <h3>DNS</h3>
+        <p>Recursive resolution, TTLs, propagation, the trick: it's lazy. <code>PooledConnectionLifetime</code> is the most-overlooked .NET line in production.</p>
+        <div class="feat-foot"><span>hierarchy · TTLs · failover</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-kafka.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g fill="#c2410c">
+              <rect x="6"   y="20" width="20" height="14"/>
+              <rect x="28"  y="20" width="20" height="14"/>
+              <rect x="50"  y="20" width="20" height="14"/>
+              <rect x="72"  y="20" width="20" height="14"/>
+              <rect x="94"  y="20" width="20" height="14"/>
+              <rect x="116" y="20" width="20" height="14"/>
+              <rect x="138" y="20" width="20" height="14"/>
+            </g>
+            <g fill="#c2410c">
+              <rect x="6"   y="38" width="20" height="14"/>
+              <rect x="28"  y="38" width="20" height="14"/>
+              <rect x="50"  y="38" width="20" height="14"/>
+              <rect x="72"  y="38" width="20" height="14"/>
+            </g>
+            <g fill="#c2410c">
+              <rect x="6"   y="56" width="20" height="14"/>
+              <rect x="28"  y="56" width="20" height="14"/>
+              <rect x="50"  y="56" width="20" height="14"/>
+              <rect x="72"  y="56" width="20" height="14"/>
+              <rect x="94"  y="56" width="20" height="14"/>
+            </g>
+            <text x="170" y="36" font-family="JetBrains Mono" font-size="7" fill="#1a1814">P0</text>
+            <text x="170" y="54" font-family="JetBrains Mono" font-size="7" fill="#1a1814">P1</text>
+            <text x="170" y="72" font-family="JetBrains Mono" font-size="7" fill="#1a1814">P2</text>
+          </svg>
+        </div>
+        <h3>Kafka deep dive</h3>
+        <p>An append-only log pretending to be a queue. Partitions, ISR, KRaft (no ZK), consumer groups. Redpanda as the Scylla of Kafka.</p>
+        <div class="feat-foot"><span>partitions · ISR · KRaft</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-deployment.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="14" width="80" height="22" fill="#1a1814"/>
+            <rect x="106" y="14" width="20" height="22" fill="#c2410c"/>
+            <rect x="6"   y="40" width="60" height="22" fill="#1a1814"/>
+            <rect x="86"  y="40" width="40" height="22" fill="#c2410c"/>
+            <rect x="6"   y="66" width="30" height="22" fill="#1a1814"/>
+            <rect x="56"  y="66" width="70" height="22" fill="#c2410c"/>
+            <text x="180" y="28" font-family="JetBrains Mono" font-size="6" fill="#1a1814">canary</text>
+            <text x="180" y="54" font-family="JetBrains Mono" font-size="6" fill="#1a1814">→</text>
+            <text x="180" y="80" font-family="JetBrains Mono" font-size="6" fill="#1a1814">100%</text>
+          </svg>
+        </div>
+        <h3>Deployment patterns</h3>
+        <p>Rolling · blue-green · canary · feature flags. Deploy ≠ release. The five patterns and when each one is right.</p>
+        <div class="feat-foot"><span>5 patterns · Argo Rollouts</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-load-balancing.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="34" width="40" height="22" fill="#1a1814"/>
+            <text x="26"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">LB</text>
+            <line x1="46" y1="40" x2="80" y2="20" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="46" y1="45" x2="80" y2="44" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="46" y1="50" x2="80" y2="68" stroke="#c2410c" stroke-width="1.5"/>
+            <rect x="82"  y="14" width="60" height="14" fill="#c2410c"/>
+            <rect x="82"  y="38" width="60" height="14" fill="#c2410c"/>
+            <rect x="82"  y="62" width="60" height="14" fill="#c2410c"/>
+            <text x="170" y="48" font-family="JetBrains Mono" font-size="7" fill="#1a1814">P2C</text>
+          </svg>
+        </div>
+        <h3>Load balancing algorithms</h3>
+        <p>Round-robin loses to P2C on real workloads. Least-connections, consistent hashing, slow start, EWMA. Pick by the backend, not by familiarity.</p>
+        <div class="feat-foot"><span>4 algorithms · L4 vs L7</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-sidecar.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="14" width="120" height="62" fill="none" stroke="#1a1814" stroke-width="2" stroke-dasharray="3 3"/>
+            <rect x="14"  y="26" width="50" height="38" fill="#1a1814"/>
+            <text x="39"  y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">APP</text>
+            <rect x="70"  y="26" width="50" height="38" fill="#c2410c"/>
+            <text x="95"  y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">SIDE</text>
+            <line x1="120" y1="45" x2="194" y2="45" stroke="#c2410c" stroke-width="1.5"/>
+            <text x="160" y="38" font-family="JetBrains Mono" font-size="6" fill="#1a1814">world</text>
+          </svg>
+        </div>
+        <h3>Sidecar pattern</h3>
+        <p>Outsource the boring cross-cutting concerns. Envoy, Linkerd, OTel collector, Vault Agent, Dapr. Service mesh = sidecar squared.</p>
+        <div class="feat-foot"><span>per-pod helper · ambient mesh</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-webhooks.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="34" width="56" height="22" fill="#c2410c"/>
+            <text x="34"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">PROVIDER</text>
+            <line x1="62" y1="45" x2="100" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <text x="81"  y="40" text-anchor="middle" font-family="JetBrains Mono" font-size="5" fill="#1a1814">HMAC</text>
+            <rect x="100" y="34" width="50" height="22" fill="#1a1814"/>
+            <text x="125" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">YOU</text>
+            <line x1="150" y1="45" x2="180" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <text x="167" y="40" text-anchor="middle" font-family="JetBrains Mono" font-size="5" fill="#1a1814">200</text>
+            <text x="190" y="48" font-family="JetBrains Mono" font-size="8" fill="#c2410c">OK</text>
+          </svg>
+        </div>
+        <h3>Webhooks</h3>
+        <p>HMAC signing, replay protection, dedupe by event id, return 200 fast, work async. The four problems and the standard answers.</p>
+        <div class="feat-foot"><span>signing · dedupe · retries</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-cell-architecture.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="34" width="40" height="22" fill="#1a1814"/>
+            <text x="26"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">ROUTER</text>
+            <rect x="58"  y="14" width="68" height="20" fill="#c2410c" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 2"/>
+            <text x="92"  y="28" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">CELL 1</text>
+            <rect x="58"  y="36" width="68" height="20" fill="#c2410c" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 2"/>
+            <text x="92"  y="50" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">CELL 2</text>
+            <rect x="58"  y="58" width="68" height="20" fill="#c2410c" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 2"/>
+            <text x="92"  y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">CELL N</text>
+            <line x1="46" y1="45" x2="56" y2="24" stroke="#c2410c" stroke-width="1.2"/>
+            <line x1="46" y1="45" x2="56" y2="46" stroke="#c2410c" stroke-width="1.2"/>
+            <line x1="46" y1="45" x2="56" y2="68" stroke="#c2410c" stroke-width="1.2"/>
+          </svg>
+        </div>
+        <h3>Cell-based architecture</h3>
+        <p>Limit the blast radius. AWS, Shopify, Slack. Cells share nothing in the hot path. The router is the only seam.</p>
+        <div class="feat-foot"><span>tenant partition · per-cell stack</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-back-of-envelope.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <text x="100" y="36" text-anchor="middle" font-family="JetBrains Mono" font-size="14" fill="#1a1814">10⁵ sec/day</text>
+            <text x="100" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#c2410c">2³⁰ ≈ 10⁹</text>
+            <text x="100" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#1a1814">RAM ns · SSD μs · LAN 500μs</text>
+          </svg>
+        </div>
+        <h3>Back of the envelope</h3>
+        <p>The numbers to memorise. How to convert DAU into QPS into storage into bandwidth in 90 seconds.</p>
+        <div class="feat-foot"><span>orders of magnitude</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-url-walkthrough.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <text x="100" y="22" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#c2410c">DNS · TCP · TLS · HTTP · render</text>
+            <g fill="#1a1814"><rect x="6" y="34" width="26" height="22"/><rect x="36" y="34" width="26" height="22"/><rect x="66" y="34" width="26" height="22"/><rect x="96" y="34" width="26" height="22"/><rect x="126" y="34" width="26" height="22"/><rect x="156" y="34" width="38" height="22"/></g>
+            <text x="100" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#1a1814">~15 steps</text>
+          </svg>
+        </div>
+        <h3>Type a URL, press enter</h3>
+        <p>The canonical interview question. Fifteen separate steps, each a subsystem. Depth-as-you-go.</p>
+        <div class="feat-foot"><span>resolve · connect · transfer · render</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-api-design.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <text x="14" y="32" font-family="JetBrains Mono" font-size="10" fill="#c2410c">GET /v1/orders</text>
+            <text x="14" y="48" font-family="JetBrains Mono" font-size="10" fill="#c2410c">POST /v1/charges</text>
+            <text x="14" y="64" font-family="JetBrains Mono" font-size="10" fill="#1a1814">200 OK</text>
+            <text x="14" y="80" font-family="JetBrains Mono" font-size="10" fill="#1a1814">409 Conflict</text>
+          </svg>
+        </div>
+        <h3>API design best practices</h3>
+        <p>Plural resources, verbs in HTTP, structured errors, cursor pagination, idempotency. The dozen conventions.</p>
+        <div class="feat-foot"><span>REST · JSON · OpenAPI</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-api-versioning.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="14" y="34" width="38" height="22" fill="#c2410c"/><text x="33" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">v1</text>
+            <rect x="60" y="34" width="38" height="22" fill="#1a1814"/><text x="79" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">v2</text>
+            <rect x="106" y="34" width="38" height="22" fill="#c2410c"/><text x="125" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">v3</text>
+            <rect x="152" y="34" width="42" height="22" fill="#1a1814"/><text x="173" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">date</text>
+          </svg>
+        </div>
+        <h3>API versioning</h3>
+        <p>URL path, host, media-type, date-based. Sunset policy. What counts as breaking and what doesn't.</p>
+        <div class="feat-foot"><span>4 strategies</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-high-availability.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <text x="100" y="36" text-anchor="middle" font-family="JetBrains Mono" font-size="18" font-weight="bold" fill="#c2410c">99.999</text>
+            <text x="100" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#1a1814">5 min/year</text>
+            <text x="100" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#1a1814">SLI · SLO · SLA</text>
+          </svg>
+        </div>
+        <h3>High availability</h3>
+        <p>The nines tell you nothing. The downtime budget tells you everything. Error budgets, composability, the 10× cost of each 9.</p>
+        <div class="feat-foot"><span>SLO &gt; SLA</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-gossip.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g fill="#1a1814">
+              <circle cx="40" cy="45" r="8"/><circle cx="80" cy="22" r="8"/><circle cx="120" cy="22" r="8"/><circle cx="160" cy="45" r="8"/>
+              <circle cx="120" cy="68" r="8"/><circle cx="80" cy="68" r="8"/>
+            </g>
+            <line x1="40" y1="45" x2="80" y2="22" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="80" y1="22" x2="120" y2="22" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="120" y1="22" x2="160" y2="45" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="40" y1="45" x2="80" y2="68" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="120" y1="68" x2="160" y2="45" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="80" y1="68" x2="120" y2="68" stroke="#c2410c" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <h3>Gossip protocol</h3>
+        <p>Information spreads epidemically. O(log N) rounds. SWIM, Phi accrual, Cassandra. The "no central coordinator" pattern.</p>
+        <div class="feat-foot"><span>O(log N) · failure detection</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-nginx.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="40" cy="45" r="20" fill="#c2410c"/>
+            <text x="40" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">WORKER</text>
+            <g fill="#1a1814" font-family="JetBrains Mono" font-size="4">
+              <rect x="70" y="20" width="32" height="5"/><rect x="70" y="28" width="32" height="5"/><rect x="70" y="36" width="32" height="5"/>
+              <rect x="106" y="20" width="32" height="5"/><rect x="106" y="28" width="32" height="5"/><rect x="106" y="36" width="32" height="5"/>
+              <rect x="142" y="20" width="32" height="5"/><rect x="142" y="28" width="32" height="5"/><rect x="142" y="36" width="32" height="5"/>
+              <rect x="70" y="48" width="32" height="5"/><rect x="70" y="56" width="32" height="5"/><rect x="106" y="48" width="32" height="5"/><rect x="106" y="56" width="32" height="5"/>
+            </g>
+            <text x="100" y="82" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">1M sockets</text>
+          </svg>
+        </div>
+        <h3>NGINX 1M connections</h3>
+        <p>Event loop per worker. epoll/kqueue. The architecture that broke C10K and replaced Apache.</p>
+        <div class="feat-foot"><span>kernel bypass · TLS</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-frontend-system-design.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="14" y="14" width="80" height="62" fill="#1a1814"/><text x="54" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">SSR</text>
+            <rect x="104" y="14" width="80" height="62" fill="#c2410c"/><text x="144" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">RSC</text>
+            <text x="144" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">islands</text>
+          </svg>
+        </div>
+        <h3>Frontend system design</h3>
+        <p>SSR vs CSR vs RSC vs islands. Web Vitals budgets. State layers. The discipline of "fast on a 4-year-old phone."</p>
+        <div class="feat-foot"><span>Core Web Vitals</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-stock-exchange.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <text x="14" y="32" font-family="JetBrains Mono" font-size="9" fill="#c2410c">BID 100.50 →</text>
+            <text x="14" y="50" font-family="JetBrains Mono" font-size="9" fill="#c2410c">BID 100.45 →</text>
+            <text x="14" y="68" font-family="JetBrains Mono" font-size="9" fill="#1a1814">← 100.55 ASK</text>
+            <text x="180" y="46" text-anchor="end" font-family="JetBrains Mono" font-size="7" fill="#c2410c">1μs</text>
+          </svg>
+        </div>
+        <h3>Stock exchange architecture</h3>
+        <p>Single-threaded matcher. LMAX Disruptor. Kernel bypass. The 1 μs latency budget.</p>
+        <div class="feat-foot"><span>sequential is the new parallel</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-distributed-systems.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <polygon points="100,14 186,68 14,68" fill="none" stroke="#1a1814" stroke-width="2"/>
+            <text x="100" y="10" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#1a1814" letter-spacing="0.2em">C</text>
+            <text x="10" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#1a1814">A</text>
+            <text x="190" y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#1a1814">P</text>
+            <circle cx="100" cy="48" r="10" fill="#c2410c"/>
+            <text x="100" y="51" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">PICK 2</text>
+          </svg>
+        </div>
+        <h3>Distributed systems overview</h3>
+        <p>The eight fallacies. CAP &amp; PACELC. Time (Lamport / vector / TrueTime / HLC). Consensus. The vocabulary.</p>
+        <div class="feat-foot"><span>fundamentals of fundamentals</span><span class="arrow">↗</span></div>
+      </a>
+
+    </div>
+  </section>
+
+  <!-- ── INTERVIEWS ───────────────────────────────────────────────────── -->
+  <section style="margin-top: 24px;">
+    <div class="feat-head" id="interviews">
+      <h2>Interview <span class="ital">walkthroughs</span></h2>
+      <span class="meta">6 walkthroughs · the 6-step framework applied</span>
+    </div>
+    <div class="feat-grid">
+
+      <a class="feat-card" href="topics/interview-framework.html">
+        <div class="feat-num"><span>Framework</span><span class="badge">Interview</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="34" width="28" height="22" fill="#c2410c"/>
+            <text x="20"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">1</text>
+            <rect x="38"  y="34" width="28" height="22" fill="#c2410c"/>
+            <text x="52"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">2</text>
+            <rect x="70"  y="34" width="28" height="22" fill="#1a1814"/>
+            <text x="84"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">3</text>
+            <rect x="102" y="34" width="28" height="22" fill="#1a1814"/>
+            <text x="116" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">4</text>
+            <rect x="134" y="34" width="28" height="22" fill="#c2410c"/>
+            <text x="148" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">5</text>
+            <rect x="166" y="34" width="28" height="22" fill="#c2410c"/>
+            <text x="180" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">6</text>
+          </svg>
+        </div>
+        <h3>The 6-step framework</h3>
+        <p>Clarify → estimate → high-level → deep dive → scale → tradeoffs. Five minutes per step is your clock; the structure buys you time to think.</p>
+        <div class="feat-foot"><span>45 min · 6 steps</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/interview-design-whatsapp.html">
+        <div class="feat-num"><span>Walkthrough</span><span class="badge">Interview</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="22" width="46" height="46" fill="#1a1814"/>
+            <text x="29"  y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">USER</text>
+            <line x1="52" y1="45" x2="74" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <rect x="74"  y="22" width="52" height="46" fill="#c2410c"/>
+            <text x="100" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">CONN</text>
+            <text x="100" y="54" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">TIER</text>
+            <line x1="126" y1="45" x2="148" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <rect x="148" y="22" width="46" height="46" fill="#1a1814"/>
+            <text x="171" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">USER</text>
+          </svg>
+        </div>
+        <h3>Design WhatsApp</h3>
+        <p>500M concurrent sockets, offline queue, group fanout, end-to-end encryption with the Signal protocol. The connection tier is the cost driver.</p>
+        <div class="feat-foot"><span>2B users · 100B msgs/day</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/interview-design-youtube.html">
+        <div class="feat-num"><span>Walkthrough</span><span class="badge">Interview</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="22" width="80" height="46" fill="#1a1814"/>
+            <polygon points="34,34 34,56 56,45" fill="#f1ece1"/>
+            <text x="46"  y="80" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#1a1814">PLAYER</text>
+            <line x1="86" y1="45" x2="108" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <rect x="108" y="22" width="40" height="20" fill="#c2410c"/>
+            <text x="128" y="36" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">CDN</text>
+            <rect x="108" y="48" width="40" height="20" fill="#1a1814"/>
+            <text x="128" y="62" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">META</text>
+            <rect x="156" y="34" width="38" height="22" fill="#c2410c"/>
+            <text x="175" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">ORIGIN</text>
+          </svg>
+        </div>
+        <h3>Design YouTube</h3>
+        <p>Upload + transcode pipeline; CDN-served playback. Two systems pretending to be one product. Transcoding is bottleneck; storage is the long-term cost line.</p>
+        <div class="feat-foot"><span>500 hr/min uploaded · 1B hr watched/day</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/interview-design-spotify.html">
+        <div class="feat-num"><span>Walkthrough</span><span class="badge">Interview</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g fill="#c2410c">
+              <rect x="14" y="50" width="6" height="20"/>
+              <rect x="22" y="42" width="6" height="28"/>
+              <rect x="30" y="36" width="6" height="34"/>
+              <rect x="38" y="28" width="6" height="42"/>
+              <rect x="46" y="22" width="6" height="48"/>
+              <rect x="54" y="32" width="6" height="38"/>
+              <rect x="62" y="40" width="6" height="30"/>
+              <rect x="70" y="50" width="6" height="20"/>
+            </g>
+            <rect x="100" y="22" width="94" height="50" fill="#1a1814"/>
+            <text x="147" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">REC</text>
+            <text x="147" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">ENGINE</text>
+          </svg>
+        </div>
+        <h3>Design Spotify</h3>
+        <p>Small catalog (1 PB total — fits on CDN). Recommendations are the product. Discover Weekly: candidate generation + online re-ranking on embeddings.</p>
+        <div class="feat-foot"><span>600M users · 100M tracks</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/interview-design-chatgpt.html">
+        <div class="feat-num"><span>Walkthrough</span><span class="badge">Interview</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="34" width="50" height="22" fill="#1a1814"/>
+            <text x="31"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">CHAT</text>
+            <line x1="56" y1="45" x2="78" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <rect x="78"  y="22" width="60" height="46" fill="#c2410c"/>
+            <text x="108" y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">GPU</text>
+            <text x="108" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">FLEET</text>
+            <line x1="138" y1="45" x2="160" y2="45" stroke="#c2410c" stroke-width="2" stroke-dasharray="2 2"/>
+            <text x="183" y="48" font-family="JetBrains Mono" font-size="7" fill="#c2410c">SSE</text>
+          </svg>
+        </div>
+        <h3>Design ChatGPT</h3>
+        <p>GPU-bound inference scheduling, continuous batching, token streaming via SSE, conversation memory. The cost line is the architecture.</p>
+        <div class="feat-foot"><span>200M MAU · ~$2M/mo GPUs</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/interview-design-web-crawler.html">
+        <div class="feat-num"><span>Walkthrough</span><span class="badge">Interview</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="100" cy="45" r="30" fill="none" stroke="#1a1814" stroke-width="2"/>
+            <rect x="64"  y="6"  width="20" height="14" fill="#c2410c"/>
+            <rect x="118" y="20" width="20" height="14" fill="#c2410c"/>
+            <rect x="118" y="56" width="20" height="14" fill="#c2410c"/>
+            <rect x="64"  y="70" width="20" height="14" fill="#c2410c"/>
+            <rect x="34"  y="38" width="20" height="14" fill="#c2410c"/>
+            <line x1="100" y1="45" x2="74" y2="20" stroke="#c2410c" stroke-width="1"/>
+            <line x1="100" y1="45" x2="128" y2="27" stroke="#c2410c" stroke-width="1"/>
+            <line x1="100" y1="45" x2="128" y2="63" stroke="#c2410c" stroke-width="1"/>
+            <line x1="100" y1="45" x2="74" y2="77" stroke="#c2410c" stroke-width="1"/>
+            <line x1="100" y1="45" x2="54" y2="45" stroke="#c2410c" stroke-width="1"/>
+          </svg>
+        </div>
+        <h3>Design Web Crawler</h3>
+        <p>Frontier queue, politeness scheduler, deduplication via bloom filters, robots.txt. The unsexy parts (politeness, dedup) win the interview.</p>
+        <div class="feat-foot"><span>10B pages · ~4k fetch/sec</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/interview-behavioral.html">
+        <div class="feat-num"><span>Playbook</span><span class="badge">Interview</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <text x="40" y="32" text-anchor="middle" font-family="JetBrains Mono" font-size="14" font-weight="bold" fill="#c2410c">S</text>
+            <text x="80" y="32" text-anchor="middle" font-family="JetBrains Mono" font-size="14" font-weight="bold" fill="#c2410c">T</text>
+            <text x="120" y="32" text-anchor="middle" font-family="JetBrains Mono" font-size="14" font-weight="bold" fill="#1a1814">A</text>
+            <text x="160" y="32" text-anchor="middle" font-family="JetBrains Mono" font-size="14" font-weight="bold" fill="#1a1814">R</text>
+            <text x="100" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#1a1814">situation · task · action · result</text>
+            <text x="100" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">5 min per answer</text>
+          </svg>
+        </div>
+        <h3>Behavioral interview playbook</h3>
+        <p>STAR with seniority signals. The six themes. The anti-patterns. The preparation map.</p>
+        <div class="feat-foot"><span>specificity is seniority</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/interview-mobile-framework.html">
+        <div class="feat-num"><span>Framework</span><span class="badge">Interview</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="70" y="14" width="60" height="62" fill="#1a1814" rx="4"/>
+            <rect x="76" y="22" width="48" height="36" fill="#c2410c"/>
+            <circle cx="100" cy="68" r="3" fill="#c2410c"/>
+            <text x="14" y="48" font-family="JetBrains Mono" font-size="7" fill="#1a1814">offline-first</text>
+            <text x="138" y="48" font-family="JetBrains Mono" font-size="7" fill="#1a1814">sync</text>
+          </svg>
+        </div>
+        <h3>Mobile system design</h3>
+        <p>Offline-first by default. Local DB as source of truth. Delta sync. Battery, background, app-store lag.</p>
+        <div class="feat-foot"><span>iOS · Android · sync protocol</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/interview-design-airbnb.html">
+        <div class="feat-num"><span>Walkthrough</span><span class="badge">Interview</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <polygon points="100,14 30,60 30,76 60,76 60,60 80,60 80,76 120,76 120,60 140,60 140,76 170,76 170,60" fill="#c2410c"/>
+            <polygon points="100,14 30,60 170,60" fill="#1a1814"/>
+            <text x="100" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">geo · calendar · booking</text>
+          </svg>
+        </div>
+        <h3>Design Airbnb</h3>
+        <p>S2 spatial index. Date-aware filtering. Atomic per-night calendar. No double-booking via DB constraint.</p>
+        <div class="feat-foot"><span>~150M users · 7M listings</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/interview-design-twitter-frontend.html">
+        <div class="feat-num"><span>Walkthrough</span><span class="badge">Interview</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g fill="#1a1814"><rect x="14" y="12" width="172" height="12"/><rect x="14" y="28" width="172" height="12"/><rect x="14" y="44" width="172" height="12"/><rect x="14" y="60" width="172" height="12"/></g>
+            <rect x="14" y="44" width="172" height="12" fill="#c2410c"/>
+            <text x="100" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">virtualised list</text>
+          </svg>
+        </div>
+        <h3>Design Twitter timeline (frontend)</h3>
+        <p>Virtual list. Optimistic likes. SSE for real-time. Scroll-anchor on prepend. Backend's twin problem.</p>
+        <div class="feat-foot"><span>60fps · LCP &lt; 2s</span><span class="arrow">↗</span></div>
+      </a>
+
+    </div>
+  </section>
+
+  <!-- ── AI ENGINEERING ──────────────────────────────────────────────── -->
+  <section style="margin-top: 24px;">
+    <div class="feat-head" id="ai">
+      <h2>AI <span class="ital">engineering</span></h2>
+      <span class="meta">4 chapters · for engineers shipping LLM features</span>
+    </div>
+    <div class="feat-grid">
+
+      <a class="feat-card" href="topics/ai-rag.html">
+        <div class="feat-num"><span>AI</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="22" width="42" height="46" fill="#1a1814"/>
+            <text x="27"  y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">DOCS</text>
+            <line x1="48" y1="45" x2="70" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <rect x="70"  y="22" width="50" height="46" fill="#c2410c"/>
+            <text x="95"  y="42" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">VECTOR</text>
+            <text x="95"  y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">+ BM25</text>
+            <line x1="120" y1="45" x2="142" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <rect x="142" y="22" width="52" height="46" fill="#1a1814"/>
+            <text x="168" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">LLM</text>
+          </svg>
+        </div>
+        <h3>How RAG works</h3>
+        <p>Hybrid retrieval (vector + BM25), re-rankers, chunking, citations. The boring parts (chunking, dedup, indexing) decide quality.</p>
+        <div class="feat-foot"><span>retrieval &gt; finetuning</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/ai-agents.html">
+        <div class="feat-num"><span>AI</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="40" cy="45" r="20" fill="#c2410c"/>
+            <text x="40" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">LLM</text>
+            <circle cx="100" cy="45" r="20" fill="#1a1814"/>
+            <text x="100" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">TOOL</text>
+            <circle cx="160" cy="45" r="20" fill="#c2410c"/>
+            <text x="160" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">RESULT</text>
+            <line x1="60" y1="45" x2="80" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <line x1="120" y1="45" x2="140" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <path d="M160 65 Q 100 80 40 65" fill="none" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="2 2"/>
+          </svg>
+        </div>
+        <h3>AI agents</h3>
+        <p>Think → Act → Observe loop. Tool calling as a first-class model feature. Step budgets, human-in-loop, evals.</p>
+        <div class="feat-foot"><span>ReAct · tool calling</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/ai-mcp.html">
+        <div class="feat-num"><span>AI</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="6"   y="34" width="50" height="22" fill="#c2410c"/>
+            <text x="31"  y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">CLIENT</text>
+            <line x1="56" y1="40" x2="100" y2="20" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="56" y1="45" x2="100" y2="44" stroke="#c2410c" stroke-width="1.5"/>
+            <line x1="56" y1="50" x2="100" y2="68" stroke="#c2410c" stroke-width="1.5"/>
+            <rect x="102" y="14" width="60" height="12" fill="#1a1814"/>
+            <rect x="102" y="38" width="60" height="12" fill="#1a1814"/>
+            <rect x="102" y="62" width="60" height="12" fill="#1a1814"/>
+            <text x="180" y="48" font-family="JetBrains Mono" font-size="7" fill="#c2410c">MCP</text>
+          </svg>
+        </div>
+        <h3>MCP — Model Context Protocol</h3>
+        <p>The USB-C of LLM context. One protocol; many clients; many servers. Tools, resources, prompts over JSON-RPC.</p>
+        <div class="feat-foot"><span>N + M, not N × M</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/ai-llm-concepts.html">
+        <div class="feat-num"><span>AI</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g fill="#1a1814">
+              <rect x="6"   y="34" width="14" height="22"/>
+              <rect x="24"  y="34" width="22" height="22"/>
+              <rect x="50"  y="34" width="14" height="22"/>
+              <rect x="68"  y="34" width="26" height="22"/>
+              <rect x="98"  y="34" width="14" height="22"/>
+              <rect x="116" y="34" width="20" height="22"/>
+              <rect x="140" y="34" width="14" height="22"/>
+              <rect x="158" y="34" width="36" height="22"/>
+            </g>
+            <text x="100" y="20" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">TOKENS</text>
+            <text x="100" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#1a1814">context · sampling · temperature</text>
+          </svg>
+        </div>
+        <h3>LLM concepts</h3>
+        <p>Tokens, context windows, temperature, top-p, prompt caching, model tiering. The dozen concepts you actually need.</p>
+        <div class="feat-foot"><span>practical mental models</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/ai-coding-workflow.html">
+        <div class="feat-num"><span>AI</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <text x="14" y="28" font-family="JetBrains Mono" font-size="10" fill="#1a1814">def fn(</text>
+            <text x="78" y="28" font-family="JetBrains Mono" font-size="10" fill="#c2410c">x</text>
+            <text x="86" y="28" font-family="JetBrains Mono" font-size="10" fill="#1a1814">):</text>
+            <text x="14" y="46" font-family="JetBrains Mono" font-size="10" fill="#c2410c">  return x * 2  ← AI</text>
+            <rect x="14" y="56" width="172" height="2" fill="#c2410c"/>
+            <text x="14" y="74" font-family="JetBrains Mono" font-size="7" fill="#1a1814">inline · chat · agent</text>
+          </svg>
+        </div>
+        <h3>AI coding workflow</h3>
+        <p>Copilot, Cursor, Claude Code. The loop: context → LLM → diff → apply. Three interaction modes.</p>
+        <div class="feat-foot"><span>context is everything</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/ai-context-engineering.html">
+        <div class="feat-num"><span>AI</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g fill="#c2410c"><rect x="6" y="34" width="34" height="22"/><rect x="44" y="34" width="34" height="22"/><rect x="82" y="34" width="34" height="22"/><rect x="120" y="34" width="34" height="22"/><rect x="158" y="34" width="36" height="22"/></g>
+            <text x="100" y="20" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">five inputs · one prompt</text>
+          </svg>
+        </div>
+        <h3>Context engineering</h3>
+        <p>Prompt engineering grew up. System prompt + retrieval + memory + tools + structured I/O. The pipeline is the product.</p>
+        <div class="feat-foot"><span>five levers</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/ai-reinforcement-learning.html">
+        <div class="feat-num"><span>AI</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="50" cy="45" r="20" fill="#1a1814"/><text x="50" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">AGENT</text>
+            <circle cx="150" cy="45" r="20" fill="#c2410c"/><text x="150" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">ENV</text>
+            <line x1="70" y1="45" x2="130" y2="45" stroke="#c2410c" stroke-width="1.5"/>
+            <text x="100" y="40" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#1a1814">action</text>
+            <text x="100" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#1a1814">reward</text>
+          </svg>
+        </div>
+        <h3>Reinforcement learning</h3>
+        <p>For engineers shipping ML. RLHF, PPO, GRPO, DPO. When to use it (rarely). Reward-hacking warnings.</p>
+        <div class="feat-foot"><span>RL is the wrong default</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/ai-chatgpt-apps.html">
+        <div class="feat-num"><span>AI</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="14" y="34" width="60" height="22" fill="#c2410c"/><text x="44" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">ChatGPT</text>
+            <line x1="74" y1="45" x2="100" y2="45" stroke="#c2410c" stroke-width="2"/>
+            <rect x="100" y="34" width="86" height="22" fill="#1a1814"/><text x="143" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">YOUR APP (MCP)</text>
+            <text x="100" y="16" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">OAuth · rich render</text>
+          </svg>
+        </div>
+        <h3>ChatGPT apps</h3>
+        <p>OpenAI's third attempt at app ecosystem. Built on MCP. OAuth, rich rendering. The directory is the product.</p>
+        <div class="feat-foot"><span>built on MCP</span><span class="arrow">↗</span></div>
+      </a>
+
+    </div>
+  </section>
+
+  <!-- ── WHITE PAPERS ────────────────────────────────────────────────── -->
+  <section style="margin-top: 24px;">
+    <div class="feat-head" id="papers">
+      <h2>White <span class="ital">papers</span></h2>
+      <span class="meta">3 papers · the architectures the field is built on</span>
+    </div>
+    <div class="feat-grid">
+
+      <a class="feat-card" href="topics/paper-dynamo.html">
+        <div class="feat-num"><span>Paper · 2007</span><span class="badge">White paper</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="100" cy="45" r="32" fill="none" stroke="#1a1814" stroke-width="2"/>
+            <circle cx="100" cy="13" r="4" fill="#c2410c"/>
+            <circle cx="132" cy="29" r="4" fill="#c2410c"/>
+            <circle cx="132" cy="61" r="4" fill="#c2410c"/>
+            <circle cx="100" cy="77" r="4" fill="#c2410c"/>
+            <circle cx="68" cy="61" r="4" fill="#c2410c"/>
+            <circle cx="68" cy="29" r="4" fill="#c2410c"/>
+            <text x="100" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#1a1814">DYNAMO</text>
+          </svg>
+        </div>
+        <h3>Amazon Dynamo</h3>
+        <p>The paper that birthed NoSQL. Consistent hashing, sloppy quorum, vector clocks, hinted handoff, gossip.</p>
+        <div class="feat-foot"><span>SOSP 2007 · DeCandia et al.</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/paper-spanner.html">
+        <div class="feat-num"><span>Paper · 2012</span><span class="badge">White paper</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="40" y="34" width="120" height="22" fill="#c2410c"/>
+            <text x="100" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">[earliest, latest]</text>
+            <text x="100" y="22" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">TrueTime API</text>
+            <text x="100" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#1a1814">external consistency</text>
+          </svg>
+        </div>
+        <h3>Google Spanner</h3>
+        <p>Globally-distributed linearisability. TrueTime, commit-wait, external consistency. The paper that made NewSQL a category.</p>
+        <div class="feat-foot"><span>OSDI 2012 · Corbett et al.</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/paper-xfaas.html">
+        <div class="feat-num"><span>Paper · 2023</span><span class="badge">White paper</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <line x1="14" y1="70" x2="186" y2="70" stroke="#1a1814" stroke-width="1.5"/>
+            <path d="M14 64 L 50 60 L 86 30 L 122 26 L 158 56 L 186 60" fill="none" stroke="#1a1814" stroke-width="2" stroke-dasharray="3 3"/>
+            <line x1="14" y1="44" x2="186" y2="44" stroke="#c2410c" stroke-width="2"/>
+            <text x="100" y="16" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">flatten the curve</text>
+          </svg>
+        </div>
+        <h3>Meta XFaaS</h3>
+        <p>1 trillion function invocations/day. 7× cheaper than dedicated infra. Time-shift, geo-shift, cooperative compute.</p>
+        <div class="feat-foot"><span>SOSP 2023 · Sahraei et al.</span><span class="arrow">↗</span></div>
+      </a>
+
+    </div>
+  </section>
+
+  <!-- ── FULL INDEX ──────────────────────────────────────────────────── -->
+  <div class="feat-head" id="index" style="margin-top: 24px;">
+    <h2>The <span class="ital">full index</span></h2>
+    <span class="meta">150 articles · search &amp; filter</span>
+  </div>
+
+  <div class="controls" style="margin-top: 24px;">
+    <div class="search-row">
+      <div class="search">
+        <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="q" type="text" placeholder="Search Kafka, Stripe, rate limiting, RAG…" autocomplete="off" />
+      </div>
+      <button class="random-btn" id="random">Surprise me <span class="arrow">↻</span></button>
+    </div>
+
+    <div class="cats" id="cats"></div>
+    <div class="letters" id="letters"></div>
+  </div>
+
+  <div class="resultbar">
+    <div><span class="count-big" id="resultCount">0</span> &nbsp;results</div>
+    <button class="clear" id="clear">clear filters ✕</button>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <footer class="foot">
+    <div>Original index by <a href="https://newsletter.systemdesign.one/join" target="_blank">Neo Kim</a> · deep dives by SystemDesignCases · 2026</div>
+    <div>CC BY-NC-ND 4.0</div>
+  </footer>
+
+</div>
+
+<script src="scripts/index-data.js"></script>
+<script src="scripts/index-app.js"></script>
+
+</body>
+</html>
