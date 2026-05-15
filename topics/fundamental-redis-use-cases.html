@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Redis Use Cases · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Redis use cases</span>
+    </div>
+    <nav><a href="fundamental-micro-frontends.html">← Prev</a><a href="fundamental-http-headers.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★☆☆☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>Strings · sets · streams · sorted sets · pub/sub · Lua</b></span>
+      </div>
+      <h1>The <span class="ital">Swiss army knife</span> of infrastructure.</h1>
+      <p class="lede">Redis is the most-used non-database in the field. Cache. Queue. Rate limiter. Leaderboard. Session store. Pub/sub. Lock. Stream. Counter. The data structures are the API; you compose them into whatever you need.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The data types</h5><p>STRING, HASH, LIST, SET, SORTED SET, STREAM, BITMAP, HYPERLOGLOG, GEO. Each maps to a class of use case.</p></div>
+      <div><h5>The hidden feature</h5><p>Lua scripts. Atomic multi-step operations. Most production Redis use cases that aren't pure cache use Lua somewhere.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#cache">Cache</a></li>
+      <li><a href="#rate">Rate limiter</a></li>
+      <li><a href="#leader">Leaderboard</a></li>
+      <li><a href="#queue">Queue / stream</a></li>
+      <li><a href="#sess">Sessions &amp; locks</a></li>
+      <li><a href="#more">More patterns</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="cache">
+        <h2 class="section"><span class="num">01</span><span class="ital">Cache</span>.</h2>
+        <div class="prose">
+          <p>The original use case. <code>SET key value EX ttl</code>. <strong>Sub-millisecond reads, 100k QPS per node.</strong> Cache-aside is the most common pattern: app checks Redis first, falls back to DB on miss, writes back on the way out. See <a href="caching-patterns.html">caching patterns</a>.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="rate">
+        <h2 class="section"><span class="num">02</span>Rate <span class="ital">limiter</span>.</h2>
+        <div class="prose">
+          <p>Token bucket or fixed/sliding window. <strong>Lua script enforces atomicity</strong>: read count, check limit, increment, return decision — all in one server-side operation. The whole evaluation is sub-ms; the answer is correct under concurrency.</p>
+          <p>See <a href="rate-limiting.html">rate limiting chapter</a> and <a href="case-stripe-rate-limiting.html">Stripe's four limiters</a> for the production design.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="leader">
+        <h2 class="section"><span class="num">03</span><span class="ital">Leaderboard</span>.</h2>
+        <div class="prose">
+          <p>Sorted set: <code>ZADD leaderboard 1234 player_id</code>. <strong><code>ZREVRANGE leaderboard 0 9 WITHSCORES</code></strong> returns top 10 in milliseconds, even with millions of entries. <code>ZRANK leaderboard player_id</code> gives a specific player's position. <em>The "1B player ranking" interview question is one ZADD/ZRANK away from a working solution.</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="queue">
+        <h2 class="section"><span class="num">04</span>Queue / <span class="ital">stream</span>.</h2>
+
+        <h3 class="sub">List as queue</h3>
+        <div class="prose">
+          <p><code>LPUSH</code> / <code>BRPOP</code>: producers push to the head, consumers block-pop from the tail. Simple, FIFO, fast. <strong>Not durable beyond Redis's persistence settings</strong>; not great if you need replay or multiple consumer groups.</p>
+        </div>
+
+        <h3 class="sub">Streams</h3>
+        <div class="prose">
+          <p>Redis Streams (5.0+) are a proper append-only log with consumer groups. <strong>Replaces simple List-based queues for any non-trivial messaging.</strong> Closer to Kafka in semantics; differences in throughput and durability. See <a href="message-queues.html">message queues chapter</a>.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="sess">
+        <h2 class="section"><span class="num">05</span>Sessions &amp; <span class="ital">locks</span>.</h2>
+
+        <h3 class="sub">Session store</h3>
+        <div class="prose">
+          <p><code>HSET session:&lt;id&gt; user_id 42 logged_in 1 last_seen 1715000000</code>. TTL'd. <strong>Stateless app tier; session in Redis</strong> — the same pattern every framework uses. See <a href="jwt-vs-sessions.html">JWT vs sessions</a>.</p>
+        </div>
+
+        <h3 class="sub">Distributed lock</h3>
+        <div class="prose">
+          <p><code>SET lock:&lt;name&gt; &lt;owner-id&gt; NX EX 30</code>. Acquire. Work. Release (carefully — verify owner before deleting, via Lua). <strong>Single-Redis lock is fine for most use cases.</strong> Redlock for multi-Redis (controversial; see <a href="leader-election.html">leader election</a>).</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="more">
+        <h2 class="section"><span class="num">06</span>More <span class="ital">patterns</span>.</h2>
+        <table class="matrix"><thead><tr><th>Pattern</th><th>Type</th><th>Notes</th></tr></thead><tbody>
+          <tr><th>Unique daily users</th><td>HyperLogLog (<code>PFADD</code>)</td><td>12 KB per HLL, ~0.81% error, billions of items</td></tr>
+          <tr><th>Geo proximity</th><td>GEO commands</td><td><code>GEOADD</code> / <code>GEOSEARCH</code> — basic geohash-based queries</td></tr>
+          <tr><th>Feature flags</th><td>HASH</td><td>One HASH per environment; lookups are O(1)</td></tr>
+          <tr><th>Pub/sub</th><td>PUBLISH / SUBSCRIBE</td><td>At-most-once; for at-least-once use Streams</td></tr>
+          <tr><th>Counter</th><td>INCR/DECR</td><td>Atomic, sub-ms, often paired with TTL for windowed counts</td></tr>
+          <tr><th>Dedup</th><td>Set / Bloom filter (RedisBloom)</td><td>"have I seen this event?" — see <a href="bloom-filters.html">bloom filters</a></td></tr>
+          <tr><th>Idempotency key</th><td>SET NX</td><td>See <a href="idempotency-keys.html">idempotency-keys</a></td></tr>
+          <tr><th>Cache warmer / scheduled job</th><td>Sorted set as priority queue</td><td>Score = unix timestamp; pop items whose score &lt;= now</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Just need a cache</h5><p>Memcached or Redis. Redis wins on richer data types; Memcached wins on simplicity and raw throughput.</p></div>
+          <div class="cell"><h5>Need richer ops than cache</h5><p>Redis. Sorted sets, streams, Lua scripts. <em>The reason Redis won the field.</em></p></div>
+          <div class="cell"><h5>Highly available</h5><p>Redis Sentinel for failover; Redis Cluster for horizontal scale + HA. Managed (Azure, AWS Elasticache) is the boring correct option.</p></div>
+          <div class="cell"><h5>Durable queue / event log</h5><p>Streams, not Lists. Or just use Kafka for serious workloads. See <a href="fundamental-kafka.html">Kafka chapter</a>.</p></div>
+          <div class="cell"><h5>Geographic distribution</h5><p>Redis active-active (Redis Enterprise) or per-region clusters. Cross-region replication has latency tradeoffs.</p></div>
+          <div class="cell"><h5>"Redis as primary database"</h5><p>Rare but real (RedisJSON, durability tuning). For most teams, Postgres + Redis is a better split than Redis-only.</p></div>
+        </div>
+        <div class="pull">"Redis isn't a cache; it's a toolkit. Treat it as one."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-micro-frontends.html"><div class="label">Prev</div><div class="ttl">Micro frontends</div></a>
+        <a class="next-fwd" href="fundamental-http-headers.html"><div class="label">Next</div><div class="ttl">HTTP headers →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Redis use cases · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

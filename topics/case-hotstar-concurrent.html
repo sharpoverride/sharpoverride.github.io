@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Hotstar — 25M concurrent · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#cases">Case Studies</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Hotstar</span>
+    </div>
+    <nav>
+      <a href="case-cloudflare-postgres.html">← Prev case</a>
+      <a href="case-paypal-actor.html">Next case →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Year <b>2023</b></span>
+        <span>Scale <b>59M concurrent (peak)</b></span>
+        <span>Stack <b>CDN sharding · pre-warmed capacity · graceful degradation</b></span>
+      </div>
+      <h1>59 million viewers. <span class="ital">One</span> cricket match.</h1>
+      <p class="lede">Disney+ Hotstar holds the world record for concurrent streaming viewers — 59 million during the 2023 ICC World Cup. The previous record (its own, 2019) was 25 million. The architecture isn't elastic; it's pre-positioned. You don't auto-scale for 59 million; you reserve.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The shape of the spike</h5>
+        <p>0 to 25M concurrent in &lt;5 minutes when a marquee match starts. Auto-scaling cannot fill that gap. The capacity has to be there at minute zero.</p>
+      </div>
+      <div>
+        <h5>The trick</h5>
+        <p>Pre-warm everything. Shard the CDN by ISP and geography. Degrade gracefully — comments, chat, emoji can disappear; the video keeps playing.</p>
+      </div>
+      <div>
+        <h5>The math</h5>
+        <p>59M users × 4 Mbps average = ~236 Tbps peak egress. <em>For comparison, Netflix's global peak is in similar territory.</em> Hotstar achieves it during one match.</p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">59M is not auto-scaling</a></li>
+        <li><a href="#design">Pre-positioned capacity</a></li>
+        <li><a href="#degrade">Graceful degradation</a></li>
+        <li><a href="#chat">The 5B emoji problem</a></li>
+        <li><a href="#numbers">The numbers</a></li>
+        <li><a href="#lessons">Lessons</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>59M is <span class="ital">not</span> auto-scaling.</h2>
+        <div class="prose">
+          <p>Auto-scaling assumes you can spin up capacity in minutes. A pod cold-starts in ~30 seconds; a new VM in ~3 minutes; a new region in ~30 minutes. Cricket viewers <strong>don't wait</strong>. A live broadcast starts at a known minute, and tens of millions of viewers connect simultaneously. The capacity ramp from 0 to 25 million happens in five minutes. <em>You cannot spin up an engineering organisation's worth of compute in five minutes from cold.</em></p>
+          <p>The Hotstar pattern: <strong>pre-warm everything before kick-off.</strong> Capacity is already running. CDN POPs are already cached with the start-of-broadcast content. Auth servers have already mint-cached short-lived tokens. The traffic surge meets a system that's been ready for an hour. <em>Auto-scaling exists only to handle the upside surprise — the surge beyond the forecast.</em></p>
+        </div>
+
+        <div class="pull">"Elastic scale is a marketing term. Live sports is the workload that proves it false."</div>
+      </section>
+
+      <section class="dd-section" id="design">
+        <h2 class="section"><span class="num">02</span>Pre-positioned <span class="ital">capacity</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 320" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="hsa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · CONCURRENT VIEWERS OVER MATCH-START</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(60, 80)">
+              <line x1="0" y1="180" x2="1060" y2="180" stroke="#1a1814" stroke-width="1.5"/>
+              <line x1="0" y1="0"   x2="0"    y2="180" stroke="#1a1814" stroke-width="1.5"/>
+
+              <text x="-20" y="180" font-family="JetBrains Mono" font-size="9" text-anchor="end" fill="#1a1814">0</text>
+              <text x="-20" y="100" font-family="JetBrains Mono" font-size="9" text-anchor="end" fill="#1a1814">25M</text>
+              <text x="-20" y="20"  font-family="JetBrains Mono" font-size="9" text-anchor="end" fill="#1a1814">59M</text>
+
+              <text x="80"  y="200" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#1a1814">T-60min</text>
+              <text x="380" y="200" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#1a1814">T-0 (kick-off)</text>
+              <text x="680" y="200" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#1a1814">T+5min</text>
+              <text x="980" y="200" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#1a1814">T+60min</text>
+
+              <path d="M0 178 L 380 174 L 420 100 L 500 30 L 700 18 L 1060 22"
+                    fill="none" stroke="#c2410c" stroke-width="3"/>
+
+              <line x1="380" y1="0" x2="380" y2="180" stroke="#1a1814" stroke-width="1" stroke-dasharray="3 3"/>
+              <text x="380" y="-4" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">kick-off</text>
+
+              <rect x="0" y="0" width="380" height="180" fill="#1a1814" opacity="0.06"/>
+              <text x="180" y="100" font-family="Instrument Serif" font-style="italic" font-size="14" text-anchor="middle" fill="#1a1814">PRE-WARM WINDOW</text>
+              <text x="180" y="118" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#1a1814">capacity running, traffic minimal</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Viewers ramp from zero to 25M in 5 minutes. The capacity to serve them has been running, paid for, idle, for the previous hour.</span></div>
+        </div>
+
+        <h3 class="sub">Pre-cache at the edge</h3>
+        <div class="prose">
+          <p>The first 30 seconds of the broadcast — the opening credits, the toss — are pre-cached at every Hotstar POP an hour before kick-off. <strong>The first 25M HLS playlist requests get the same cached chunks</strong>; no origin fetch, no cold-start. Without this, even with capacity reserved, the origin would melt in the first 60 seconds.</p>
+        </div>
+
+        <h3 class="sub">Shard the CDN by ISP</h3>
+        <div class="prose">
+          <p>India's broadcast traffic flows through a small number of large ISPs (Jio, Airtel, BSNL). Hotstar peers directly with each ISP and serves traffic from POPs inside the ISP's network. <strong>This avoids the public-internet middle</strong> for the last mile; the bytes travel within the ISP's own backbone. The savings on transit cost and latency are both real and large.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="degrade">
+        <h2 class="section"><span class="num">03</span>Graceful <span class="ital">degradation</span>.</h2>
+        <div class="prose">
+          <p>Not every feature has to survive the spike. <strong>The video has to keep playing.</strong> Everything else is optional. Hotstar built explicit degradation tiers:</p>
+        </div>
+
+        <table class="matrix">
+          <thead>
+            <tr><th>Feature</th><th>P0</th><th>What degrades first</th></tr>
+          </thead>
+          <tbody>
+            <tr><th>Video playback</th><td>Critical</td><td>Bitrate downgrades before drops</td></tr>
+            <tr><th>Login / sign-up</th><td>Critical</td><td>Tokens cached aggressively</td></tr>
+            <tr><th>Player controls</th><td>Important</td><td>Seek may stall</td></tr>
+            <tr><th>Comments / chat</th><td>Optional</td><td>Disabled at overload</td></tr>
+            <tr><th>Emoji reactions</th><td>Optional</td><td>Disabled at overload</td></tr>
+            <tr><th>Watch-party</th><td>Optional</td><td>Disabled at overload</td></tr>
+            <tr><th>Recommendations</th><td>Optional</td><td>Fall back to cached static list</td></tr>
+          </tbody>
+        </table>
+
+        <div class="prose">
+          <p>The product team accepted this in advance. Engineering didn't make the call mid-incident. <strong>Pre-agreed degradation matrices are an architectural artefact</strong>; if you have to decide what to break at 11pm during a match, you've already lost.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="chat">
+        <h2 class="section"><span class="num">04</span>The 5 billion emoji <span class="ital">problem</span>.</h2>
+        <div class="prose">
+          <p>In 2019 Hotstar published a follow-up: 5 billion emoji reactions delivered in real time during a single match. The naive shape would have been one WebSocket message per emoji per viewer — 25M viewers × any per-second rate × N friends = impossible. <strong>The trick was aggregation at the broker</strong>: count emoji reactions in 1-second windows, broadcast the aggregate to all viewers, render as an animated overlay. <em>Each viewer sees an emoji storm; no viewer sees any individual emoji's per-message delivery.</em></p>
+          <p>The compute moves from "deliver N messages to N viewers" (N² fan-out) to "deliver 1 aggregate message to N viewers" (N fan-out). For 25M concurrent viewers, that's the difference between viable and impossible.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">numbers</span>.</h2>
+
+        <table class="matrix">
+          <thead>
+            <tr><th>Metric</th><th>2019 record</th><th>2023 record</th></tr>
+          </thead>
+          <tbody>
+            <tr><th>Concurrent viewers</th><td>25.3M</td><td>59M</td></tr>
+            <tr><th>Peak egress bandwidth</th><td>~75 Tbps</td><td>~236 Tbps</td></tr>
+            <tr><th>Match-start ramp</th><td>0→25M in 5 min</td><td>0→50M in 5 min</td></tr>
+            <tr><th>Emoji reactions / match</th><td>5B</td><td>significantly more</td></tr>
+            <tr><th>Pre-warm capacity (multiple of forecast)</th><td>~1.5×</td><td>~1.5×</td></tr>
+            <tr><th>ISP POP partners</th><td>major Indian ISPs</td><td>same</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">06</span>The <span class="ital">lessons</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Pre-position; don't auto-scale</div>
+          <p>For predictable traffic events (scheduled broadcasts, product launches, election results), capacity must be running before the surge. Auto-scaling fills the gap above the forecast; it cannot serve the surge itself. <strong>The first hour after kick-off is paid for in advance.</strong></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Cache the first 30 seconds</div>
+          <p>Whatever the first minute of your spike looks like, cache it everywhere. Hotstar caches the broadcast opener at every POP; you should cache the most-likely-to-be-fetched-first content at your edge. <em>The first 30 seconds of a flash sale is the same content for every visitor.</em></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Negotiate degradation tiers before the event</div>
+          <p>Decide what breaks first, second, third, before the launch. Get sign-off from product. Wire the degradation in code so it activates by automated signal — not by an engineer's pager. <strong>If degradation is a decision you make during the incident, you've already failed.</strong></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Aggregate at the broker, not at the client</div>
+          <p>The emoji-fan-out problem is the same shape as Twitch's chat, Slack's reactions, any "many → many" real-time UI. Aggregate at the producer side, broadcast the rollup; don't fan out per-message to every consumer. The viewer's brain interprets a 60-emoji-per-second stream the same as a 6000-emoji-per-second one.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Peer with the last-mile ISPs</div>
+          <p>Bytes travelling on the public internet are expensive bytes. Bytes travelling within the ISP's network are cheap. For markets where traffic concentrates in a few ISPs, direct peering — colocating POPs inside the ISP's data centres — is the cost win that nobody talks about because it requires business deals, not engineering.</p>
+        </div>
+
+        <div class="pull">"The hardest spike isn't the one you didn't see coming. It's the one you knew the exact minute of and still failed to prepare for."</div>
+
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-cloudflare-postgres.html">
+          <div class="label">Prev case</div>
+          <div class="ttl">Cloudflare — Postgres</div>
+        </a>
+        <a class="next-fwd" href="case-paypal-actor.html">
+          <div class="label">Next case</div>
+          <div class="ttl">PayPal — 1B txn on 8 VMs →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Case Study · Hotstar · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

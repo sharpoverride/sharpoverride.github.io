@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Meta XFaaS — White paper · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive paper">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#papers">White Papers</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">XFaaS</span>
+    </div>
+    <nav>
+      <a href="paper-spanner.html">← Prev</a>
+      <a href="../system-design.html">Index →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>White <b>paper</b></span>
+        <span>Year <b>2023</b></span>
+        <span>Authors <b>Sahraei et al., Meta</b></span>
+        <span>Stack <b>Serverless · global scheduling · cooperative compute</b></span>
+      </div>
+      <h1>The argument <span class="ital">against</span> dedicated infra.</h1>
+      <p class="lede">"XFaaS: Hyperscale and Low Cost Serverless Functions at Meta" (SOSP 2023). At Meta scale, a single global serverless platform beats dedicated services on cost — by 7×. The paper is half engineering, half economics, and the conclusion challenges most teams' default assumption.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The claim</h5>
+        <p>One global FaaS runtime, properly scheduled, can deliver functions at 1/7th the cost of dedicated service infrastructure — even with FaaS's overhead.</p>
+      </div>
+      <div>
+        <h5>How it's possible</h5>
+        <p>(1) <strong>Time-shifting</strong>: delay non-urgent work to off-peak hours. (2) <strong>Geo-shifting</strong>: route work to underutilised regions. (3) <strong>Right-sizing</strong>: pack many functions per host. (4) <strong>No idle</strong>: a function pays for nothing when not executing.</p>
+      </div>
+      <div>
+        <h5>The scale</h5>
+        <p>By 2023, XFaaS ran ~1 trillion function invocations per day across hundreds of datacenters. Internal-only; not a customer-facing product.</p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why Meta built it</a></li>
+        <li><a href="#shifting">Time-shift &amp; geo-shift</a></li>
+        <li><a href="#cooperative">Cooperative compute</a></li>
+        <li><a href="#numbers">The numbers</a></li>
+        <li><a href="#legacy">What it teaches</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why Meta <span class="ital">built it</span>.</h2>
+        <div class="prose">
+          <p>Meta's infrastructure is a fleet of millions of machines. Different services run different workloads at different rates. <strong>Most services are over-provisioned for peak load</strong> — quiet at 3am, melting at 7pm. At Meta scale, the cumulative over-provisioning is enormous; the cost line is in billions.</p>
+          <p>The XFaaS thesis: <em>"if we move most asynchronous workloads to a unified function platform, we can globally optimise scheduling — packing work onto underutilised machines, deferring non-urgent jobs to off-peak hours, routing across regions."</em> The unit of work shrinks from "this service's pods" to "this function invocation." The scheduler becomes the entire datacenter, not a per-service auto-scaler.</p>
+        </div>
+
+        <div class="pull">"The infrastructure win comes from the work nobody is doing right now — but is being paid for anyway."</div>
+      </section>
+
+      <section class="dd-section" id="shifting">
+        <h2 class="section"><span class="num">02</span>Time-shift &amp; <span class="ital">geo-shift</span>.</h2>
+
+        <h3 class="sub">Time-shifting non-urgent work</h3>
+        <div class="prose">
+          <p>A nightly batch job, an analytics rollup, a marketing email campaign, a content-moderation re-scan — <strong>most internal asynchronous work has hours of latency tolerance.</strong> XFaaS exposes a deadline per invocation: "must finish by 6am tomorrow" or "within 1 minute." The scheduler defers tolerant work to the troughs of the daily traffic curve, runs urgent work on the peaks.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 320" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · LOAD CURVE WITH AND WITHOUT TIME-SHIFTING</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(60, 80)">
+              <line x1="0" y1="180" x2="1060" y2="180" stroke="#1a1814" stroke-width="1.5"/>
+              <line x1="0" y1="0"   x2="0"    y2="180" stroke="#1a1814" stroke-width="1.5"/>
+
+              <text x="-20" y="180" font-family="JetBrains Mono" font-size="9" text-anchor="end" fill="#1a1814">0</text>
+              <text x="-20" y="20"  font-family="JetBrains Mono" font-size="9" text-anchor="end" fill="#1a1814">peak</text>
+
+              <path d="M0 170 L 120 160 L 220 100 L 340 30 L 460 30 L 580 50 L 700 100 L 820 140 L 940 170 L 1060 170"
+                    fill="none" stroke="#1a1814" stroke-width="2" stroke-dasharray="3 3"/>
+
+              <path d="M0 80 L 120 80 L 220 80 L 340 80 L 460 80 L 580 80 L 700 80 L 820 80 L 940 80 L 1060 80"
+                    fill="none" stroke="#c2410c" stroke-width="2"/>
+
+              <text x="200" y="180" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">3am</text>
+              <text x="500" y="180" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">7pm</text>
+
+              <text x="700" y="60" font-family="JetBrains Mono" font-size="10" fill="#c2410c">XFaaS — flat</text>
+              <text x="700" y="160" font-family="JetBrains Mono" font-size="10" fill="#1a1814" opacity="0.7">dedicated — peaks</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Dedicated services follow the diurnal pattern. XFaaS flattens the curve by deferring tolerant work to the troughs.</span></div>
+        </div>
+
+        <h3 class="sub">Geo-shifting across regions</h3>
+        <div class="prose">
+          <p>Meta has datacenters in many time zones. When one region is at peak (7pm local), another is at trough (4am local). <strong>For deadline-tolerant work, route to the trough region.</strong> The latency cost is irrelevant (the work has hours of tolerance), and the cost win is huge.</p>
+        </div>
+
+        <h3 class="sub">The deadline-aware scheduler is the secret</h3>
+        <div class="prose">
+          <p>Per-function deadlines are the input. The scheduler treats the global infrastructure as a constraint-satisfaction problem: <strong>maximise machine utilisation subject to per-function deadlines.</strong> Functions with tight deadlines run now; functions with loose deadlines wait. The aggregate effect is a near-flat global utilisation curve.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="cooperative">
+        <h2 class="section"><span class="num">03</span>Cooperative <span class="ital">compute</span>.</h2>
+
+        <h3 class="sub">Many functions per host</h3>
+        <div class="prose">
+          <p>A traditional service pod runs one workload. XFaaS packs <em>many functions from many teams</em> onto the same host, with CPU and memory isolation. <strong>Utilisation goes from ~30% (typical service) to ~80%+ (XFaaS host).</strong> The functions get along because they're scheduled to.</p>
+        </div>
+
+        <h3 class="sub">Function authors don't own infrastructure</h3>
+        <div class="prose">
+          <p>Service teams worry about capacity, autoscaling, deployment, monitoring. Function authors write code and submit it. <strong>The platform owns the operational concerns.</strong> The economic argument extends: not just hardware costs, but headcount — a single platform team operates infrastructure for thousands of function-author teams.</p>
+        </div>
+
+        <h3 class="sub">No-idle billing model</h3>
+        <div class="prose">
+          <p>A traditional service team pays for its pods 24/7. <strong>An XFaaS function pays for nothing when not executing.</strong> Internal chargeback reflects this — function teams' bills are proportional to actual compute consumed, not provisioned. The incentive aligns with efficiency.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">numbers</span>.</h2>
+
+        <table class="matrix">
+          <thead>
+            <tr><th>Metric</th><th>Value (as published)</th></tr>
+          </thead>
+          <tbody>
+            <tr><th>Function invocations / day</th><td>~1 trillion</td></tr>
+            <tr><th>Datacenters covered</th><td>hundreds</td></tr>
+            <tr><th>Host CPU utilisation</th><td>~80% sustained</td></tr>
+            <tr><th>Cost vs dedicated infra</th><td>~7× cheaper</td></tr>
+            <tr><th>Function authors</th><td>thousands of internal teams</td></tr>
+            <tr><th>Deadline-tolerance for non-urgent work</th><td>up to hours</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="legacy">
+        <h2 class="section"><span class="num">05</span>What it <span class="ital">teaches</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Serverless is more than AWS Lambda</div>
+          <p>The "serverless is for prototypes / sparse workloads" framing is the public-cloud version. <strong>At Meta scale, the entire infrastructure is the FaaS platform.</strong> The economic argument changes when you have control of the full stack.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Deadlines are the missing scheduler input</div>
+          <p>Most workloads have implicit latency tolerance that's never expressed. <strong>If your async pipeline says "process within 1 hour" instead of "ASAP", the scheduler has options.</strong> XFaaS makes this explicit; you can do the same with Kubernetes priority classes, but most teams don't.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Cost is a function of utilisation, not technology</div>
+          <p>The 7× win comes from utilisation, not from a magic FaaS runtime. A bin-packed VM running 80% utilised is 7× cheaper than ten VMs each running 8%. <em>The architectural lever is "pack things together"</em>; the FaaS framing is one way to enable it.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">For non-Meta teams: implications</div>
+          <p>Most teams can't build a global cooperative platform. But the principle applies: <strong>look for diurnal patterns; defer tolerant work; pack workloads onto shared hosts; measure utilisation.</strong> Kubernetes + priority classes + spot instances + cron-shifted batches gets you partway to the same shape.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">The platform team is the architecture</div>
+          <p>XFaaS is a platform-engineering story. The product is the abstraction (function + deadline); the engine is global scheduling. <em>This is the same shape as Borg / Kubernetes, taken one level higher.</em> The next-generation infrastructure paper is, probably, more of this.</p>
+        </div>
+
+        <div class="pull">"The cost wasn't in the compute. It was in the compute that wasn't being used."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="paper-spanner.html">
+          <div class="label">Prev paper</div>
+          <div class="ttl">Google Spanner</div>
+        </a>
+        <a class="next-fwd" href="../system-design.html">
+          <div class="label">Index</div>
+          <div class="ttl">All chapters →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Paper · Meta XFaaS · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

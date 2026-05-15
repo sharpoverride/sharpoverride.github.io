@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>CDN Architecture · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">20 · CDN Architecture</span>
+    </div>
+    <nav>
+      <a href="geographic-distribution.html">← Prev</a>
+      <a href="jwt-vs-sessions.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>20</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~12 min</b></span>
+        <span>Stack <b>Azure Front Door · CloudFront · Cloudflare · Fastly</b></span>
+      </div>
+      <h1>The cheapest byte is the one the <span class="ital">edge</span> already has.</h1>
+      <p class="lede">Giphy's edge cache hit rate is 99.5%. The other 0.5% is what hits their origin. Yours is 60% because nobody set <code>Cache-Control</code> correctly. Closing that gap is the highest-leverage performance work in most apps.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>Every byte your origin serves costs you compute, egress, and 200ms across an ocean. <em>Every byte the edge serves costs you 5ms and pennies.</em></p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Pull-through caching is the right default. Tune <code>Cache-Control</code>, immutable filenames, and signed URLs. Only reach for push-CDN, edge functions, or Fastly's VCL when the basics aren't enough.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Azure Front Door</span>
+          <span class="pill on">CloudFront</span>
+          <span class="pill on">Cloudflare</span>
+          <span class="pill on">Fastly</span>
+          <span class="pill">Akamai</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why origin-served bytes are expensive</a></li>
+        <li><a href="#core">Pull, push, and the edge</a></li>
+        <li><a href="#tuning">Cache-key engineering</a></li>
+        <li><a href="#dotnet">In ASP.NET Core</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why origin-served bytes are <span class="ital">expensive</span>.</h2>
+        <div class="prose">
+          <p>An image stored in Azure Blob and served via your app, to a user in Tokyo, with no CDN: the request crosses the ocean to your East US origin, the app's pod serves the bytes, the response crosses back. Two ocean traversals. ~250ms round-trip latency. Compute cost. Egress cost (~$0.05/GB from cloud to internet). For a 200 KB image at 1M views, that's $10 in egress and ~3 minutes of cumulative pod CPU for nothing — the image hasn't changed in months.</p>
+          <p>Now put a CDN in front. First request still goes to origin, but the CDN caches the response. Every subsequent request from anyone near that edge point-of-presence (POP) is served locally. <strong>Latency drops to ~10ms; origin cost drops to ~0.</strong> Done correctly, the CDN absorbs &gt;95% of traffic — and that's not a "scale" benefit, it's the steady state. <em>The CDN isn't a performance optimisation; it's the only sane way to serve static content at any scale.</em></p>
+        </div>
+
+        <div class="pull">"Your origin's job is to be the source of truth. The CDN's job is to be everywhere else."</div>
+      </section>
+
+      <!-- 2 core -->
+      <section class="dd-section" id="core">
+        <h2 class="section"><span class="num">02</span>Pull, push, the <span class="ital">edge</span>.</h2>
+
+        <div class="prose">
+          <p>Two ways content gets to the edge. Pull (lazy): the edge fetches on demand and caches the response. Push (eager): you upload to the CDN's storage; it's there on first request. Pull is the modern default; push is for video-on-demand and pre-known release artifacts.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 460" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="cna" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 21 · PULL-THROUGH CACHE PATH</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(20, 70)">
+              <rect x="0"    y="40" width="100" height="50" fill="#1a1814"/>
+              <text x="50"   y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">USER</text>
+              <text x="50"   y="80" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.6">Tokyo</text>
+
+              <rect x="180"  y="40" width="140" height="50" fill="#c2410c"/>
+              <text x="250"  y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">EDGE POP</text>
+              <text x="250"  y="80" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">Tokyo</text>
+
+              <rect x="400"  y="40" width="160" height="50" fill="#1a1814"/>
+              <text x="480"  y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">REGIONAL SHIELD</text>
+              <text x="480"  y="80" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.6">SE Asia</text>
+
+              <rect x="640"  y="40" width="140" height="50" fill="#c2410c"/>
+              <text x="710"  y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">ORIGIN</text>
+              <text x="710"  y="80" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">East US</text>
+
+              <line x1="100" y1="65" x2="178" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#cna)"/>
+              <line x1="320" y1="65" x2="398" y2="65" stroke="#c2410c" stroke-width="2" stroke-dasharray="3 3" marker-end="url(#cna)"/>
+              <line x1="560" y1="65" x2="638" y2="65" stroke="#c2410c" stroke-width="2" stroke-dasharray="3 3" marker-end="url(#cna)"/>
+
+              <text x="50"   y="115" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">5–15 ms</text>
+              <text x="250"  y="115" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">50 ms (miss only)</text>
+              <text x="480"  y="115" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">120 ms (cold only)</text>
+
+              <rect x="0"    y="160" width="780" height="30" fill="#c2410c" opacity="0.2"/>
+              <text x="100"  y="180" font-family="JetBrains Mono" font-size="11" fill="#1a1814">HIT path: User → Edge → User. Origin never touched.</text>
+
+              <text x="0"    y="220" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">A regional shield is one layer above the edge POPs.</text>
+              <text x="0"    y="240" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">It absorbs the "MISS storm" when 50 edge POPs all miss the same key simultaneously.</text>
+              <text x="0"    y="260" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Without it, origin sees 50× the load on every cache eviction.</text>
+            </g>
+
+            <line x1="20" y1="370" x2="1180" y2="370" stroke="#1a1814" stroke-width="1" stroke-dasharray="3 3"/>
+            <text x="20" y="400" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">"The CDN is two tiers. Edge for latency. Shield for stampedes."</text>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 21</span><span>Most cloud CDNs default to a single edge tier. The optional "shield" / "origin shield" / "tiered cache" mode adds the second hop and is the difference between origin-mostly-idle and origin-on-fire.</span></div>
+        </div>
+
+        <h3 class="sub">Cache-Control is the contract</h3>
+        <div class="prose">
+          <p>The CDN doesn't guess. The origin tells it what to cache for how long via the <code>Cache-Control</code> header. Three values matter: <code>public</code> (cacheable by anyone in the path), <code>max-age=N</code> (cache for N seconds), <code>s-maxage=N</code> (separate TTL for shared caches like the CDN). <strong>Without <code>Cache-Control: public, max-age=...</code>, the CDN defaults to "don't cache" and every byte hits origin.</strong> The "low CDN hit rate" bug is almost always missing or wrong headers.</p>
+        </div>
+
+        <h3 class="sub">Immutable assets win on every dimension</h3>
+        <div class="prose">
+          <p>Hash your filenames: <code>app.7c4a92.js</code> not <code>app.js</code>. The hash changes every deploy. Now you can ship <code>Cache-Control: public, max-age=31536000, immutable</code> — cache forever, never revalidate. Browsers and CDNs cache aggressively. <strong>This single pattern moves typical hit rates from 60% to 95%.</strong> Old deploys' assets remain cacheable because their hashed URLs don't change; new deploys' URLs are different, fetched fresh, cached forever.</p>
+        </div>
+
+        <h3 class="sub">Dynamic content can be cached too</h3>
+        <div class="prose">
+          <p>A product page that varies by user country: <code>Cache-Control: public, s-maxage=60, max-age=0</code> + <code>Vary: X-User-Country</code>. The CDN caches 200 variants of the page (one per country) for 60 seconds; the browser doesn't cache it at all (max-age=0). <em>Even a 60-second cache absorbs 99% of traffic during a viral spike.</em> "Dynamic" isn't a synonym for "uncacheable" — it just means a shorter TTL and a more careful cache key.</p>
+        </div>
+      </section>
+
+      <!-- 3 tuning -->
+      <section class="dd-section" id="tuning">
+        <h2 class="section"><span class="num">03</span>Cache-key <span class="ital">engineering</span>.</h2>
+        <div class="prose">
+          <p>The cache key is what makes two requests "the same" to the CDN. Get it wrong and you either fragment the cache (low hit rate) or serve the wrong content to the wrong user (cache poisoning). The default key is URL + a handful of headers; the tuning is which headers go in.</p>
+        </div>
+
+        <h3 class="sub">Drop query strings you don't need</h3>
+        <div class="prose">
+          <p>By default, most CDNs include the full query string in the cache key. Marketing parameters like <code>utm_source=twitter</code> fragment the cache: <em>every share on Twitter has a different key for the same content.</em> Configure the CDN to strip <code>utm_*</code> parameters from the cache key (Cloudfront has "QueryString allow-list", Front Door has rules engine). Hit rate jumps overnight.</p>
+        </div>
+
+        <h3 class="sub">Vary: User-Agent is almost always wrong</h3>
+        <div class="prose">
+          <p>"We need to serve different HTML to Safari" → <code>Vary: User-Agent</code> → cache fragments by user agent string → effective hit rate drops to near-zero because every browser version is a different key. The right fix is one of: don't vary (most apps), <code>Vary: Sec-CH-UA-Mobile</code> (small number of values), or do the variation at the application layer with feature detection on the client. <strong>Every <code>Vary</code> header value multiplies the cache fragmentation.</strong></p>
+        </div>
+
+        <h3 class="sub">Signed URLs for protected content</h3>
+        <div class="prose">
+          <p>Premium video, downloadable invoices, anything you don't want hot-linked. The app generates a URL with a signature and a short expiry: <code>https://cdn.example.com/files/invoice-7c4a.pdf?Expires=1715000000&amp;Signature=...</code>. The CDN validates the signature at the edge (no origin round-trip) and serves the bytes only if valid. <strong>The cached object is keyed on the path, not the signature</strong>, so 1,000 valid signed URLs for the same file are 1 cache hit. CloudFront and Front Door support this natively; Cloudflare via Workers; Fastly via VCL.</p>
+        </div>
+
+        <h3 class="sub">Purge is the panic button, not the strategy</h3>
+        <div class="prose">
+          <p>"We deployed a fix, purge the CDN." Purge is slow (10s–60s globally), rate-limited, and metric-degrading on the CDN side. <strong>The right strategy is versioned URLs — purge becomes unnecessary because new content has a new URL.</strong> Reserve actual purge for one-shot incidents: a leaked file, a broken hot-fix, a takedown notice.</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">ASP.NET Core</span>.</h2>
+
+        <div class="prose">
+          <p>The origin's job is to set the right headers. ASP.NET Core's response-caching middleware is for in-process caching; for CDN integration, you write the headers yourself or use response-caching attributes / output-caching policies.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">CdnCacheHeaders.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">using</span> <span class="t">Microsoft.AspNetCore.Mvc</span>;
+<span class="k">using</span> <span class="t">Microsoft.Net.Http.Headers</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Cdn</span>;
+
+<span class="k">public static class</span> <span class="t">CdnCacheExtensions</span>
+{
+    <span class="c">// Immutable hashed asset: cache forever, never revalidate.</span>
+    <span class="k">public static</span> <span class="t">IResult</span> <span class="fn">ImmutableAsset</span>(<span class="k">this</span> <span class="t">HttpContext</span> ctx, <span class="k">string</span> path, <span class="k">string</span> contentType)
+    {
+        ctx.<span class="t">Response</span>.<span class="t">Headers</span>.<span class="t">CacheControl</span> = <span class="s">"public, max-age=31536000, immutable"</span>;
+        <span class="k">return</span> <span class="t">Results</span>.<span class="fn">File</span>(path, contentType);
+    }
+
+    <span class="c">// Short-lived shared cache (CDN only). Browser does not cache.</span>
+    <span class="k">public static void</span> <span class="fn">ShortSharedCache</span>(<span class="k">this</span> <span class="t">HttpResponse</span> resp, <span class="k">int</span> seconds)
+    {
+        resp.<span class="t">Headers</span>.<span class="t">CacheControl</span> = $<span class="s">"public, s-maxage={seconds}, max-age=0"</span>;
+    }
+
+    <span class="c">// Per-user / no-CDN — Authorization / Cookie response, never cacheable.</span>
+    <span class="k">public static void</span> <span class="fn">NoCache</span>(<span class="k">this</span> <span class="t">HttpResponse</span> resp)
+    {
+        resp.<span class="t">Headers</span>.<span class="t">CacheControl</span> = <span class="s">"private, no-store"</span>;
+        resp.<span class="t">Headers</span>.<span class="fn">Append</span>(<span class="t">HeaderNames</span>.<span class="t">Vary</span>, <span class="s">"Authorization, Cookie"</span>);
+    }
+}
+
+<span class="c">// Output cache policy for catalog pages: CDN-cacheable for 5 minutes, vary by country.</span>
+<span class="k">public sealed class</span> <span class="t">CatalogOutputCachePolicy</span> : <span class="t">IOutputCachePolicy</span>
+{
+    <span class="k">public</span> <span class="t">ValueTask</span> <span class="fn">CacheRequestAsync</span>(<span class="t">OutputCacheContext</span> ctx, <span class="t">CancellationToken</span> ct)
+    {
+        ctx.<span class="t">AllowCacheLookup</span>  = <span class="k">true</span>;
+        ctx.<span class="t">AllowCacheStorage</span> = <span class="k">true</span>;
+        ctx.<span class="t">AllowLocking</span>      = <span class="k">true</span>;       <span class="c">// single-flight on cache miss</span>
+        ctx.<span class="fn">SetVary</span>(<span class="k">new</span>[] { <span class="s">"x-user-country"</span> });
+        ctx.<span class="t">ResponseExpirationTimeSpan</span> = <span class="t">TimeSpan</span>.<span class="fn">FromMinutes</span>(<span class="n">5</span>);
+        <span class="k">return</span> <span class="t">ValueTask</span>.<span class="t">CompletedTask</span>;
+    }
+    <span class="k">public</span> <span class="t">ValueTask</span> <span class="fn">ServeFromCacheAsync</span>(<span class="t">OutputCacheContext</span> ctx, <span class="t">CancellationToken</span> ct) =&gt; <span class="k">default</span>;
+    <span class="k">public</span> <span class="t">ValueTask</span> <span class="fn">ServeResponseAsync</span>(<span class="t">OutputCacheContext</span> ctx, <span class="t">CancellationToken</span> ct) =&gt; <span class="k">default</span>;
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Wire-up in <code>Program.cs</code>. Static files get the immutable header automatically; product pages opt into the policy; user-specific pages opt out.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">Program.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+builder.<span class="t">Services</span>.<span class="fn">AddOutputCache</span>(o =&gt;
+{
+    o.<span class="fn">AddPolicy</span>(<span class="s">"catalog"</span>, <span class="k">new</span> <span class="t">CatalogOutputCachePolicy</span>());
+});
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+
+<span class="c">// Hashed static assets: max age 1 year, immutable.</span>
+app.<span class="fn">UseStaticFiles</span>(<span class="k">new</span> <span class="t">StaticFileOptions</span>
+{
+    <span class="t">OnPrepareResponse</span> = ctx =&gt;
+    {
+        <span class="k">var</span> path = ctx.<span class="t">File</span>.<span class="t">PhysicalPath</span> ?? <span class="s">""</span>;
+        <span class="k">if</span> (<span class="t">Regex</span>.<span class="fn">IsMatch</span>(path, <span class="s">@"\.[a-f0-9]{6,}\.[a-z]+$"</span>))
+            ctx.<span class="t">Context</span>.<span class="t">Response</span>.<span class="t">Headers</span>.<span class="t">CacheControl</span> =
+                <span class="s">"public, max-age=31536000, immutable"</span>;
+        <span class="k">else</span>
+            ctx.<span class="t">Context</span>.<span class="t">Response</span>.<span class="t">Headers</span>.<span class="t">CacheControl</span> =
+                <span class="s">"public, s-maxage=300, max-age=0, stale-while-revalidate=60"</span>;
+    }
+});
+
+app.<span class="fn">UseOutputCache</span>();
+
+app.<span class="fn">MapGet</span>(<span class="s">"/catalog"</span>, () =&gt; <span class="t">Results</span>.<span class="fn">Ok</span>(<span class="k">new</span> { items = LoadFromDb() }))
+   .<span class="fn">CacheOutput</span>(<span class="s">"catalog"</span>);
+
+app.<span class="fn">MapGet</span>(<span class="s">"/me"</span>, (<span class="t">HttpResponse</span> r, <span class="t">ClaimsPrincipal</span> u) =&gt;
+{
+    r.<span class="fn">NoCache</span>();
+    <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Ok</span>(<span class="k">new</span> { name = u.<span class="t">Identity</span>?.<span class="t">Name</span> });
+});
+
+app.<span class="fn">Run</span>();</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Stale-while-revalidate is the friendly TTL</div>
+          <p><code>Cache-Control: public, s-maxage=300, stale-while-revalidate=60</code> says "fresh for 5 minutes, then for 1 more minute the CDN may serve stale while it refreshes in the background." Users get fast responses during the refresh; origin sees one fetch per CDN POP per refresh window. <strong>This is how Vercel, Netlify, and Next.js shape the cache curve.</strong></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Cache stampedes need request coalescing</div>
+          <p>Cache expires. 1,000 concurrent requests for the same key all miss simultaneously. 1,000 requests hit origin. Origin dies. <strong>Most CDNs offer request collapsing (Cloudflare's "Argo Tunnel + Tiered Cache", Front Door's caching by default, Fastly's clustering) that ensures only one request reaches origin during a miss; the other 999 wait for it.</strong> Enable it for popular keys.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">CDN logs are the lookup of last resort</div>
+          <p>Ship the CDN's access logs to your SIEM or analytics store. The 5% of requests that miss are the ones you need to optimise; the 95% that hit are the ones you need to count. <em>Without CDN logs you're running the largest part of your stack blind.</em></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Edge functions are the new tier</div>
+          <p>Cloudflare Workers, CloudFront Functions, Fastly Compute@Edge, Front Door rules engine. The CDN can run small bits of logic at the edge — A/B testing, geo-routing, header rewriting, even small APIs. <strong>The deeper your edge logic, the higher your effective hit rate</strong> because origin doesn't see traffic that the edge can fully answer.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Don't put authenticated requests behind a CDN without care</div>
+          <p>Authenticated content with <code>Cache-Control: public</code> is the classic CDN-poisoning bug. One user's response is served to another user. <strong>Always include <code>private</code> in authenticated responses</strong> or strip the <code>Authorization</code> / <code>Cookie</code> from the cache key. Most CDNs default-skip caching of <code>Authorization</code>-bearing requests, but don't bet on the default.</p>
+        </div>
+
+        <div class="pull">"99% cache hit rate is not a goal. It's evidence the rest of the system is configured correctly."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Technology</th>
+              <th>Strengths</th>
+              <th>Edge Functions</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Azure Front Door<span class="sub">+ Blob origin</span></th>
+              <td>Native Azure · WAF · rules engine · L4+L7</td>
+              <td>Rules engine (limited logic)</td>
+              <td><strong>$35+</strong> base + per-GB</td>
+              <td>Azure-managed</td>
+              <td><span class="verdict good">Default on Azure</span></td>
+            </tr>
+            <tr>
+              <th>CloudFront<span class="sub">+ S3 origin</span></th>
+              <td>Most POPs · CloudFront Functions · Lambda@Edge</td>
+              <td>CloudFront Functions + Lambda@Edge</td>
+              <td><strong>$10+</strong> base + per-GB</td>
+              <td>AWS-managed</td>
+              <td><span class="verdict good">Default on AWS</span></td>
+            </tr>
+            <tr>
+              <th>Cloudflare<span class="sub">cloud-neutral</span></th>
+              <td>Free tier · Workers everywhere · DDoS protection</td>
+              <td>Workers (V8 isolates · sub-ms cold start)</td>
+              <td><strong>$0 – $200</strong> (Pro/Business)</td>
+              <td>Vendor-managed</td>
+              <td><span class="verdict good">When edge compute matters</span></td>
+            </tr>
+            <tr>
+              <th>Fastly (VCL)<span class="sub">programmable cache</span></th>
+              <td>Most flexible cache logic · instant purge · &lt;150ms global</td>
+              <td>Compute@Edge (WASM)</td>
+              <td><strong>$50 – $5k</strong></td>
+              <td>VCL is its own learning curve</td>
+              <td><span class="verdict good">For media/news with complex caching</span></td>
+            </tr>
+            <tr>
+              <th>Akamai<span class="sub">incumbent</span></th>
+              <td>Enterprise SLAs · largest physical footprint · niche features</td>
+              <td>EdgeWorkers</td>
+              <td><strong>$1k+</strong> (sales-led)</td>
+              <td>Enterprise contract; portal heavy</td>
+              <td><span class="verdict warn">Legacy enterprises and global media</span></td>
+            </tr>
+            <tr>
+              <th>Roll your own NGINX<span class="sub">DIY</span></th>
+              <td>Full control · cheap if you have ops</td>
+              <td>OpenResty (Lua)</td>
+              <td><strong>$200+</strong> (VMs)</td>
+              <td>You operate POPs · please don't</td>
+              <td><span class="verdict bad">Don't. The CDN business has 30 years on you.</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>SPA + static assets, on Azure</h5>
+            <p>Front Door + Blob storage origin. Hashed filenames, immutable for assets, short s-maxage for HTML.</p>
+          </div>
+          <div class="cell">
+            <h5>Marketing site, want a free tier</h5>
+            <p>Cloudflare. Generous free tier, Workers for any logic, great DDoS protection. The "no-decision" decision.</p>
+          </div>
+          <div class="cell">
+            <h5>Media / video / news at scale</h5>
+            <p>Fastly. VCL gives you cache logic nobody else does. Instant purge matters for breaking-news takedowns.</p>
+          </div>
+          <div class="cell">
+            <h5>API responses need geo-routing</h5>
+            <p>CDN with edge functions (Workers / CloudFront Functions / Front Door rules). Route on header, geo, A/B bucket — at the edge.</p>
+          </div>
+          <div class="cell">
+            <h5>Protected downloads (invoices, video)</h5>
+            <p>Signed URLs with short TTL. Same CDN cache hit; signature validated at the edge; origin sees only the first miss.</p>
+          </div>
+          <div class="cell">
+            <h5>Cache hit rate is 60%</h5>
+            <p>Check four things: query-string stripping, <code>Cache-Control: public, max-age</code>, immutable filenames, <code>Vary</code> headers. One of them is the bug.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — no <code>Cache-Control: public</code>.</strong> CDN defaults to "don't cache." The fix is two words in a header. The bug it produces is your origin doing every byte of traffic.</p>
+        <p><strong>Two — <code>Vary: User-Agent</code>.</strong> Cache fragments per browser version. Effective hit rate plummets. Use <code>Sec-CH-UA-*</code> client hints or don't vary at all.</p>
+        <p><strong>Three — relying on purge for deploys.</strong> Hashed filenames make purge unnecessary. Versioned URLs let old and new content coexist; purge becomes the panic button for incidents, not the deploy mechanism.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="geographic-distribution.html">
+          <div class="label">Chapter 19</div>
+          <div class="ttl">Geographic distribution</div>
+        </a>
+        <a class="next-fwd" href="jwt-vs-sessions.html">
+          <div class="label">Chapter 21</div>
+          <div class="ttl">JWT vs sessions →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 20 · CDN Architecture · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

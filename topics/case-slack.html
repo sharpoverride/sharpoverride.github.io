@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Slack architecture · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#cases">Case Studies</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Slack</span>
+    </div>
+    <nav><a href="case-instagram-scale.html">← Prev</a><a href="case-google-docs.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Years <b>2013 → today</b></span>
+        <span>Scale <b>~32M DAU · 12M concurrent</b></span>
+        <span>Stack <b>PHP/Hack · MySQL · Solr · Redis</b></span>
+      </div>
+      <h1>Team chat that won by <span class="ital">staying fast</span>.</h1>
+      <p class="lede">Slack's architectural story is unusual: PHP. Sharded by workspace. The architecture was built for a particular shape — small-to-mid-size teams in their own private universe — and held up as that shape spread to enterprise scale.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The shape</h5><p>Workspace-shard model. Each workspace lives on a single shard end-to-end. No cross-workspace queries on the hot path.</p></div>
+      <div><h5>The transport</h5><p>WebSockets for real-time; SQS/Kinesis for inter-service; flannel (Slack's homegrown LB) for the WebSocket fleet.</p></div>
+      <div><h5>The search</h5><p>Per-workspace Solr indexes. Each workspace is a self-contained search universe.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">Why workspace-sharded</a></li>
+      <li><a href="#realtime">Real-time messaging</a></li>
+      <li><a href="#search">Search</a></li>
+      <li><a href="#numbers">The numbers</a></li>
+      <li><a href="#lessons">Lessons</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why <span class="ital">workspace-sharded</span>.</h2>
+        <div class="prose">
+          <p>Slack's data is naturally partitioned by workspace. <strong>A user in Acme Corp's Slack never queries data from Globex Corp's Slack.</strong> No cross-workspace search. No cross-workspace anything. This is the same cell-architecture pattern as Shopify (see <a href="case-shopify-flash.html">Shopify case</a>) — partition by tenant, isolate end-to-end.</p>
+          <p>The win: a Slack workspace with 100k users can grow without affecting workspaces with 50 users on the same physical infrastructure. Each shard is sized for the workspace; the small ones share machines, the big ones get dedicated capacity. <strong>Blast radius is one workspace.</strong></p>
+        </div>
+        <div class="pull">"Per-tenant is the unit of fail. Anything bigger than one tenant is over-scoped."</div>
+      </section>
+
+      <section class="dd-section" id="realtime">
+        <h2 class="section"><span class="num">02</span>Real-time <span class="ital">messaging</span>.</h2>
+
+        <h3 class="sub">WebSocket per session</h3>
+        <div class="prose">
+          <p>Each open Slack tab holds a WebSocket to a Slack-managed fleet. <strong>flannel</strong>: Slack's homegrown WebSocket proxy. It terminates the WS, fans incoming messages out to relevant subscribers, caches "what does this client need." A workspace's edges scale independently of its data tier.</p>
+        </div>
+
+        <h3 class="sub">Channel as topic</h3>
+        <div class="prose">
+          <p>Every channel is a pub/sub topic internally. <strong>When a message lands, look up subscribers, fan out via the WebSocket fleet</strong>. The data tier doesn't push to clients; the WebSocket tier does, after being told.</p>
+        </div>
+
+        <h3 class="sub">Presence</h3>
+        <div class="prose">
+          <p>"Is so-and-so online?" — the always-asked question. Per-user TTL'd records in a presence cache. <strong>Slack famously redesigned this when it didn't scale</strong>; the original "broadcast presence to every user in your workspace" pattern was O(N²) and crushed huge teams. The fix: lazy presence — only compute for users you're actively looking at.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="search">
+        <h2 class="section"><span class="num">03</span><span class="ital">Search</span>.</h2>
+        <div class="prose">
+          <p>Per-workspace Solr index. <strong>The whole workspace's message history is in its own Solr collection.</strong> Search queries scope to the workspace; no global search. This is why Slack's search feels "fast for me" — your search universe is your workspace, not the whole product.</p>
+          <p>Indexing pipeline: message lands → published to a queue → indexed into Solr asynchronously. <em>Lag of a few seconds to "searchable" is acceptable</em>; instant message delivery is not. The two paths are decoupled.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">numbers</span>.</h2>
+        <table class="matrix"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+          <tr><th>DAU</th><td>~32M</td></tr>
+          <tr><th>Concurrent sessions (peak)</th><td>~12M</td></tr>
+          <tr><th>Messages / day</th><td>billions</td></tr>
+          <tr><th>Backend language</th><td>PHP (Hack), Go</td></tr>
+          <tr><th>Database</th><td>MySQL (Vitess for sharding)</td></tr>
+          <tr><th>WebSocket frontend</th><td>flannel</td></tr>
+          <tr><th>Search</th><td>Solr</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">lessons</span>.</h2>
+        <div class="callout"><div class="ctag">Choose a partition key that matches the access pattern</div><p>Slack's workspace boundary is also the access boundary. Almost all queries are intra-workspace. The shard key is the access pattern.</p></div>
+        <div class="callout"><div class="ctag">Decouple delivery from durability</div><p>WebSocket fanout for "you see it now." Async queue + Solr for "you can search for it tomorrow." Same message, two paths, different SLAs.</p></div>
+        <div class="callout"><div class="ctag">Presence is O(N²) if you let it be</div><p>The naive "everyone subscribes to everyone's presence" pattern collapses at enterprise scale. Lazy presence — only compute for active observers — is the fix.</p></div>
+        <div class="callout"><div class="ctag">PHP is fine</div><p>The Slack backend remains substantially PHP/Hack. The bottleneck isn't the language; it's the architecture. <em>Don't rewrite the language unless you've exhausted the architecture.</em></p></div>
+        <div class="pull">"Slack succeeded at scale by not pretending to be a single global system."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-instagram-scale.html"><div class="label">Prev</div><div class="ttl">Instagram</div></a>
+        <a class="next-fwd" href="case-google-docs.html"><div class="label">Next</div><div class="ttl">Google Docs →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Case · Slack · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

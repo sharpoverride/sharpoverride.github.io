@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Cell-based Architecture · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#fundamentals">Fundamentals</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Cell-based architecture</span>
+    </div>
+    <nav>
+      <a href="fundamental-webhooks.html">← Prev</a>
+      <a href="../system-design.html">Index →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~12 min</b></span>
+        <span>Stack <b>AWS cells · Shopify pods · cell router</b></span>
+      </div>
+      <h1>Limit the <span class="ital">blast radius</span>.</h1>
+      <p class="lede">Cell-based architecture partitions a multi-tenant platform into independent, identical units called cells. A cell handles a slice of customers end-to-end. When one cell fails, the rest keep running. AWS, Shopify, and Slack all converged on this — it's the most underrated SaaS architecture pattern of the last decade.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The premise</h5>
+        <p>A single big shared system fails for everyone when it fails. N small identical systems with disjoint customer sets fail for 1/N of customers at a time.</p>
+      </div>
+      <div>
+        <h5>The key constraint</h5>
+        <p>Cells share <em>nothing</em> in the hot path. No shared database. No shared cache. No shared message broker. The router is the only shared layer.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Cell router</span>
+          <span class="pill on">Per-cell stack</span>
+          <span class="pill on">Cell migration tooling</span>
+          <span class="pill">AWS Wisdom paper</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The shared-fate problem</a></li>
+        <li><a href="#shape">What a cell contains</a></li>
+        <li><a href="#router">The router is the only seam</a></li>
+        <li><a href="#dotnet">In practice</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The shared-fate <span class="ital">problem</span>.</h2>
+        <div class="prose">
+          <p>A traditional multi-tenant SaaS is one big system serving thousands of customers. Big database; big app fleet; big cache. <strong>When the database has a hot lock, everyone is slow. When the cache cluster fails, everyone is down. When a noisy tenant's batch job consumes the worker pool, everyone waits.</strong> The blast radius of any single failure is the entire customer base.</p>
+          <p>Cells replace the big shared system with many small identical ones. Each cell serves a partition of tenants, end-to-end: its own database, its own app fleet, its own cache, its own message broker. <em>A failure in one cell is invisible to tenants in other cells.</em> Per-customer reliability stops being a function of platform health; it's a function of the cell's health, which is a function of one cell-worth of customers.</p>
+        </div>
+
+        <div class="pull">"In a shared system, every customer is one tenant's bad day away from a Sev-2."</div>
+      </section>
+
+      <section class="dd-section" id="shape">
+        <h2 class="section"><span class="num">02</span>What a cell <span class="ital">contains</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 380" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="cella" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 31 · ROUTER + 3 CELLS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0" y="0" width="200" height="50" fill="#1a1814"/>
+              <text x="100" y="30" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">CELL ROUTER</text>
+
+              <line x1="200" y1="25" x2="240" y2="25" stroke="#c2410c" stroke-width="2" marker-end="url(#cella)"/>
+
+              <g>
+                <rect x="260" y="-10" width="280" height="70" fill="#c2410c" stroke="#1a1814" stroke-width="1.5" stroke-dasharray="3 3"/>
+                <text x="400" y="14"  font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CELL 1</text>
+                <rect x="280" y="30"  width="60" height="22" fill="#1a1814"/>
+                <text x="310" y="44"  font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1">api</text>
+                <rect x="350" y="30"  width="60" height="22" fill="#1a1814"/>
+                <text x="380" y="44"  font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1">db</text>
+                <rect x="420" y="30"  width="60" height="22" fill="#1a1814"/>
+                <text x="450" y="44"  font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1">redis</text>
+                <rect x="490" y="30"  width="40" height="22" fill="#1a1814"/>
+                <text x="510" y="44"  font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1">bus</text>
+              </g>
+
+              <g transform="translate(0, 80)">
+                <rect x="260" y="-10" width="280" height="70" fill="#c2410c" stroke="#1a1814" stroke-width="1.5" stroke-dasharray="3 3"/>
+                <text x="400" y="14"  font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CELL 2</text>
+              </g>
+
+              <g transform="translate(0, 160)">
+                <rect x="260" y="-10" width="280" height="70" fill="#c2410c" stroke="#1a1814" stroke-width="1.5" stroke-dasharray="3 3"/>
+                <text x="400" y="14"  font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CELL N…</text>
+              </g>
+
+              <line x1="200" y1="25" x2="240" y2="25" stroke="#c2410c" stroke-width="2" marker-end="url(#cella)"/>
+              <line x1="200" y1="35" x2="240" y2="105" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#cella)"/>
+              <line x1="200" y1="45" x2="240" y2="185" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#cella)"/>
+
+              <text x="600" y="36"  font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Tenants A–F → Cell 1</text>
+              <text x="600" y="116" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Tenants G–M → Cell 2</text>
+              <text x="600" y="196" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Tenants N–Z → Cell N</text>
+            </g>
+
+            <text x="40" y="330" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">"Failure of Cell 2 doesn't touch tenants in Cell 1 or Cell N. The blast radius is the cell."</text>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 31</span><span>Each cell is a complete stack. Tenants are pinned to a cell. The only thing shared is the router that knows which cell owns which tenant.</span></div>
+        </div>
+
+        <h3 class="sub">A cell is a full vertical slice</h3>
+        <div class="prose">
+          <p>API tier, database, cache, message broker, background workers — all running per-cell. <strong>The application code is identical across cells</strong>; the cell is a deployment unit, not a different product. A new feature is deployed to every cell (in waves: canary → 10% of cells → all cells). A schema migration runs in every cell's database.</p>
+        </div>
+
+        <h3 class="sub">Cells are dimensioned for one cell-worth of customers</h3>
+        <div class="prose">
+          <p>Sizing decision: how big should a cell be? Too small and you have many cells to operate. Too big and the blast radius approaches "platform-wide". <strong>Typical: cells sized to hold ~5–10k tenants, supporting a few thousand RPS.</strong> AWS's published guidance: a cell should be small enough that you can manually reason about it, large enough that you don't have 1000 of them.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="router">
+        <h2 class="section"><span class="num">03</span>The router is the <span class="ital">only</span> seam.</h2>
+        <div class="prose">
+          <p>The cell router is the only shared component. It looks up <code>tenant → cell</code> and forwards the request. <strong>Keep it boring</strong>: a small, highly-available service with a tiny mapping table cached aggressively. If the router has a hot path that calls a database, the router itself becomes the bottleneck the cells were supposed to avoid.</p>
+        </div>
+
+        <h3 class="sub">Where the mapping lives</h3>
+        <div class="prose">
+          <p>Three storage options, in order of operational simplicity. <strong>DNS</strong>: each tenant gets <code>{tenant}.api.example.com</code> resolving to a cell-specific IP. Zero hot-path lookup; DNS TTL is the propagation knob. <strong>Path-based</strong>: <code>/{tenant}/...</code> and the router parses the URL. <strong>JWT</strong>: the user's auth token carries the cell ID; the router validates and routes. Pick by what you can secure cleanly; DNS-based routing is the most popular.</p>
+        </div>
+
+        <h3 class="sub">Cell migration</h3>
+        <div class="prose">
+          <p>Tenants grow. Cells get unbalanced. <strong>Build the "move tenant from cell A to cell B" tooling early.</strong> The procedure: snapshot the tenant's data in cell A; replay onto cell B; switch the router; verify; clean up cell A. Automate it; run it routinely; don't let it become a one-off engineering project. Shopify moves merchants between pods all the time.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">practice</span>.</h2>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">CellRouterMiddleware.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">public sealed class</span> <span class="t">CellRouterMiddleware</span>
+{
+    <span class="k">private readonly</span> <span class="t">RequestDelegate</span> _next;
+    <span class="k">private readonly</span> <span class="t">ICellMap</span> _map;
+
+    <span class="k">public</span> <span class="fn">CellRouterMiddleware</span>(<span class="t">RequestDelegate</span> next, <span class="t">ICellMap</span> map)
+    { _next = next; _map = map; }
+
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">InvokeAsync</span>(<span class="t">HttpContext</span> ctx, <span class="t">HttpClient</span> http)
+    {
+        <span class="c">// Resolve tenant from JWT, subdomain, or path.</span>
+        <span class="k">var</span> tenant = ctx.<span class="t">User</span>.<span class="fn">FindFirstValue</span>(<span class="s">"tenant"</span>) ?? <span class="s">"anonymous"</span>;
+        <span class="k">var</span> cell = <span class="k">await</span> _map.<span class="fn">GetCellForTenantAsync</span>(tenant);
+
+        <span class="c">// Forward to the cell-specific origin. In production this is a YARP route</span>
+        <span class="c">// or front-door rule; the middleware is illustrative.</span>
+        <span class="k">var</span> upstream = $<span class="s">"https://{cell}.internal{ctx.Request.Path}{ctx.Request.QueryString}"</span>;
+
+        <span class="k">using var</span> req = <span class="k">new</span> <span class="t">HttpRequestMessage</span>(<span class="k">new</span>(ctx.<span class="t">Request</span>.<span class="t">Method</span>), upstream);
+        <span class="k">foreach</span> (<span class="k">var</span> h <span class="k">in</span> ctx.<span class="t">Request</span>.<span class="t">Headers</span>)
+            req.<span class="t">Headers</span>.<span class="fn">TryAddWithoutValidation</span>(h.<span class="t">Key</span>, h.<span class="t">Value</span>.<span class="fn">ToArray</span>());
+
+        <span class="k">if</span> (ctx.<span class="t">Request</span>.<span class="t">ContentLength</span> &gt; <span class="n">0</span>)
+            req.<span class="t">Content</span> = <span class="k">new</span> <span class="t">StreamContent</span>(ctx.<span class="t">Request</span>.<span class="t">Body</span>);
+
+        <span class="k">using var</span> resp = <span class="k">await</span> http.<span class="fn">SendAsync</span>(req, ctx.<span class="t">RequestAborted</span>);
+        ctx.<span class="t">Response</span>.<span class="t">StatusCode</span> = (<span class="k">int</span>)resp.<span class="t">StatusCode</span>;
+        <span class="k">foreach</span> (<span class="k">var</span> h <span class="k">in</span> resp.<span class="t">Headers</span>)
+            ctx.<span class="t">Response</span>.<span class="t">Headers</span>[h.<span class="t">Key</span>] = h.<span class="t">Value</span>.<span class="fn">ToArray</span>();
+        <span class="k">await</span> resp.<span class="t">Content</span>.<span class="fn">CopyToAsync</span>(ctx.<span class="t">Response</span>.<span class="t">Body</span>, ctx.<span class="t">RequestAborted</span>);
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>In production you'd use YARP (.NET) or Envoy / NGINX with a small Lua/Rust extension that looks up the tenant→cell map from a cache. <strong>The router itself must be horizontally scalable and stateless</strong>; the mapping is in Redis or DynamoDB, the router pods just look it up.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Cells don't talk to each other</div>
+          <p>Cell 1 should not query Cell 2's database, even indirectly. Cross-cell queries reintroduce shared fate. If you need cross-tenant analytics, run it in a separate analytics pipeline that reads from each cell asynchronously. <strong>Cell-to-cell is a smell; alarm on it.</strong></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Cell capacity is dimensioned for failure</div>
+          <p>Each cell runs at ~50% of its theoretical max. When a cell fails, its tenants need to be rebalanced into the others; the others must absorb the load without saturating. <em>Running cells at 80% is fragile</em>; running them at 50% costs more compute but makes the failure recovery routine.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">The control plane is its own concern</div>
+          <p>Provisioning a cell, deploying code to all cells, running schema migrations across cells — this is the "control plane" of the cell architecture. Build it deliberately; don't let it become 100 shell scripts. AWS calls this the "cell-router" and "cell-orchestrator" layers; treat them with the rigor of any production system.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">"Sticky" vs "balanced" cells</div>
+          <p>Tenant → cell mapping is sticky by default — once you're in cell 7, you stay there. <em>Rebalancing is the operational work that makes the architecture sustainable</em>. Plan for it; tooling beats heroism.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Cells fit naturally with AWS Wisdom paper</div>
+          <p>AWS's published "Wisdom from cell-based architecture" paper formalises the patterns. Required reading for anyone designing this from scratch. The summary: <em>"all blast-radius reduction is partitioning. All partitioning has a cost. Cell-based architecture is the partitioning that's worth paying for in multi-tenant SaaS."</em></p>
+        </div>
+
+        <div class="pull">"The interesting question isn't &lsquo;does the cell scale to one million customers?&rsquo; — it's &lsquo;does the platform survive when this cell doesn't?&rsquo;"</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">06</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Multi-tenant B2B SaaS, &gt;1000 tenants</h5>
+            <p>Cell architecture is the right default. ~5–10k tenants per cell. Router via DNS or JWT. Cell migration tooling from day one.</p>
+          </div>
+          <div class="cell">
+            <h5>Single tenant per customer, &lt;100 customers</h5>
+            <p>Probably overkill. One database with strong tenant isolation columns is fine. Revisit if you grow past a few hundred.</p>
+          </div>
+          <div class="cell">
+            <h5>B2C with billions of users</h5>
+            <p>Different shape. Sharding by user-id is the typical pattern (see <a href="case-figma-postgres.html">Figma</a>). Cell architecture mainly suits B2B with named tenants.</p>
+          </div>
+          <div class="cell">
+            <h5>You have one big shared database now</h5>
+            <p>You can retrofit. Start by extracting one tenant cohort into a new cell; build the migration tooling there. Don't try to cell-ify everything at once.</p>
+          </div>
+          <div class="cell">
+            <h5>Need cross-tenant analytics</h5>
+            <p>Build a separate analytics pipeline that reads from every cell. Don't cross-query cells in the hot path. CDC (see <a href="change-data-capture.html">CDC chapter</a>) feeds a warehouse.</p>
+          </div>
+          <div class="cell">
+            <h5>Compliance / data-residency</h5>
+            <p>Cells map cleanly: EU tenants in EU cells, US in US, etc. Data never crosses regions because the cell never crosses regions.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-webhooks.html">
+          <div class="label">Prev fundamental</div>
+          <div class="ttl">Webhooks</div>
+        </a>
+        <a class="next-fwd" href="../system-design.html">
+          <div class="label">Index</div>
+          <div class="ttl">Back to all chapters →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Fundamental · Cell Architecture · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ChatGPT Apps · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive ai">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#ai">AI</a><span class="sep">/</span>
+      <span style="color:var(--ink);">ChatGPT apps</span>
+    </div>
+    <nav><a href="ai-reinforcement-learning.html">← Prev</a><a href="../system-design.html">Index →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>AI <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>App SDK · tool calling · OAuth · rendering</b></span>
+      </div>
+      <h1>OpenAI's third <span class="ital">attempt</span>.</h1>
+      <p class="lede">Plugins (2023) failed because nobody could find them. GPTs (2024) failed because they were closed-ecosystem. Apps (2025) are the third try — built on MCP, OAuth-integrated, rendered inline. Whether this one sticks depends on the same thing it always did: discoverability.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The shape</h5><p>An app is a server (your code, your data) that exposes a set of operations to ChatGPT. The user invokes it conversationally; the operation runs server-side; the response renders inline.</p></div>
+      <div><h5>The protocol</h5><p>Built on MCP (see <a href="ai-mcp.html">MCP chapter</a>). Plus OpenAI-specific extensions for OAuth, custom UI, and ChatGPT's app store.</p></div>
+      <div><h5>Tech we'll touch</h5>
+        <div><span class="pill on">App SDK</span><span class="pill on">MCP server</span><span class="pill on">OAuth scopes</span><span class="pill">Inline UI</span></div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Three iterations</a></li>
+        <li><a href="#shape">What an app contains</a></li>
+        <li><a href="#auth">OAuth &amp; the user</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Three <span class="ital">iterations</span>.</h2>
+        <div class="prose">
+          <p><strong>Plugins (2023)</strong>: developers built OpenAPI-described services; ChatGPT learned to call them. Users had to enable plugins manually; nobody did; usage stayed tiny. Discontinued in 2024.</p>
+          <p><strong>GPTs (2024)</strong>: "custom GPTs" — a system prompt plus optional tool calls. The store was OpenAI-only; the model couldn't introspect actions cleanly. Persisted, but mostly as a curiosity.</p>
+          <p><strong>Apps (2025)</strong>: built on MCP (open protocol), with first-class UI rendering and OAuth user-account integration. The bet: <em>by standing on an open protocol and improving discoverability, the third iteration can stick.</em></p>
+        </div>
+        <div class="pull">"The protocol is the easy part. The directory is the product."</div>
+      </section>
+
+      <section class="dd-section" id="shape">
+        <h2 class="section"><span class="num">02</span>What an app <span class="ital">contains</span>.</h2>
+
+        <h3 class="sub">An MCP server</h3>
+        <div class="prose">
+          <p>The core is an MCP server (see <a href="ai-mcp.html">MCP chapter</a>) that exposes tools, resources, and prompts. <strong>If you've built an MCP server, you've built 80% of an app.</strong></p>
+        </div>
+
+        <h3 class="sub">An OAuth flow</h3>
+        <div class="prose">
+          <p>Users authenticate to your service from ChatGPT. <strong>Standard OAuth 2.1 with PKCE</strong>; the token belongs to the user's ChatGPT account scoped to your app. Refresh tokens, revocation, the usual. ChatGPT brokers the popup; your server validates.</p>
+        </div>
+
+        <h3 class="sub">A response renderer</h3>
+        <div class="prose">
+          <p>Beyond text, apps can return structured UI — cards, tables, forms, embedded interactive components. ChatGPT renders them inline. <strong>This is the new bit vs MCP alone</strong>: rich responses, not just text.</p>
+        </div>
+
+        <h3 class="sub">A manifest</h3>
+        <div class="prose">
+          <p>An app.json (or equivalent) declares: name, icon, scopes, OAuth endpoints, the MCP server URL. Submitted to OpenAI's app directory; reviewed; published.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 240" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · USER ASKS, APP ANSWERS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+            <g transform="translate(40, 80)">
+              <rect x="0"   y="20" width="120" height="40" fill="#1a1814"/><text x="60" y="45" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">USER</text>
+              <rect x="140" y="20" width="160" height="40" fill="#c2410c"/><text x="220" y="45" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">ChatGPT</text>
+              <rect x="320" y="20" width="160" height="40" fill="#1a1814"/><text x="400" y="42" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">YOUR APP</text>
+              <text x="400" y="56" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1">(MCP server)</text>
+              <rect x="500" y="20" width="160" height="40" fill="#c2410c"/><text x="580" y="42" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">YOUR BACKEND</text>
+              <text x="580" y="56" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1">db, APIs, business logic</text>
+              <rect x="680" y="20" width="160" height="40" fill="#1a1814"/><text x="760" y="42" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">RICH RESPONSE</text>
+              <text x="760" y="56" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1">card / form / table</text>
+              <rect x="860" y="20" width="120" height="40" fill="#c2410c"/><text x="920" y="45" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">USER SEES</text>
+              <line x1="120" y1="40" x2="138" y2="40" stroke="#c2410c" stroke-width="1.5"/>
+              <line x1="300" y1="40" x2="318" y2="40" stroke="#c2410c" stroke-width="1.5"/>
+              <line x1="480" y1="40" x2="498" y2="40" stroke="#c2410c" stroke-width="1.5"/>
+              <line x1="660" y1="40" x2="678" y2="40" stroke="#c2410c" stroke-width="1.5"/>
+              <line x1="840" y1="40" x2="858" y2="40" stroke="#c2410c" stroke-width="1.5"/>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>The app sits between ChatGPT and your backend. Rich responses render in the conversation, not as plain text.</span></div>
+        </div>
+      </section>
+
+      <section class="dd-section" id="auth">
+        <h2 class="section"><span class="num">03</span>OAuth &amp; the <span class="ital">user</span>.</h2>
+
+        <div class="callout"><div class="ctag">User connects once</div><p>First invocation pops OAuth. User signs into your service. Token cached in ChatGPT. Subsequent calls reuse it transparently.</p></div>
+
+        <div class="callout"><div class="ctag">Scopes are tight</div><p>App declares minimum scopes in the manifest. Don't ask for more than you need; review will reject overreach. Users care about the consent screen.</p></div>
+
+        <div class="callout"><div class="ctag">Revocation is on you</div><p>Users can revoke from your side or from ChatGPT. Honor both. Webhook on revocation; clear caches; refuse subsequent API calls.</p></div>
+
+        <div class="callout"><div class="ctag">Don't store ChatGPT tokens long-term</div><p>The token represents a session, not a service identity. <strong>Don't use it to take actions outside the conversation.</strong> Background jobs run against your own user accounts, not the OpenAI-issued token.</p></div>
+
+        <div class="pull">"OAuth is the part that turns 'AI demo' into 'product with users.'"</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">04</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Existing SaaS, wants AI surface</h5><p>Build a ChatGPT app. Wrap your existing API in an MCP server; add OAuth; submit.</p></div>
+          <div class="cell"><h5>Cross-AI-client reach</h5><p>Build an MCP server first; ChatGPT app is one consumer. Claude Desktop, Cursor, etc. become additional surfaces for free.</p></div>
+          <div class="cell"><h5>Internal use only</h5><p>Skip the app store. Run an MCP server locally; configure Claude Desktop / ChatGPT Enterprise to use it.</p></div>
+          <div class="cell"><h5>Rich UI matters</h5><p>The ChatGPT app's inline-render advantage applies. For pure-text use cases, a plain MCP server is fine.</p></div>
+          <div class="cell"><h5>You're new to LLM integration</h5><p>Start with an MCP server. It teaches the shape. The app wrapper is mostly business stuff (manifest, OAuth, review).</p></div>
+          <div class="cell"><h5>Worried about lock-in</h5><p>Standing on MCP is the safest move. The transport, the directory, the user account are OpenAI-specific; the protocol is open.</p></div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="ai-reinforcement-learning.html"><div class="label">Prev</div><div class="ttl">Reinforcement learning</div></a>
+        <a class="next-fwd" href="../system-design.html"><div class="label">All chapters</div><div class="ttl">Index →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>AI · ChatGPT apps · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

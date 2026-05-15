@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Design ChatGPT · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive interview">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#interviews">Interviews</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Design ChatGPT</span>
+    </div>
+    <nav>
+      <a href="interview-design-spotify.html">← Prev</a>
+      <a href="interview-design-web-crawler.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Interview <b>walkthrough</b></span>
+        <span>Difficulty <b>★★★★★</b></span>
+        <span>Read <b>~14 min</b></span>
+        <span>Scale <b>200M MAU · streaming tokens</b></span>
+      </div>
+      <h1>Design <span class="ital">ChatGPT</span>.</h1>
+      <p class="lede">A chat product that serves LLM responses. The interesting parts: GPU-bound inference scheduling, token streaming over SSE, conversation memory, and the cost ledger that makes "free tier" a real engineering constraint.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>Anchor numbers</h5>
+        <p>~200M MAU · ~100M daily messages · model serves 100–500 tokens/sec per GPU · A100-class GPU costs ~$2/hr · per-message cost: ~$0.001 – $0.10.</p>
+      </div>
+      <div>
+        <h5>The hard parts</h5>
+        <p>(1) Streaming tokens with low TTFB. (2) Batching requests onto GPUs efficiently. (3) Conversation context that exceeds the model's window. (4) Cost — each conversation is dollars, not microseconds.</p>
+      </div>
+      <div>
+        <h5>What we won't model</h5>
+        <p>The training pipeline. The model itself. We're designing the serving infrastructure.</p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#clarify">Clarify</a></li>
+        <li><a href="#estimate">Estimate</a></li>
+        <li><a href="#architecture">High-level architecture</a></li>
+        <li><a href="#serving">Deep dive — GPU serving</a></li>
+        <li><a href="#streaming">Deep dive — token streaming</a></li>
+        <li><a href="#memory">Deep dive — conversation memory</a></li>
+        <li><a href="#scale">Scale &amp; bottlenecks</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="clarify">
+        <h2 class="section"><span class="num">01</span><span class="ital">Clarify</span>.</h2>
+        <table class="matrix">
+          <thead><tr><th>Aspect</th><th>Scope</th></tr></thead>
+          <tbody>
+            <tr><th>Flows</th><td>User sends a message, sees a streamed response, conversation persists across messages</td></tr>
+            <tr><th>Model</th><td>Single hosted LLM (assume GPT-4-class), no fine-tuning per-user</td></tr>
+            <tr><th>Users</th><td>200M MAU, ~20M DAU</td></tr>
+            <tr><th>Conversations</th><td>Persistent, per-user threads, can be long (100s of messages)</td></tr>
+            <tr><th>Streaming</th><td>Yes — first token &lt; 1s, full response streamed via SSE</td></tr>
+            <tr><th>Out of scope</th><td>Image gen, voice mode, code execution, plugins</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="estimate">
+        <h2 class="section"><span class="num">02</span><span class="ital">Estimate</span>.</h2>
+        <table class="matrix">
+          <thead><tr><th>Quantity</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><th>Messages / sec (avg)</th><td>~1k (100M/day)</td></tr>
+            <tr><th>Messages / sec (peak)</th><td>~5k</td></tr>
+            <tr><th>Avg input tokens / msg</th><td>~500 (context + new message)</td></tr>
+            <tr><th>Avg output tokens / msg</th><td>~300</td></tr>
+            <tr><th>GPU throughput / instance</th><td>~200 tokens/sec for big model</td></tr>
+            <tr><th>GPU instances needed (avg)</th><td>~1500 (5k msgs/sec × 300 tokens ÷ 200/sec)</td></tr>
+            <tr><th>GPU cost / month (rough)</th><td>~$2M (1500 × $2/hr × 720 hr)</td></tr>
+            <tr><th>Storage / day (conversations)</th><td>~10 TB (100M msgs × 100KB avg)</td></tr>
+          </tbody>
+        </table>
+        <div class="prose">
+          <p>The GPU bill is the architecture. <strong>Every design choice translates into "more efficient GPU utilisation = lower cost"</strong> — request batching, KV cache reuse, prompt caching, smaller models for cheap queries.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="architecture">
+        <h2 class="section"><span class="num">03</span>High-level <span class="ital">architecture</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 320" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="cga" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · CHAT REQUEST PATH</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0" y="0" width="120" height="40" fill="#1a1814"/>
+              <text x="60" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CLIENT</text>
+
+              <rect x="150" y="0" width="140" height="40" fill="#c2410c"/>
+              <text x="220" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">API GATEWAY</text>
+
+              <rect x="320" y="0" width="140" height="40" fill="#1a1814"/>
+              <text x="390" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CONV SVC</text>
+
+              <rect x="490" y="0" width="140" height="40" fill="#c2410c"/>
+              <text x="560" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">INFERENCE ROUTER</text>
+
+              <rect x="660" y="-40" width="160" height="40" fill="#1a1814"/>
+              <text x="740" y="-15" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CONV STORE</text>
+
+              <rect x="660" y="40" width="160" height="40" fill="#1a1814"/>
+              <text x="740" y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">GPU FLEET</text>
+
+              <rect x="860" y="40" width="140" height="40" fill="#c2410c"/>
+              <text x="930" y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">SAFETY FILTER</text>
+
+              <line x1="120" y1="20" x2="148" y2="20" stroke="#c2410c" stroke-width="2" marker-end="url(#cga)"/>
+              <line x1="290" y1="20" x2="318" y2="20" stroke="#c2410c" stroke-width="2" marker-end="url(#cga)"/>
+              <line x1="460" y1="20" x2="488" y2="20" stroke="#c2410c" stroke-width="2" marker-end="url(#cga)"/>
+              <line x1="460" y1="10" x2="658" y2="-20" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#cga)"/>
+              <line x1="630" y1="30" x2="658" y2="55" stroke="#c2410c" stroke-width="2" marker-end="url(#cga)"/>
+              <line x1="820" y1="60" x2="858" y2="60" stroke="#c2410c" stroke-width="2" marker-end="url(#cga)"/>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Conversation service stitches history; inference router schedules onto the GPU fleet; safety filter scans output as it streams.</span></div>
+        </div>
+
+        <h3 class="sub">Components</h3>
+        <div class="prose">
+          <p><strong>Conv service</strong>: persists conversation history, formats the prompt (system message + history + new turn). <strong>Inference router</strong>: picks a GPU instance and a model variant, manages batching. <strong>GPU fleet</strong>: runs the model. <strong>Safety filter</strong>: scans tokens as they stream for policy violations.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="serving">
+        <h2 class="section"><span class="num">04</span>Deep dive — <span class="ital">GPU serving</span>.</h2>
+
+        <h3 class="sub">Batching is everything</h3>
+        <div class="prose">
+          <p>A GPU running one request at a time is wildly under-utilised. <strong>Continuous batching</strong> (also called dynamic batching, "iteration-level scheduling"): the inference engine packs multiple in-flight requests together. As one request finishes a token, the next request's tokens are slotted in. <em>vLLM, TGI, TensorRT-LLM all implement this</em>; without it, throughput is 5–10× lower.</p>
+        </div>
+
+        <h3 class="sub">KV cache</h3>
+        <div class="prose">
+          <p>During generation, the model computes attention keys/values for every prior token in the context. <strong>Caching them avoids recomputation on each new token.</strong> The KV cache is the GPU's working memory; for big contexts (128k tokens), the KV cache itself can be tens of GB. Managing it across batched requests is what vLLM's "PagedAttention" optimises.</p>
+        </div>
+
+        <h3 class="sub">Prompt caching for common prefixes</h3>
+        <div class="prose">
+          <p>System prompts are identical across users. <strong>Cache the KV state of the system prompt</strong>; new requests start from the cached state. Anthropic's Claude API and OpenAI both expose this — it cuts cost on the system-prompt portion by ~90%.</p>
+        </div>
+
+        <h3 class="sub">Model variants</h3>
+        <div class="prose">
+          <p>Not every query needs the biggest model. <strong>Route trivial queries to a smaller, cheaper model</strong>; route complex ones to the big model. A small classifier on the input decides. Quality of cheap-model output for short replies is often indistinguishable; cost is 10× lower.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="streaming">
+        <h2 class="section"><span class="num">05</span>Deep dive — token <span class="ital">streaming</span>.</h2>
+
+        <h3 class="sub">SSE — Server-Sent Events</h3>
+        <div class="prose">
+          <p>The model emits tokens one at a time. <strong>Stream them to the client via SSE</strong> (one HTTP request, server holds it open, sends <code>data: token\n\n</code> per token). The client renders progressively; perceived latency drops by ~100× vs. waiting for the full response. <em>This is why ChatGPT feels fast even though responses take seconds.</em> See <a href="realtime-channels.html">Realtime Channels chapter</a> for SSE specifics.</p>
+        </div>
+
+        <h3 class="sub">Time-to-first-token</h3>
+        <div class="prose">
+          <p>The metric that matters. <strong>The model has to process the entire input prompt before emitting the first output token.</strong> Long prompts → slow TTFB. Prompt caching helps; smaller models for short queries help. Production target: ~500ms TTFB on small models, ~2s on large.</p>
+        </div>
+
+        <h3 class="sub">Mid-stream cancellation</h3>
+        <div class="prose">
+          <p>The user closes the tab. The server should stop generating immediately. <strong>The HTTP request closing is the cancel signal</strong>; the inference engine releases the GPU slot. Without this, you generate 1000 tokens nobody reads, costing you GPU seconds.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="memory">
+        <h2 class="section"><span class="num">06</span>Deep dive — conversation <span class="ital">memory</span>.</h2>
+
+        <h3 class="sub">Sliding window</h3>
+        <div class="prose">
+          <p>Models have a fixed context window (~128k tokens for modern frontier models). A long conversation eventually exceeds it. <strong>Sliding window</strong>: keep the most recent N tokens; older messages drop off. Simple, lossy.</p>
+        </div>
+
+        <h3 class="sub">Summary memory</h3>
+        <div class="prose">
+          <p>As the conversation grows, periodically compress old messages into a summary. Replace the old messages with the summary in the prompt. <strong>The model carries the gist of the conversation without the bytes.</strong> Implementation: run a "summarise the conversation so far" model call when the context budget gets tight.</p>
+        </div>
+
+        <h3 class="sub">Retrieval-augmented memory</h3>
+        <div class="prose">
+          <p>Store every message in a vector database; on each new turn, retrieve the most relevant past messages and prepend them. <strong>Long-term recall</strong>: the user references something they said two weeks ago, the system retrieves it. See <a href="ai-rag.html">RAG chapter</a> for the retrieval pattern.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="scale">
+        <h2 class="section"><span class="num">07</span>Scale &amp; <span class="ital">bottlenecks</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">GPU supply is the cap</div>
+          <p>You cannot auto-scale GPUs in five minutes. <strong>Capacity has to be reserved.</strong> Spot-instance pools, multi-cloud agreements, and queueing during spikes are the operational reality. ChatGPT regularly has "we're at capacity" pages during peaks.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Cost optimisation is the product feature</div>
+          <p>Each query is dollars. <em>The free tier exists because the per-query cost is low enough to subsidise.</em> Smaller models, prompt caching, output truncation, batch limits — all are levers on the cost-per-query line. The financial model and the architecture are intertwined.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Safety filtering is async-friendly</div>
+          <p>Output safety check runs <em>on the stream</em>: as tokens arrive, a smaller classifier (or a list of patterns) inspects them. If a violation is detected, the stream is cut and the response is replaced with a refusal. <strong>Don't wait for the full response to filter</strong>; that doubles latency.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Tradeoffs to mention</div>
+          <p><strong>Quality vs latency vs cost</strong>: bigger model = better answers = slower &amp; more expensive. Picking is product policy. <strong>Stateful conversation vs stateless API</strong>: ChatGPT persists; the API is stateless and forces the caller to manage memory.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Open questions</div>
+          <p>Multi-modal input (images, audio): different model. Tool use / function calling: the model emits structured calls, the system executes them, results feed back. Fine-tuning per-user: cost-prohibitive at this scale, hence retrieval-based memory instead.</p>
+        </div>
+
+        <div class="pull">"This is the first product in our industry where the cost-of-goods-sold has been measured in dollars per request."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="interview-design-spotify.html">
+          <div class="label">Prev</div>
+          <div class="ttl">Design Spotify</div>
+        </a>
+        <a class="next-fwd" href="interview-design-web-crawler.html">
+          <div class="label">Next</div>
+          <div class="ttl">Design Web Crawler →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Interview · Design ChatGPT · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Service Discovery · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">15 · Service Discovery</span>
+    </div>
+    <nav>
+      <a href="bloom-filters.html">← Prev</a>
+      <a href="leader-election.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>15</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~12 min</b></span>
+        <span>Stack <b>Kubernetes · Consul · Service Fabric · DNS</b></span>
+      </div>
+      <h1>How does service A find <span class="ital">service B</span>?</h1>
+      <p class="lede">In 2010 you wrote the IP into a config file. In 2016 you ran Eureka or Consul. In 2026 the sidecar already did it for you. The interesting question is no longer <em>which registry</em> — it's <em>which layer in the stack owns the lookup</em> and what it costs you when that layer hiccups.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>Pods come and go on random IPs. A stable name is a contract between caller and callee. <em>The registry is the body that keeps the contract.</em></p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>If you're on Kubernetes, the answer is "use the cluster DNS." If you're not, the answer is "use the registry that's already on your platform." A custom service discovery layer in 2026 is almost always wrong.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Kubernetes</span>
+          <span class="pill on">Consul</span>
+          <span class="pill on">Azure Service Fabric</span>
+          <span class="pill on">DNS</span>
+          <span class="pill">Eureka</span>
+          <span class="pill">etcd</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The instability of an IP</a></li>
+        <li><a href="#core">DNS vs registry</a></li>
+        <li><a href="#health">Health checks and TTL</a></li>
+        <li><a href="#dotnet">In .NET</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The instability of an <span class="ital">IP</span>.</h2>
+        <div class="prose">
+          <p>Each pod gets its own IP. The pod restarts and the IP changes. The deployment scales from three replicas to ten — seven new IPs that didn't exist a second ago. Hardcoding <code>10.0.4.17</code> into a config file is correctness theatre; it works until the first deploy. <strong>The address has to be derived from a name.</strong> The system that derives it is the service-discovery layer.</p>
+          <p>Two shapes of solution, settled by 2018, refined since. <strong>DNS-based</strong>: the platform runs a DNS server that maps service names to current pod IPs; clients use ordinary <code>getaddrinfo</code>. <strong>Registry-based</strong>: services register themselves with a discovery service (Consul, Eureka, etcd); clients query the registry directly via its API. The cloud era picked DNS, hard, because every TCP client already speaks it.</p>
+        </div>
+
+        <div class="pull">"Hardcoding an IP is faster to write and faster to break. The discovery layer trades one keystroke for one outage."</div>
+      </section>
+
+      <!-- 2 core -->
+      <section class="dd-section" id="core">
+        <h2 class="section"><span class="num">02</span>DNS <span class="ital">vs</span> registry.</h2>
+
+        <div class="prose">
+          <p>Kubernetes ships with both. The cluster's CoreDNS maps <code>orders.default.svc.cluster.local</code> to a virtual ClusterIP, which iptables / IPVS load-balances to a pod. No client-side knowledge of the pod set, no registry API, just DNS.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 480" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="sda" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 15 · TWO ROUTES TO A POD</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- DNS path -->
+            <g transform="translate(20, 70)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">DNS-based (Kubernetes)</text>
+
+              <rect x="0"   y="40" width="140" height="50" fill="#1a1814"/>
+              <text x="70"  y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CALLER POD</text>
+              <text x="70"  y="80" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.6">orders-api</text>
+
+              <rect x="200" y="40" width="160" height="50" fill="#c2410c"/>
+              <text x="280" y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CoreDNS</text>
+              <text x="280" y="80" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">payments.svc → 10.96.0.42</text>
+
+              <rect x="420" y="40" width="160" height="50" fill="#1a1814"/>
+              <text x="500" y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CLUSTER IP</text>
+              <text x="500" y="80" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.6">virtual VIP</text>
+
+              <rect x="640" y="20"  width="100" height="40" fill="#c2410c"/>
+              <text x="690" y="44" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">payments-7c4</text>
+              <rect x="640" y="70"  width="100" height="40" fill="#c2410c"/>
+              <text x="690" y="94" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">payments-8d2</text>
+
+              <line x1="140" y1="65" x2="198" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#sda)"/>
+              <line x1="360" y1="65" x2="418" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#sda)"/>
+              <line x1="580" y1="55" x2="638" y2="40" stroke="#c2410c" stroke-width="1.5" marker-end="url(#sda)"/>
+              <line x1="580" y1="75" x2="638" y2="90" stroke="#c2410c" stroke-width="1.5" marker-end="url(#sda)"/>
+
+              <text x="800" y="40" font-family="JetBrains Mono" font-size="10" fill="#c2410c">①  DNS lookup</text>
+              <text x="800" y="56" font-family="JetBrains Mono" font-size="10" fill="#c2410c">②  L4 connect to VIP</text>
+              <text x="800" y="72" font-family="JetBrains Mono" font-size="10" fill="#c2410c">③  iptables → ready pod</text>
+              <text x="800" y="100" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Client knows: name only.</text>
+              <text x="800" y="116" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Platform owns the rest.</text>
+            </g>
+
+            <line x1="20" y1="220" x2="1180" y2="220" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+            <!-- Registry path -->
+            <g transform="translate(20, 240)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">Registry-based (Consul)</text>
+
+              <rect x="0"   y="40" width="140" height="50" fill="#1a1814"/>
+              <text x="70"  y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CALLER POD</text>
+              <text x="70"  y="80" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.6">+ consul client lib</text>
+
+              <rect x="200" y="40" width="160" height="50" fill="#c2410c"/>
+              <text x="280" y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CONSUL AGENT</text>
+              <text x="280" y="80" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">catalog · health</text>
+
+              <rect x="420" y="40" width="160" height="50" fill="#1a1814"/>
+              <text x="500" y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CONSUL SERVER</text>
+              <text x="500" y="80" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.6">Raft cluster</text>
+
+              <rect x="640" y="20"  width="100" height="40" fill="#c2410c"/>
+              <text x="690" y="44" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">payments-7c4</text>
+              <rect x="640" y="70"  width="100" height="40" fill="#c2410c"/>
+              <text x="690" y="94" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">payments-8d2</text>
+
+              <line x1="140" y1="65" x2="198" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#sda)"/>
+              <line x1="360" y1="65" x2="418" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#sda)"/>
+
+              <path d="M140 70 Q 360 200 638 90" fill="none" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#sda)"/>
+              <text x="430" y="180" font-family="JetBrains Mono" font-size="9" fill="#c2410c">direct call to selected pod</text>
+
+              <text x="800" y="40" font-family="JetBrains Mono" font-size="10" fill="#c2410c">①  Catalog query (list)</text>
+              <text x="800" y="56" font-family="JetBrains Mono" font-size="10" fill="#c2410c">②  Client picks one</text>
+              <text x="800" y="72" font-family="JetBrains Mono" font-size="10" fill="#c2410c">③  Direct connection</text>
+              <text x="800" y="100" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Client owns the pick.</text>
+              <text x="800" y="116" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Richer; more rope.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 15</span><span>DNS puts the load-balancer in the platform; the registry puts it in the client library. Both lookup; only one pushes per-call decisions to the caller.</span></div>
+        </div>
+
+        <h3 class="sub">DNS in Kubernetes is almost always enough</h3>
+        <div class="prose">
+          <p>Every pod's <code>resolv.conf</code> points at CoreDNS, which holds the canonical mapping of <code>service.namespace.svc.cluster.local</code> → ClusterIP. The ClusterIP is a virtual address; the kube-proxy's iptables / IPVS rules round-robin or random-pick a ready endpoint. Health is owned by the readiness probe — an unready pod doesn't appear in the endpoint list. <strong>You write <code>http://payments</code> in your config and the platform figures out the rest.</strong> No client library, no agent, no Raft cluster of your own to operate.</p>
+          <p>The DNS approach has one famous weakness: <strong>connection-level load balancing</strong>. The DNS lookup returns one VIP; once a TCP connection is open, it sticks. HTTP/1 sees this and it's fine (each request opens a new connection-ish). HTTP/2 multiplexes everything down one connection; gRPC inherits the problem; the pod on the other end gets all the load, the rest sit idle. Fix: client-side load balancing via a library, or use headless services (one DNS record per pod) and let the gRPC client do the picking.</p>
+        </div>
+
+        <h3 class="sub">Registries shine when DNS isn't enough</h3>
+        <div class="prose">
+          <p>Consul, Eureka, etcd, Service Fabric naming — all variations on "a key-value store that knows about service health and pushes updates to subscribers." They give you: <strong>multi-datacenter awareness</strong> (DNS in K8s is per-cluster), <strong>rich metadata</strong> (tags, weights, versions), <strong>watch APIs</strong> (be told when the set changes), and <strong>client-side load balancing with health awareness</strong>. The cost is a real cluster to operate, a client library to integrate, and the failure mode where the registry partition becomes your outage.</p>
+        </div>
+      </section>
+
+      <!-- 3 health -->
+      <section class="dd-section" id="health">
+        <h2 class="section"><span class="num">03</span>Health checks and <span class="ital">TTL</span>.</h2>
+        <div class="prose">
+          <p>Discovery only matters if the addresses returned actually work. Three ways a service goes "unhealthy" — process dead, port not listening, listening but broken — and the registry has to detect each. The detection layer is where most real-world bugs live.</p>
+        </div>
+
+        <h3 class="sub">Active vs passive checks</h3>
+        <div class="prose">
+          <p><strong>Active</strong> (registry → service): "hit my /healthz every 5s." Detects all three failure modes; costs registry CPU; can flap. <strong>Passive</strong> (clients report success/failure): "this caller saw three 503s in a row, mark unhealthy." Detects the failures that actually hurt traffic; risks evicting on transient blips. <em>Production systems use both.</em> Kubernetes uses active (readiness probe) and ignores passive — fine because the kube-proxy is connection-stupid. Consul does active by default and supports passive eviction. Envoy/Istio uses both.</p>
+        </div>
+
+        <h3 class="sub">TTLs are the tuning knob</h3>
+        <div class="prose">
+          <p>How fast can a dead pod be removed from the rotation? In K8s, it's <code>readinessProbe.periodSeconds</code> (default 10s) × <code>failureThreshold</code> (default 3) = 30 seconds of bad traffic. Plus kube-proxy's iptables sync time. <strong>Tune the readiness probe to your latency requirements; default values are conservative.</strong> Consul's check intervals are similar — defaults send maybe 30 seconds of traffic to a dead pod. If your SLO is 99.95%, that's the budget for the year you spend in a single rolling restart that hits 1% of traffic for 30 seconds.</p>
+        </div>
+
+        <h3 class="sub">DNS caching is the silent killer</h3>
+        <div class="prose">
+          <p>The registry can update in milliseconds. The client's DNS resolver caches the answer for the TTL, typically 30 seconds. The JVM caches it for 30 seconds by default. .NET's <code>HttpClient</code> caches it <em>indefinitely</em> until you set <code>SocketsHttpHandler.PooledConnectionLifetime</code> — a default that has bitten more on-call engineers than any other in the stack. <strong>Set <code>PooledConnectionLifetime</code> to 2 minutes minimum on every <code>HttpClient</code> that talks to a discovered name.</strong> Without it, your client will happily call a dead pod for an hour after it died.</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">.NET</span>.</h2>
+
+        <div class="prose">
+          <p>K8s DNS just works — write the service name as the host. The <em>important</em> code is the <code>HttpClient</code> configuration that prevents stale DNS from causing outages. Add Consul integration alongside when you need cross-cluster or rich metadata; the registration runs at startup.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">ServiceDiscoverySetup.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Microsoft.Extensions.ServiceDiscovery</span>
+<span class="c">// dotnet add package Consul                  -- only if using Consul</span>
+<span class="k">using</span> <span class="t">Consul</span>;
+<span class="k">using</span> <span class="t">Microsoft.Extensions.Hosting</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Discovery</span>;
+
+<span class="k">public static class</span> <span class="t">DiscoveryRegistration</span>
+{
+    <span class="c">// The most important .NET service-discovery code is this method, full stop.</span>
+    <span class="c">// Without PooledConnectionLifetime, DNS changes are invisible to HttpClient.</span>
+    <span class="k">public static</span> <span class="t">IServiceCollection</span> <span class="fn">AddDiscoveryAwareClient</span>&lt;<span class="t">TClient</span>&gt;(
+        <span class="k">this</span> <span class="t">IServiceCollection</span> services, <span class="k">string</span> baseUrl) <span class="k">where</span> <span class="t">TClient</span> : <span class="k">class</span>
+    {
+        services.<span class="fn">AddHttpClient</span>&lt;<span class="t">TClient</span>&gt;(c =&gt; c.<span class="t">BaseAddress</span> = <span class="k">new</span> <span class="t">Uri</span>(baseUrl))
+            .<span class="fn">ConfigurePrimaryHttpMessageHandler</span>(() =&gt; <span class="k">new</span> <span class="t">SocketsHttpHandler</span>
+            {
+                <span class="c">// DNS re-resolution every 2 minutes — the difference between</span>
+                <span class="c">// "noticed the pod died" and "kept dialling a corpse for an hour."</span>
+                <span class="t">PooledConnectionLifetime</span> = <span class="t">TimeSpan</span>.<span class="fn">FromMinutes</span>(<span class="n">2</span>),
+
+                <span class="c">// Idle connection cleanup — kept conservative for keep-alive friendliness.</span>
+                <span class="t">PooledConnectionIdleTimeout</span> = <span class="t">TimeSpan</span>.<span class="fn">FromMinutes</span>(<span class="n">5</span>),
+            });
+        <span class="k">return</span> services;
+    }
+}
+
+<span class="c">// Self-register with Consul on startup, deregister on shutdown.</span>
+<span class="k">public sealed class</span> <span class="t">ConsulSelfRegistration</span> : <span class="t">IHostedService</span>
+{
+    <span class="k">private readonly</span> <span class="t">IConsulClient</span> _consul;
+    <span class="k">private readonly</span> <span class="t">IHostApplicationLifetime</span> _life;
+    <span class="k">private readonly</span> <span class="t">ILogger</span>&lt;<span class="t">ConsulSelfRegistration</span>&gt; _log;
+    <span class="k">private readonly</span> <span class="k">string</span> _serviceId = $<span class="s">"orders-{Environment.MachineName}-{Guid.NewGuid():N}"</span>;
+
+    <span class="k">public</span> <span class="fn">ConsulSelfRegistration</span>(<span class="t">IConsulClient</span> consul,
+        <span class="t">IHostApplicationLifetime</span> life, <span class="t">ILogger</span>&lt;<span class="t">ConsulSelfRegistration</span>&gt; log)
+    { _consul = consul; _life = life; _log = log; }
+
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">StartAsync</span>(<span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">var</span> reg = <span class="k">new</span> <span class="t">AgentServiceRegistration</span>
+        {
+            <span class="t">ID</span>      = _serviceId,
+            <span class="t">Name</span>    = <span class="s">"orders"</span>,
+            <span class="t">Address</span> = <span class="t">Dns</span>.<span class="fn">GetHostEntry</span>(<span class="t">Dns</span>.<span class="fn">GetHostName</span>()).<span class="t">AddressList</span>[<span class="n">0</span>].<span class="fn">ToString</span>(),
+            <span class="t">Port</span>    = <span class="n">5000</span>,
+            <span class="t">Tags</span>    = <span class="k">new</span>[] { $<span class="s">"version={ThisAssembly.InformationalVersion}"</span> },
+            <span class="t">Check</span>   = <span class="k">new</span> <span class="t">AgentServiceCheck</span>
+            {
+                <span class="t">HTTP</span>     = $<span class="s">"http://{Environment.MachineName}:5000/healthz"</span>,
+                <span class="t">Interval</span> = <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">5</span>),
+                <span class="t">Timeout</span>  = <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">2</span>),
+                <span class="t">DeregisterCriticalServiceAfter</span> = <span class="t">TimeSpan</span>.<span class="fn">FromMinutes</span>(<span class="n">1</span>),
+            }
+        };
+        <span class="k">await</span> _consul.<span class="t">Agent</span>.<span class="fn">ServiceRegister</span>(reg, ct);
+        _log.<span class="fn">LogInformation</span>(<span class="s">"Registered {Id} with Consul"</span>, _serviceId);
+    }
+
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">StopAsync</span>(<span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">await</span> _consul.<span class="t">Agent</span>.<span class="fn">ServiceDeregister</span>(_serviceId, ct);
+        _log.<span class="fn">LogInformation</span>(<span class="s">"Deregistered {Id}"</span>, _serviceId);
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>The <code>Microsoft.Extensions.ServiceDiscovery</code> package (introduced with .NET 8 / Aspire) abstracts the discovery source — DNS, Kubernetes, configuration, Consul — behind one resolver. Production-ready, single line in <code>Program.cs</code>, and the same call sites work across environments.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">Program.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+builder.<span class="t">Services</span>.<span class="fn">AddServiceDiscovery</span>();   <span class="c">// resolves http://payments → real endpoints</span>
+
+builder.<span class="t">Services</span>.<span class="fn">AddDiscoveryAwareClient</span>&lt;<span class="t">PaymentsClient</span>&gt;(<span class="s">"http://payments"</span>);
+builder.<span class="t">Services</span>.<span class="fn">AddDiscoveryAwareClient</span>&lt;<span class="t">InventoryClient</span>&gt;(<span class="s">"http://inventory"</span>);
+
+builder.<span class="t">Services</span>.<span class="fn">ConfigureHttpClientDefaults</span>(http =&gt; http.<span class="fn">AddServiceDiscovery</span>());
+
+<span class="c">// If you're on K8s, you're done. If you also want Consul:</span>
+<span class="k">if</span> (builder.<span class="t">Configuration</span>.<span class="fn">GetValue</span>&lt;<span class="k">bool</span>&gt;(<span class="s">"Consul:Enabled"</span>))
+{
+    builder.<span class="t">Services</span>.<span class="fn">AddSingleton</span>&lt;<span class="t">IConsulClient</span>&gt;(_ =&gt;
+        <span class="k">new</span> <span class="t">ConsulClient</span>(c =&gt; c.<span class="t">Address</span> = <span class="k">new</span>(builder.<span class="t">Configuration</span>[<span class="s">"Consul:Url"</span>]!)));
+    builder.<span class="t">Services</span>.<span class="fn">AddHostedService</span>&lt;<span class="t">ConsulSelfRegistration</span>&gt;();
+}
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+
+app.<span class="fn">MapGet</span>(<span class="s">"/healthz"</span>, () =&gt; <span class="t">Results</span>.<span class="fn">Ok</span>(<span class="k">new</span> { status = <span class="s">"healthy"</span> }));
+app.<span class="fn">Run</span>();</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">PooledConnectionLifetime is the most important line</div>
+          <p>Default <code>HttpClient</code> keeps a connection forever once opened. DNS changes are invisible. Set <code>PooledConnectionLifetime = TimeSpan.FromMinutes(2)</code> and the socket is closed after 2 minutes — the next request re-resolves the DNS. Without this line, every other line in this chapter is decoration.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Use the platform's discovery, not a custom one</div>
+          <p>In 2026, "I'll write a service registry" is a code smell. K8s ships one. Service Fabric ships one. Nomad+Consul ships one. AWS App Mesh and Azure Service Bus do equivalents. <strong>Pick the platform's primitive and only escape it when you have a named cross-platform requirement.</strong></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">gRPC needs client-side load balancing</div>
+          <p>Standard K8s DNS with HTTP/2 sticks one client to one pod for the connection's life. Solutions: (1) use a <strong>headless service</strong> so DNS returns all pod IPs, and configure gRPC's client-side LB; (2) put an L7 proxy (Envoy, Linkerd) in front; (3) use a service mesh. The "I'm getting 90% of traffic on one pod" bug is the canonical symptom.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Deregister on graceful shutdown</div>
+          <p>If a pod terminates without deregistering, clients see "instance up" for up to a TTL × failure-threshold. Hook deregistration into <code>IHostApplicationLifetime.ApplicationStopping</code>; in K8s use <code>preStop</code> + <code>terminationGracePeriodSeconds</code> so the readiness probe fails before the process exits.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Cross-cluster discovery is a different problem</div>
+          <p>K8s DNS is intra-cluster. If you have multi-region or multi-cluster, you need either a global DNS layer (Route 53 health checks, Azure Front Door) or a federated registry (Consul with WAN gossip). <em>Don't lift-and-shift in-cluster discovery to cross-cluster</em>; the latencies and failure modes are different.</p>
+        </div>
+
+        <div class="pull">"In 2010 we wrote service discovery. In 2026 we configure it."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Technology</th>
+              <th>Style</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>K8s ClusterIP DNS<span class="sub">CoreDNS</span></th>
+              <td>DNS</td>
+              <td>Already running · transparent · zero client code</td>
+              <td><strong>$0</strong> (included)</td>
+              <td>CoreDNS is the only thing to monitor</td>
+              <td><span class="verdict good">Default if you're on K8s</span></td>
+            </tr>
+            <tr>
+              <th>Consul<span class="sub">HashiCorp</span></th>
+              <td>Registry + DNS</td>
+              <td>Cross-DC · rich metadata · ACLs · Connect for mTLS</td>
+              <td><strong>$0</strong> (OSS) – <strong>$2k</strong> Enterprise</td>
+              <td>Raft cluster of 3–5 servers</td>
+              <td><span class="verdict good">Multi-cluster or VM-based fleets</span></td>
+            </tr>
+            <tr>
+              <th>Eureka<span class="sub">Netflix OSS</span></th>
+              <td>Registry</td>
+              <td>Mature on Spring · self-preservation mode</td>
+              <td><strong>$0</strong> (OSS)</td>
+              <td>Java cluster; aging</td>
+              <td><span class="verdict warn">Brownfield Spring shops only</span></td>
+            </tr>
+            <tr>
+              <th>etcd<span class="sub">CoreOS</span></th>
+              <td>K/V store</td>
+              <td>Strong consistency · used by K8s itself · watch API</td>
+              <td><strong>$0</strong> (OSS)</td>
+              <td>Raft cluster; ops-heavy</td>
+              <td><span class="verdict warn">Powerful but rarely the right answer alone</span></td>
+            </tr>
+            <tr>
+              <th>Azure Service Fabric naming<span class="sub">Azure-native</span></th>
+              <td>Built-in registry</td>
+              <td>Tight Azure integration · partitioned services</td>
+              <td><strong>$0</strong> (cluster cost only)</td>
+              <td>SF is its own world</td>
+              <td><span class="verdict warn">If you're on SF; otherwise no</span></td>
+            </tr>
+            <tr>
+              <th>Hardcoded URLs<span class="sub">config files</span></th>
+              <td>None</td>
+              <td>Zero infra</td>
+              <td>$0</td>
+              <td>One scale event invalidates the config</td>
+              <td><span class="verdict bad">Don't. Even in dev.</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>On Kubernetes, single cluster</h5>
+            <p>CoreDNS + ClusterIP services. <code>Microsoft.Extensions.ServiceDiscovery</code> for indirection. Don't add Consul.</p>
+          </div>
+          <div class="cell">
+            <h5>On Kubernetes, gRPC heavy</h5>
+            <p>Headless service + gRPC client-side load balancing, or a service mesh (Linkerd, Istio). Standard ClusterIP hands too much load to one pod.</p>
+          </div>
+          <div class="cell">
+            <h5>Multi-cluster / multi-region</h5>
+            <p>Consul with WAN gossip, or a global DNS layer (Front Door, Route 53) with health checks. Intra-cluster DNS won't reach across.</p>
+          </div>
+          <div class="cell">
+            <h5>VM-based fleet, no orchestrator</h5>
+            <p>Consul is the cleanest answer. Agent on every VM, server cluster of 3–5, integrated health checks.</p>
+          </div>
+          <div class="cell">
+            <h5>Service Fabric stack</h5>
+            <p>Built-in naming service. Don't bolt anything on; it has more capability than most homegrown solutions.</p>
+          </div>
+          <div class="cell">
+            <h5>Dev / staging / prod parity</h5>
+            <p>Use the <code>Microsoft.Extensions.ServiceDiscovery</code> abstraction. Dev: config-based. Staging/prod: K8s DNS. Same call sites.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — forgetting <code>PooledConnectionLifetime</code>.</strong> Discovery works, DNS updates, but the open socket keeps dialling the dead pod. Set the lifetime to 2 minutes on every <code>HttpClient</code>.</p>
+        <p><strong>Two — building a custom registry.</strong> Almost always wrong. The platform's registry has been hardened by 10× the engineering effort you have. Use it; escape only with a named reason.</p>
+        <p><strong>Three — assuming DNS is enough for gRPC.</strong> HTTP/2 multiplexing sticks all traffic on one connection, so DNS round-robin doesn't actually round-robin. Headless services or an L7 proxy.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="bloom-filters.html">
+          <div class="label">Chapter 14</div>
+          <div class="ttl">Bloom filters</div>
+        </a>
+        <a class="next-fwd" href="leader-election.html">
+          <div class="label">Chapter 16</div>
+          <div class="ttl">Leader election →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 15 · Service Discovery · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Design Airbnb · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive interview">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#interviews">Interviews</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Design Airbnb</span>
+    </div>
+    <nav><a href="interview-mobile-framework.html">← Prev</a><a href="interview-design-twitter-frontend.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Interview <b>walkthrough</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~13 min</b></span>
+        <span>Scale <b>~150M users · 7M listings</b></span>
+      </div>
+      <h1>Design <span class="ital">Airbnb</span>.</h1>
+      <p class="lede">Search, geo-indexing, calendar availability, booking flow. The deceptively-simple "list all listings" turns into a spatial-index problem; the deceptively-simple "is this date available" turns into a concurrency problem.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>Anchor numbers</h5><p>~150M users · 7M+ active listings · ~2M+ stays/night peak · search latency target &lt;300ms · booking conflicts must be 0.</p></div>
+      <div><h5>The hard parts</h5><p>(1) Geo-search at low latency. (2) Calendar availability without double-bookings. (3) Pricing dynamism (host rules + ML). (4) Multi-host inventory invariants.</p></div>
+      <div><h5>Out of scope</h5><p>Payments (separate; off-the-shelf processor). Messaging. Reviews after the fact.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#clarify">Clarify</a></li>
+        <li><a href="#estimate">Estimate</a></li>
+        <li><a href="#architecture">High-level architecture</a></li>
+        <li><a href="#geo">Deep dive — geo search</a></li>
+        <li><a href="#booking">Deep dive — booking (no double-book)</a></li>
+        <li><a href="#scale">Scale &amp; tradeoffs</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="clarify">
+        <h2 class="section"><span class="num">01</span><span class="ital">Clarify</span>.</h2>
+        <table class="matrix">
+          <thead><tr><th>Aspect</th><th>Scope</th></tr></thead>
+          <tbody>
+            <tr><th>Flows</th><td>Search by city + date range, view listing, book</td></tr>
+            <tr><th>Listings</th><td>7M active, ~global, hosts add &amp; update</td></tr>
+            <tr><th>Calendar</th><td>Per-listing availability per night, must be conflict-free</td></tr>
+            <tr><th>Pricing</th><td>Per-night pricing, dynamic (host or ML-set)</td></tr>
+            <tr><th>Out of scope</th><td>Payments, messaging, search-ranking ML</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="estimate">
+        <h2 class="section"><span class="num">02</span><span class="ital">Estimate</span>.</h2>
+        <table class="matrix">
+          <thead><tr><th>Quantity</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><th>Searches / sec</th><td>~20k</td></tr>
+            <tr><th>Bookings / sec</th><td>~50</td></tr>
+            <tr><th>Listing reads (detail page)</th><td>~5k / sec</td></tr>
+            <tr><th>Avg search radius</th><td>"city" — ~5–20 km</td></tr>
+            <tr><th>Avg results per search</th><td>~100 candidates → top 20 shown</td></tr>
+            <tr><th>Calendar storage (per listing)</th><td>~365 days × 5 yrs × 4 bytes = ~8 KB</td></tr>
+            <tr><th>Total calendar storage</th><td>~56 GB</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="architecture">
+        <h2 class="section"><span class="num">03</span>High-level <span class="ital">architecture</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 280" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs><marker id="aba" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker></defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · SEARCH AND BOOK</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+            <g transform="translate(40, 80)">
+              <rect x="0"   y="20" width="120" height="50" fill="#1a1814"/><text x="60" y="48" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CLIENT</text>
+              <rect x="160" y="-10" width="140" height="40" fill="#c2410c"/><text x="230" y="14" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">SEARCH SVC</text>
+              <rect x="160" y="50" width="140" height="40" fill="#c2410c"/><text x="230" y="74" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">BOOKING SVC</text>
+              <rect x="340" y="-30" width="160" height="40" fill="#1a1814"/><text x="420" y="-5" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">GEO INDEX (S2)</text>
+              <rect x="340" y="20" width="160" height="40" fill="#1a1814"/><text x="420" y="44" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">LISTING META</text>
+              <rect x="340" y="70" width="160" height="40" fill="#1a1814"/><text x="420" y="94" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CALENDAR DB</text>
+              <rect x="540" y="20" width="160" height="40" fill="#c2410c"/><text x="620" y="44" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">PRICING SVC</text>
+              <rect x="540" y="70" width="160" height="40" fill="#c2410c"/><text x="620" y="94" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">RESERVATION TXN</text>
+              <line x1="120" y1="10"  x2="158" y2="10"  stroke="#c2410c" stroke-width="2" marker-end="url(#aba)"/>
+              <line x1="120" y1="70"  x2="158" y2="70"  stroke="#c2410c" stroke-width="2" marker-end="url(#aba)"/>
+              <line x1="300" y1="10"  x2="338" y2="-10" stroke="#c2410c" stroke-width="1.5" marker-end="url(#aba)"/>
+              <line x1="300" y1="20"  x2="338" y2="40"  stroke="#c2410c" stroke-width="1.5" marker-end="url(#aba)"/>
+              <line x1="300" y1="70"  x2="338" y2="90"  stroke="#c2410c" stroke-width="1.5" marker-end="url(#aba)"/>
+              <line x1="500" y1="40"  x2="538" y2="40"  stroke="#c2410c" stroke-width="1.5" marker-end="url(#aba)"/>
+              <line x1="500" y1="90"  x2="538" y2="90"  stroke="#c2410c" stroke-width="1.5" marker-end="url(#aba)"/>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Search hits the geo index first; booking runs a serialisable transaction over the calendar.</span></div>
+        </div>
+      </section>
+
+      <section class="dd-section" id="geo">
+        <h2 class="section"><span class="num">04</span>Deep dive — <span class="ital">geo search</span>.</h2>
+
+        <h3 class="sub">S2 cells, not lat/lon ranges</h3>
+        <div class="prose">
+          <p>"All listings within 5km of (37.77, -122.4)" — naive SQL with bounding box and a <code>WHERE lat BETWEEN…</code> works for 10k listings, dies at 7M. <strong>Use S2 or geohash</strong>: each listing tagged with an S2 cell ID at multiple resolutions; the query computes the cells covering the search area and looks up by cell ID. Index hit, fast.</p>
+        </div>
+
+        <h3 class="sub">Pre-filter by date</h3>
+        <div class="prose">
+          <p>Search is "in this area, available these dates." <strong>Two-stage filter</strong>: (1) area → candidate listings via S2; (2) date → subset by checking calendar. Usually the second stage is the expensive one; cache "this listing is generally available" hints (no bookings in next 90 days) to skip cold lookups.</p>
+        </div>
+
+        <h3 class="sub">Personalisation = re-ranking</h3>
+        <div class="prose">
+          <p>The base query returns ~100 candidates; ML re-ranks based on user, season, price sensitivity, conversion-likelihood. <strong>Same shape as <a href="search-architecture.html">search architecture</a></strong>: cheap retrieval + expensive re-rank.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="booking">
+        <h2 class="section"><span class="num">05</span>Deep dive — booking <span class="ital">without double-book</span>.</h2>
+
+        <h3 class="sub">The race condition</h3>
+        <div class="prose">
+          <p>Two guests click "book" for the same listing-night at the same millisecond. <strong>Both can't succeed.</strong> The traditional fix: a serialisable transaction over the calendar row, with a unique constraint on <code>(listing_id, date)</code>.</p>
+        </div>
+
+        <h3 class="sub">Idempotency for retries</h3>
+        <div class="prose">
+          <p>A network glitch retries the booking. <strong>Idempotency-Key in the request</strong> (see <a href="idempotency-keys.html">idempotency chapter</a>); replay returns the same booking, not a second one. The same guest's two clicks become one booking.</p>
+        </div>
+
+        <h3 class="sub">Atomic per-night calendar updates</h3>
+        <div class="prose">
+          <p>One row per (listing, date). Booking inserts rows for each night in the stay. <strong>Unique constraint enforces "one booking per night"</strong>; the second booker's insert fails. Wrap in a transaction; rollback the partial; show "no longer available." <em>The DB is the safety mechanism, not the app code.</em></p>
+        </div>
+
+        <h3 class="sub">Pre-booking hold</h3>
+        <div class="prose">
+          <p>"Continue to payment" places a 15-minute hold. <strong>Hold rows in the same calendar table, expiring rows reclaimed by a background job</strong> (or just a TTL'd marker). Prevents the user from completing payment to find someone else booked it in the meantime.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="scale">
+        <h2 class="section"><span class="num">06</span>Scale &amp; <span class="ital">tradeoffs</span>.</h2>
+
+        <div class="callout"><div class="ctag">Search is read-heavy; bookings are write-critical</div><p>Different scaling. Search uses read replicas + caching; bookings need primary writes with strong consistency. Separate the paths.</p></div>
+        <div class="callout"><div class="ctag">Calendar shard by listing</div><p>Calendar table grows; shard by listing_id. All operations for one listing land on one shard; no cross-shard transactions needed.</p></div>
+        <div class="callout"><div class="ctag">Pricing is cacheable, briefly</div><p>Price for (listing, date range, user-segment) cached for ~5 minutes. Slightly stale on conversion; rarely matters.</p></div>
+        <div class="callout"><div class="ctag">Tradeoffs to mention</div><p><strong>Pre-booking hold vs commitment</strong> — strict hold helps users; weak hold maximises inventory. <strong>Search consistency</strong> — recently-booked listings may appear in search briefly; that's fine because booking re-validates.</p></div>
+        <div class="callout"><div class="ctag">Open questions</div><p>Refunds &amp; cancellations — a separate workflow with saga semantics. Host calendar sync — iCal export/import. Multi-currency. Tax computation.</p></div>
+
+        <div class="pull">"The double-booking bug exists because the application tried to be clever. The DB unique constraint is the engineering."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="interview-mobile-framework.html"><div class="label">Prev</div><div class="ttl">Mobile framework</div></a>
+        <a class="next-fwd" href="interview-design-twitter-frontend.html"><div class="label">Next</div><div class="ttl">Design Twitter frontend →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Interview · Design Airbnb · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

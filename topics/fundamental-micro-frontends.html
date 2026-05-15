@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Micro Frontends · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Micro frontends</span>
+    </div>
+    <nav><a href="fundamental-hinted-handoff.html">← Prev</a><a href="fundamental-redis-use-cases.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>Module federation · single-spa · iframes</b></span>
+      </div>
+      <h1>Microservices for the <span class="ital">browser</span>.</h1>
+      <p class="lede">Multiple teams shipping into one UI shell, each owning a slice. Module federation, single-spa, web components. Most of the time it's overkill. The cases where it's right are real but small.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>Three composition modes</h5><p>Build-time (monorepo + packages). Run-time (module federation, single-spa). Iframe (browser sandbox).</p></div>
+      <div><h5>The real reason to use it</h5><p>Multiple teams shipping independent surfaces of one product, at different cadences. Not "we want microservices for the front-end."</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">Why or why not</a></li>
+      <li><a href="#modes">Composition modes</a></li>
+      <li><a href="#sharing">Shared dependencies</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why or <span class="ital">why not</span>.</h2>
+        <div class="prose">
+          <p>One frontend codebase, many teams. Conflicting library versions. Slow CI. PRs that touch everyone's code. Release coupling — team A's bug blocks team B's launch. <strong>Sound familiar? You might want micro frontends.</strong></p>
+          <p>But: <em>most front-end orgs that adopt micro-frontends regret it within 18 months.</em> The duplication tax (each MFE ships its own React copy), the consistency tax (each team's "Button" looks slightly different), the orchestration tax (who deploys the shell?). <strong>Solve the problem with a monorepo and shared packages first.</strong> If that still hurts, then micro frontends.</p>
+        </div>
+        <div class="pull">"The Module Federation demo looks great. The Module Federation production system looks like a service mesh in HTML."</div>
+      </section>
+
+      <section class="dd-section" id="modes">
+        <h2 class="section"><span class="num">02</span>Composition <span class="ital">modes</span>.</h2>
+
+        <h3 class="sub">Build-time composition (monorepo)</h3>
+        <div class="prose">
+          <p>Each team's UI is a package. Apps depend on packages. CI builds the whole thing. <strong>Simplest and best for most teams.</strong> Nx, Turborepo. <em>This isn't "micro frontends" by most definitions</em>; it's the alternative most teams should pick.</p>
+        </div>
+
+        <h3 class="sub">Run-time composition (federation)</h3>
+        <div class="prose">
+          <p>Webpack Module Federation, Vite's plugin, RSPack. <strong>The host app loads remote modules at runtime from URLs.</strong> Each MFE deploys independently; host picks up the new version on next page load. Cost: shared dependencies must be resolved per-page; type sharing across MFE repos is tricky.</p>
+        </div>
+
+        <h3 class="sub">Run-time composition (single-spa)</h3>
+        <div class="prose">
+          <p>A router that loads frameworks-of-frameworks into the same page. <strong>Mix React + Vue + Angular if you must.</strong> Powerful, scary; useful for incremental migrations more than greenfield design.</p>
+        </div>
+
+        <h3 class="sub">Iframes</h3>
+        <div class="prose">
+          <p>The oldest, simplest micro-frontend. Strong isolation (separate JS context, CSS scope, security boundary). <strong>Best for embedding untrusted content</strong> (third-party apps, payment widgets). Cost: cross-frame communication is awkward; deep linking is harder.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="sharing">
+        <h2 class="section"><span class="num">03</span>Shared <span class="ital">dependencies</span>.</h2>
+        <div class="prose">
+          <p>React is 50 KB gzipped. If each MFE ships its own copy, 10 MFEs = 500 KB just for React. <strong>Module Federation supports sharing</strong>: declare React as a shared singleton; all MFEs use the host's instance. The version-matching rules are subtle; one MFE on React 18 and another on React 19 breaks hooks.</p>
+          <p><em>Sharing turns a build-time concern into a runtime contract.</em> When you change major versions, you have to coordinate across teams — which is the problem MFEs were supposed to solve.</p>
+        </div>
+
+        <h3 class="sub">Design system</h3>
+        <div class="prose">
+          <p>If each MFE has its own button, the product looks inconsistent. <strong>Centralised design system, versioned, used by all MFEs.</strong> Versioning is now an architectural concern: when you publish v2 of the design system, you have N MFE teams to coordinate with.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">04</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Single team, single product</h5><p>Don't. Monorepo with packages is plenty. Micro frontends solve org problems, not technical ones.</p></div>
+          <div class="cell"><h5>Multiple teams, one product, build pain</h5><p>Try Turborepo / Nx monorepo first. 80% of the wins for 10% of the complexity.</p></div>
+          <div class="cell"><h5>Multiple teams, must deploy independently</h5><p>Module Federation with carefully managed shared dependencies. Versioned design system.</p></div>
+          <div class="cell"><h5>Legacy migration (Angular → React)</h5><p>single-spa makes the migration incremental. Migrate page-by-page; ship each migration as it completes.</p></div>
+          <div class="cell"><h5>Embedding third-party widgets</h5><p>Iframes. Sandboxed, security-boundaried. The grandfather technique; still the right one for untrusted content.</p></div>
+          <div class="cell"><h5>You're being told to adopt MFEs by a vendor</h5><p>Push back. The pattern has real costs. Make sure the team-level reason is real before paying them.</p></div>
+        </div>
+        <div class="pull">"Micro frontends are the answer when your monorepo has stopped being able to ship. Not before."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-hinted-handoff.html"><div class="label">Prev</div><div class="ttl">Hinted handoff</div></a>
+        <a class="next-fwd" href="fundamental-redis-use-cases.html"><div class="label">Next</div><div class="ttl">Redis use cases →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Micro frontends · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Amazon Frugal Architecture · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Frugal architecture</span>
+    </div>
+    <nav><a href="fundamental-password-storage.html">← Prev</a><a href="fundamental-code-review.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~9 min</b></span>
+        <span>Stack <b>Werner Vogels · 7 laws · cost-conscious design</b></span>
+      </div>
+      <h1>Cost is a <span class="ital">non-functional</span> requirement.</h1>
+      <p class="lede">Werner Vogels' 2024 manifesto: cost belongs on the architecture diagram. Most teams optimise for correctness and performance; cost is what the CFO worries about. Frugal architecture treats cost as a first-class design dimension — alongside latency, throughput, availability.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The seven laws</h5><p>(1) Make cost a non-functional requirement. (2) Systems that last align cost to business. (3) Architecting is a series of trade-offs. (4) Unobserved systems lead to unknown costs. (5) Cost-aware architectures implement cost controls. (6) Cost optimisation is incremental. (7) Unchallenged success leads to assumptions.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#why">Why cost matters now</a></li>
+      <li><a href="#laws">The seven laws</a></li>
+      <li><a href="#patterns">Frugal patterns</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="why">
+        <h2 class="section"><span class="num">01</span>Why cost matters <span class="ital">now</span>.</h2>
+        <div class="prose">
+          <p>Cloud was sold as "infinite elasticity"; the implicit promise was that capacity wasn't the constraint. <strong>The bill was.</strong> Many teams spent years optimising for development speed and ignored unit-economics. Then came the era of "wait, our compute bill is bigger than our salary spend."</p>
+          <p>Werner Vogels' framing: <em>cost belongs on the same dashboard as latency.</em> An architecture that achieves 50ms p99 at $100/req is failing. The CFO is a stakeholder; the architecture is also their problem.</p>
+        </div>
+        <div class="pull">"Cost-of-goods-sold is a feature. Make it a feature you measure."</div>
+      </section>
+
+      <section class="dd-section" id="laws">
+        <h2 class="section"><span class="num">02</span>The seven <span class="ital">laws</span>.</h2>
+
+        <h3 class="sub">1. Cost is a non-functional requirement</h3>
+        <div class="prose"><p>Put it in the architecture review. "What's the cost per request?" should be as common as "what's the p99 latency?"</p></div>
+
+        <h3 class="sub">2. Systems that last align cost to business</h3>
+        <div class="prose"><p>A system where cost-per-request scales with revenue-per-request is sustainable. One where cost grows faster than revenue is a clock running down. <em>Per-user revenue × usage = per-user revenue; per-user infra cost should scale similarly.</em></p></div>
+
+        <h3 class="sub">3. Architecting is a series of trade-offs</h3>
+        <div class="prose"><p>Cost is always a trade. Cheaper storage = colder reads. Spot instances = potential preemption. More cache = staler data. <strong>Name the trade explicitly</strong>; don't pretend the cheap option is free.</p></div>
+
+        <h3 class="sub">4. Unobserved systems lead to unknown costs</h3>
+        <div class="prose"><p>If you can't tag your spend by feature/team/customer, you can't optimise. <strong>Cost observability is engineering</strong>: tag resources, attribute spend, dashboard it. AWS Cost Explorer, GCP Billing, Azure Cost Management — they all support tagging.</p></div>
+
+        <h3 class="sub">5. Cost-aware architectures implement cost controls</h3>
+        <div class="prose"><p>Limits, alerts, kill-switches. <strong>An unbounded queue is also an unbounded bill</strong>. An unbounded log is an unbounded storage tier. Build limits in.</p></div>
+
+        <h3 class="sub">6. Cost optimisation is incremental</h3>
+        <div class="prose"><p>Most savings come from many small wins. Right-sizing instances. Stopping idle dev environments. Switching to spot. Reducing log retention. <em>Don't wait for a 10× rewrite; ship a 5% saving today.</em></p></div>
+
+        <h3 class="sub">7. Unchallenged success leads to assumptions</h3>
+        <div class="prose"><p>"We've always used Redshift" doesn't mean Redshift is still the right choice. Periodically audit your stack: would we pick this today? <strong>Architectures decay against the moving frontier of cloud offerings.</strong></p></div>
+      </section>
+
+      <section class="dd-section" id="patterns">
+        <h2 class="section"><span class="num">03</span>Frugal <span class="ital">patterns</span>.</h2>
+        <table class="matrix"><thead><tr><th>Pattern</th><th>Savings</th></tr></thead><tbody>
+          <tr><th>Right-size instances quarterly</th><td>~30% on EC2 / VMs</td></tr>
+          <tr><th>Spot instances for batch</th><td>~70% on those workloads</td></tr>
+          <tr><th>Reserved / committed-use discounts</th><td>~30–60% on baseline</td></tr>
+          <tr><th>Tier storage (hot → cold)</th><td>~80% on data &gt; 90 days old</td></tr>
+          <tr><th>Aggressive caching</th><td>~90% on read-heavy</td></tr>
+          <tr><th>Egress reduction (CDN, regional)</th><td>Highly variable; often 50%+</td></tr>
+          <tr><th>Schedule dev/staging shutdown nights/weekends</th><td>~70% on non-prod</td></tr>
+          <tr><th>Compress / dedup data</th><td>30–80% on backups</td></tr>
+          <tr><th>Drop unused indexes</th><td>~20% on database</td></tr>
+          <tr><th>Async batch where realtime isn't required</th><td>See <a href="paper-xfaas.html">XFaaS paper</a></td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">04</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Your cloud bill is climbing &gt;30% YoY</h5><p>Allocate engineering time to cost. Audit tagging; identify the top 5 line items; pick 2 to optimise per quarter.</p></div>
+          <div class="cell"><h5>Building greenfield</h5><p>Add a "cost per request" cell to every architecture-review template. Treat it like p99.</p></div>
+          <div class="cell"><h5>Pre-launch SaaS</h5><p>Model the unit economics. Per-customer infra cost vs per-customer revenue. The math has to work at every plan tier.</p></div>
+          <div class="cell"><h5>Burst-y workload</h5><p>Spot / preemptible instances are massively cheaper. The interruption is bearable for batch; build the work to checkpoint.</p></div>
+          <div class="cell"><h5>Lots of stored data</h5><p>Storage tiering. S3 Standard → S3 IA → Glacier. ~10× savings on cold data with managed lifecycle policies.</p></div>
+          <div class="cell"><h5>FinOps maturity</h5><p>FinOps is the discipline. Hire / promote someone whose job is the cloud bill. The ROI is high.</p></div>
+        </div>
+        <div class="pull">"The cheapest watt is the one you didn't burn. Same goes for the cheapest dollar."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-password-storage.html"><div class="label">Prev</div><div class="ttl">Password storage</div></a>
+        <a class="next-fwd" href="fundamental-code-review.html"><div class="label">Next</div><div class="ttl">Code review →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Frugal architecture · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

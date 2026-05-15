@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Design Twitter Timeline — Frontend · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive interview">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#interviews">Interviews</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Twitter frontend</span>
+    </div>
+    <nav><a href="interview-design-airbnb.html">← Prev</a><a href="../system-design.html">Index →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Interview <b>walkthrough</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~13 min</b></span>
+        <span>Stack <b>Virtualised list · optimistic UI · SSE · client state</b></span>
+      </div>
+      <h1>Design Twitter timeline — <span class="ital">frontend</span>.</h1>
+      <p class="lede">The backend designs Twitter. The frontend designs <em>the experience of Twitter</em>: infinite scroll with no jank, optimistic likes that don't lie, real-time updates that don't surprise, image media at 60fps. Different problem, different metrics, different art.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The hard parts</h5><p>Virtualised infinite list. Optimistic mutations. Real-time updates that respect scroll position. Media-heavy rendering at 60fps. Offline-tolerance.</p></div>
+      <div><h5>Performance budgets</h5><p>First Contentful Paint &lt;1s. Largest Contentful Paint &lt;2s. Interaction latency &lt;100ms. Scroll at 60fps on a 4-year-old phone.</p></div>
+      <div><h5>Tech you'll touch</h5>
+        <div><span class="pill on">React + virtual scroller</span><span class="pill on">React Query / SWR</span><span class="pill on">SSE</span><span class="pill">Service worker</span></div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#clarify">Clarify</a></li>
+        <li><a href="#estimate">Performance budgets</a></li>
+        <li><a href="#architecture">High-level architecture</a></li>
+        <li><a href="#virtual">Deep dive — virtualised list</a></li>
+        <li><a href="#optimistic">Deep dive — optimistic UI</a></li>
+        <li><a href="#realtime">Deep dive — real-time</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="clarify">
+        <h2 class="section"><span class="num">01</span><span class="ital">Clarify</span>.</h2>
+        <div class="prose">
+          <p>Scope: the home timeline view. Infinite scroll. Tap to like / retweet / reply. Real-time updates (new tweets appear). Media (images, video) inline. Works on mobile web. <em>Not in scope</em>: compose flow, profile pages, search, DMs.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="estimate">
+        <h2 class="section"><span class="num">02</span>Performance <span class="ital">budgets</span>.</h2>
+        <table class="matrix">
+          <thead><tr><th>Metric</th><th>Target</th></tr></thead>
+          <tbody>
+            <tr><th>FCP (First Contentful Paint)</th><td>&lt;1s</td></tr>
+            <tr><th>LCP (Largest Contentful Paint)</th><td>&lt;2s</td></tr>
+            <tr><th>TBT (Total Blocking Time)</th><td>&lt;200ms</td></tr>
+            <tr><th>CLS (Cumulative Layout Shift)</th><td>&lt;0.1</td></tr>
+            <tr><th>Tap-to-paint (like, retweet)</th><td>&lt;100ms (optimistic)</td></tr>
+            <tr><th>Scroll FPS</th><td>60 (16.6ms per frame)</td></tr>
+            <tr><th>JS bundle (initial)</th><td>&lt;200 KB gzipped</td></tr>
+          </tbody>
+        </table>
+        <div class="prose">
+          <p>Lighthouse / Web Vitals scores are the deliverable. The interviewer wants to hear which budgets you'd set <em>before</em> coding, not after.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="architecture">
+        <h2 class="section"><span class="num">03</span>High-level <span class="ital">architecture</span>.</h2>
+
+        <div class="prose">
+          <p>Three layers: <strong>view</strong> (React components, virtual list), <strong>state</strong> (React Query or Redux-like, normalised tweet store), <strong>transport</strong> (REST for pagination, SSE for real-time updates). Plus a service worker for offline-tolerant caching and a CDN for media.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 280" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs><marker id="tfa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker></defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · CLIENT LAYERS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+            <g transform="translate(40, 80)">
+              <rect x="0" y="0" width="240" height="40" fill="#c2410c"/><text x="120" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">VIEW — React + virtual list</text>
+              <rect x="280" y="0" width="240" height="40" fill="#c2410c"/><text x="400" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">STATE — normalised tweet store</text>
+              <rect x="560" y="0" width="240" height="40" fill="#c2410c"/><text x="680" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">TRANSPORT — REST + SSE</text>
+              <rect x="840" y="0" width="280" height="40" fill="#1a1814"/><text x="980" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">SERVICE WORKER — cache, retry</text>
+              <line x1="240" y1="20" x2="278" y2="20" stroke="#c2410c" stroke-width="1.5" marker-end="url(#tfa)"/>
+              <line x1="520" y1="20" x2="558" y2="20" stroke="#c2410c" stroke-width="1.5" marker-end="url(#tfa)"/>
+              <line x1="800" y1="20" x2="838" y2="20" stroke="#c2410c" stroke-width="1.5" marker-end="url(#tfa)"/>
+              <text x="40" y="100" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">"Each layer has one job. The boundaries are where the bugs cluster."</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>The state layer is the single source of truth. Components subscribe to slices; mutations go through it; transport syncs in the background.</span></div>
+        </div>
+      </section>
+
+      <section class="dd-section" id="virtual">
+        <h2 class="section"><span class="num">04</span>Deep dive — <span class="ital">virtualised list</span>.</h2>
+
+        <h3 class="sub">Don't render 10,000 DOM nodes</h3>
+        <div class="prose">
+          <p>The timeline can be thousands of tweets long. <strong>Rendering all of them kills scroll perf and memory.</strong> Virtualise: render only the ~30 tweets currently visible + a small buffer above and below. Above and below the viewport, use spacer divs sized to the placeholder height. <em>react-window, react-virtual, virtua are the libraries.</em></p>
+        </div>
+
+        <h3 class="sub">Variable-height items</h3>
+        <div class="prose">
+          <p>Tweets have different heights — text vs image vs video vs quoted-tweet. <strong>Variable-height virtualisation</strong>: measure each item on first render; cache the height; use cached heights to compute scrollable space. Without this, scroll jumps because positions guess-and-shift.</p>
+        </div>
+
+        <h3 class="sub">Maintain scroll position on prepend</h3>
+        <div class="prose">
+          <p>"5 new tweets ↑" prepends items. The user is mid-scroll on something they were reading; you do <em>not</em> want to suddenly jump them up. <strong>Maintain anchor</strong>: track the offset of a known tweet ID; after prepend, scroll so that tweet stays at the same screen Y. <em>This is the difference between "polished" and "infuriating."</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="optimistic">
+        <h2 class="section"><span class="num">05</span>Deep dive — <span class="ital">optimistic UI</span>.</h2>
+
+        <h3 class="sub">Tap → mutate locally → send to server</h3>
+        <div class="prose">
+          <p>User taps "Like." <strong>Don't wait for the server.</strong> Increment the like count in the local state immediately; the heart fills; the count goes up. Send the mutation to the server in the background. On success, no-op. On failure, revert.</p>
+        </div>
+
+        <h3 class="sub">Rollback gracefully</h3>
+        <div class="prose">
+          <p>Server returns 503. The optimistic state was wrong. <strong>Revert with a brief toast: "Couldn't like. Tap to retry."</strong> Don't silently swallow the failure; the user pressed the button and expects feedback.</p>
+        </div>
+
+        <h3 class="sub">Idempotency in mutations</h3>
+        <div class="prose">
+          <p>"Like" should be idempotent — clicking twice is one like, not toggling. Send an idempotency key (see <a href="idempotency-keys.html">idempotency chapter</a>). The client maintains a per-action token; retries are safe.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="realtime">
+        <h2 class="section"><span class="num">06</span>Deep dive — <span class="ital">real-time</span> updates.</h2>
+
+        <h3 class="sub">SSE for "new tweets available"</h3>
+        <div class="prose">
+          <p>Open an SSE connection (see <a href="realtime-channels.html">realtime channels chapter</a>). Server pushes "new tweet for your timeline" events. <strong>Don't auto-insert</strong>; show a "5 new tweets ↑" pill at the top of the list. User taps it; you prepend; you reset scroll anchor.</p>
+        </div>
+
+        <h3 class="sub">Live updates within visible tweets</h3>
+        <div class="prose">
+          <p>A tweet you're looking at gets a new reply. <strong>Subscribe to per-tweet updates only when visible.</strong> Intersection observer fires when the tweet enters viewport; client subscribes. Leaves viewport; client unsubscribes. <em>Bounds the WS / SSE bandwidth.</em></p>
+        </div>
+
+        <h3 class="sub">Reconnection</h3>
+        <div class="prose">
+          <p>SSE drops; the browser auto-reconnects. <strong>Resume with <code>Last-Event-ID</code></strong>: server replays events the client missed. Without resume, you have a "I was offline for 2 minutes and now I'm out of sync" bug.</p>
+        </div>
+
+        <div class="callout"><div class="ctag">Image lazy-loading</div><p><code>loading="lazy"</code> on img tags. IntersectionObserver to start video downloads only when visible. Preload the next 2–3 tweets' images to avoid blanks on scroll.</p></div>
+
+        <div class="callout"><div class="ctag">Don't fetch what you already have</div><p>React Query / SWR keeps a normalised cache keyed by tweet ID. Re-rendering a tweet you've seen reuses the cached data; no extra fetch.</p></div>
+
+        <div class="pull">"Backend system design ships a service. Frontend system design ships a feel."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="interview-design-airbnb.html"><div class="label">Prev</div><div class="ttl">Design Airbnb</div></a>
+        <a class="next-fwd" href="../system-design.html"><div class="label">All interviews</div><div class="ttl">Back to index →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Interview · Twitter frontend · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

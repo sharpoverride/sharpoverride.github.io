@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Gossip Protocol · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Gossip</span>
+    </div>
+    <nav><a href="fundamental-high-availability.html">← Prev</a><a href="fundamental-nginx.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~9 min</b></span>
+        <span>Stack <b>SWIM · epidemic · Cassandra · Consul · Serf</b></span>
+      </div>
+      <h1>Information spreads like a <span class="ital">cold</span>.</h1>
+      <p class="lede">Gossip protocols spread information through a cluster by random pairwise exchange. No central coordinator. Information reaches all nodes in O(log N) rounds. Cassandra, Consul, Serf, Akka Cluster all use a variant. The math is elegant; the operational story is "it just works."</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>What gets gossiped</h5><p>Membership (who's in the cluster), failure detection (who's down), state (versioned data per node).</p></div>
+      <div><h5>Why it scales</h5><p>Each node talks to O(1) peers per round. Information reaches N nodes in O(log N) rounds. Total messages: O(N log N).</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">The membership problem</a></li>
+      <li><a href="#mechanics">How it works</a></li>
+      <li><a href="#swim">SWIM — the failure-detection trick</a></li>
+      <li><a href="#prod">Production examples</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The membership <span class="ital">problem</span>.</h2>
+        <div class="prose">
+          <p>A cluster of N nodes. A new node joins. An old node dies. <strong>How does everyone learn?</strong> Three options. <em>(1) Central registry</em>: every node tells one master, master tells everyone. Single point of failure; scaling bottleneck. <em>(2) Broadcast</em>: every node tells everyone. O(N²) messages per change; doesn't scale. <em>(3) Gossip</em>: every node tells a random peer; information spreads epidemically.</p>
+          <p>Gossip is the winner. No central coordinator; messages per round are O(1) per node; convergence is O(log N) rounds. <strong>The trade is eventual consistency on cluster state</strong> — different nodes briefly disagree about who's in the cluster. Almost always acceptable.</p>
+        </div>
+        <div class="pull">"Gossip is the protocol that says: nobody knows, but everybody asks somebody, and the truth wins."</div>
+      </section>
+
+      <section class="dd-section" id="mechanics">
+        <h2 class="section"><span class="num">02</span>How it <span class="ital">works</span>.</h2>
+
+        <h3 class="sub">The round</h3>
+        <div class="prose">
+          <p>Every second (or so), each node picks a random peer and exchanges state. <strong>Push-pull</strong>: A sends its state to B; B merges; B sends its state back to A; A merges. Both ends are now consistent on each other's state.</p>
+          <p>State is per-key versioned. <em>"My IP is 10.0.0.4, version 17"</em>. On merge: keep the higher version. Conflicts (two nodes claiming the same key) are resolved by timestamp or by a chosen tie-breaker.</p>
+        </div>
+
+        <h3 class="sub">Convergence math</h3>
+        <div class="prose">
+          <p>If a single piece of info enters the cluster at one node, after each round the number of nodes that know it roughly doubles (the original tells one new; both tell one new each; etc.). <strong>After log₂(N) rounds, everyone knows.</strong> For N=1000, that's 10 rounds; at 1 second each, 10 seconds to converge.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 240" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · INFORMATION SPREADS LIKE A COLD</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+            <g transform="translate(40, 80)">
+              <g><circle cx="20" cy="60" r="10" fill="#c2410c"/><circle cx="60" cy="60" r="10" fill="#1a1814"/><circle cx="100" cy="60" r="10" fill="#1a1814"/><circle cx="140" cy="60" r="10" fill="#1a1814"/></g>
+              <text x="80" y="100" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">round 0</text>
+
+              <g transform="translate(180,0)"><circle cx="20" cy="60" r="10" fill="#c2410c"/><circle cx="60" cy="60" r="10" fill="#c2410c"/><circle cx="100" cy="60" r="10" fill="#1a1814"/><circle cx="140" cy="60" r="10" fill="#1a1814"/></g>
+              <text x="260" y="100" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">round 1</text>
+
+              <g transform="translate(360,0)"><circle cx="20" cy="60" r="10" fill="#c2410c"/><circle cx="60" cy="60" r="10" fill="#c2410c"/><circle cx="100" cy="60" r="10" fill="#c2410c"/><circle cx="140" cy="60" r="10" fill="#c2410c"/></g>
+              <text x="440" y="100" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">round 2</text>
+
+              <text x="640" y="60" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">N=4 → 2 rounds.</text>
+              <text x="640" y="78" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">N=1000 → ~10 rounds.</text>
+              <text x="640" y="96" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Logarithmic, not linear.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Each round doubles the count of nodes that have the information. Beautiful.</span></div>
+        </div>
+      </section>
+
+      <section class="dd-section" id="swim">
+        <h2 class="section"><span class="num">03</span>SWIM — the <span class="ital">failure-detection</span> trick.</h2>
+        <div class="prose">
+          <p>SWIM (Scalable Weakly-consistent Infection-style Process Group Membership, 2002) is the most-cited gossip variant. <strong>The trick</strong>: don't ping every peer every round. Pick one peer; if it doesn't respond, ask a few other peers to ping it indirectly. <em>One node's network blip doesn't cause it to be falsely marked dead</em> — the indirect probe asks "can <em>you</em> reach it?" If three random peers all say "I can't reach it either," the consensus is that the node is truly down.</p>
+        </div>
+
+        <h3 class="sub">Phi accrual failure detector</h3>
+        <div class="prose">
+          <p>Cassandra's variant. Instead of "alive or dead," it outputs <strong>a probability that the node is dead</strong>. Application sets a threshold; if confidence exceeds it, mark dead. Gives a smoother failure-detection curve under unreliable networks.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="prod">
+        <h2 class="section"><span class="num">04</span>Production <span class="ital">examples</span>.</h2>
+        <table class="matrix"><thead><tr><th>System</th><th>What gossip carries</th></tr></thead><tbody>
+          <tr><th>Cassandra</th><td>Membership, schema version, node load, token ranges</td></tr>
+          <tr><th>Consul</th><td>Service registry, health, key-value updates (with Raft for the writes)</td></tr>
+          <tr><th>Serf (HashiCorp)</th><td>Custom event broadcasting on top of SWIM</td></tr>
+          <tr><th>Akka Cluster</th><td>Membership, leader election candidates, sharding state</td></tr>
+          <tr><th>Riak</th><td>Cluster membership, hash ring state</td></tr>
+          <tr><th>ScyllaDB</th><td>Inherited from Cassandra; same gossip protocol</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">05</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Cluster &lt; 50 nodes</h5><p>Gossip is overkill. A central registry (etcd, Consul KV) is simpler.</p></div>
+          <div class="cell"><h5>Cluster 50–10000 nodes, no central</h5><p>Gossip is the right answer. Pick a library (memberlist for Go, Akka Cluster for JVM, custom small implementation if Rust/.NET).</p></div>
+          <div class="cell"><h5>Critical state (config, leader)</h5><p>Don't gossip — use Raft / Paxos. Gossip is eventually-consistent; critical state needs linearisability.</p></div>
+          <div class="cell"><h5>Failure detection only</h5><p>SWIM-style. Pings + indirect probes. Modern libraries (memberlist) are 1-line setup.</p></div>
+          <div class="cell"><h5>You want to build one</h5><p>Read the SWIM paper. Build push-pull first; add indirect probing; add anti-entropy. Production-ready in ~2 weeks.</p></div>
+          <div class="cell"><h5>Auditing gossip in production</h5><p>Log all state transitions. False-positive failure detection is the recurring bug; the logs are how you tune the thresholds.</p></div>
+        </div>
+        <div class="pull">"Gossip is the only distributed-systems protocol where the algorithm and the metaphor are the same."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-high-availability.html"><div class="label">Prev</div><div class="ttl">High availability</div></a>
+        <a class="next-fwd" href="fundamental-nginx.html"><div class="label">Next</div><div class="ttl">NGINX 1M connections →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Gossip · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

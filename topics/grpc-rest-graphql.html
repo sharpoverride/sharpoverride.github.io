@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>gRPC vs REST vs GraphQL · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">22 · gRPC vs REST vs GraphQL</span>
+    </div>
+    <nav>
+      <a href="jwt-vs-sessions.html">← Prev</a>
+      <a href="../system-design.html">Index →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>22</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~14 min</b></span>
+        <span>Stack <b>gRPC · ASP.NET Core minimal APIs · HotChocolate · Protobuf</b></span>
+      </div>
+      <h1>Three protocols. <span class="ital">Three</span> conversations.</h1>
+      <p class="lede">REST won the public-internet era. gRPC won the cluster-internal era. GraphQL won the BFF era — and lost the simple-CRUD era. LinkedIn cut 60% latency moving from JSON to Protobuf and paid a tooling bill nobody talks about. The honest choice depends on who's on the other side of the wire.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>"What format do we put on the wire?" looks like a tooling question. <em>It's actually a question about who owns the contract.</em></p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>REST for public APIs and anything humans debug. gRPC for service-to-service inside a cluster. GraphQL for client-driven aggregation across multiple services. Mix all three — most production systems do.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">gRPC</span>
+          <span class="pill on">ASP.NET Core minimal APIs</span>
+          <span class="pill on">HotChocolate</span>
+          <span class="pill on">Protobuf</span>
+          <span class="pill">OData</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The contract is the protocol</a></li>
+        <li><a href="#shapes">Wire shapes side by side</a></li>
+        <li><a href="#deeper">Schema, streaming, tooling</a></li>
+        <li><a href="#dotnet">In .NET</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The contract is the <span class="ital">protocol</span>.</h2>
+        <div class="prose">
+          <p>The wire format determines what the contract can express, how clients evolve, and who debugs at 3am. REST's resources align with HTTP verbs — natural for documents, awkward for actions. gRPC's <code>service Methods()</code> aligns with RPC — natural for invocations, awkward for caching. GraphQL's single endpoint with a typed query aligns with client-driven aggregation — natural for mobile BFFs, awkward for write-heavy command APIs.</p>
+          <p>None of these are wrong; <strong>each is right for a specific shape of conversation</strong>. The recurring bug is picking by hype ("we should be on gRPC") or by lowest common denominator ("REST is what everyone knows"). <em>Pick by who's calling and what they need to express.</em></p>
+        </div>
+
+        <div class="pull">"REST is the protocol of the internet. gRPC is the protocol of the cluster. GraphQL is the protocol of the screen."</div>
+      </section>
+
+      <!-- 2 shapes -->
+      <section class="dd-section" id="shapes">
+        <h2 class="section"><span class="num">02</span>Wire <span class="ital">shapes</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 500" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="pa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 23 · ASKING FOR AN ORDER, THREE WAYS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(20, 70)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">REST</text>
+              <rect x="0" y="30" width="540" height="90" fill="#1a1814"/>
+              <text x="20"  y="56" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">GET /v1/orders/7c4a/items?expand=product   HTTP/1.1</text>
+              <text x="20"  y="74" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">Accept: application/json</text>
+              <text x="20"  y="92" font-family="JetBrains Mono" font-size="11" fill="#c2410c">→ 200 OK · ~600 bytes JSON</text>
+              <text x="20"  y="110" font-family="JetBrains Mono" font-size="9" fill="#f1ece1" opacity="0.7">verb + URL + JSON. Inspectable, cacheable, universal.</text>
+
+              <text x="600" y="44" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Caching: native (HTTP).</text>
+              <text x="600" y="62" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Schema: OpenAPI (optional).</text>
+              <text x="600" y="80" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Wire size: largest. Human-readable.</text>
+              <text x="600" y="98" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">→ Public APIs · server-rendered apps</text>
+            </g>
+
+            <g transform="translate(20, 200)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">gRPC</text>
+              <rect x="0" y="30" width="540" height="90" fill="#c2410c"/>
+              <text x="20"  y="56" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">OrderService.GetOrder({ id: "7c4a" })   ← Protobuf, HTTP/2</text>
+              <text x="20"  y="74" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">[binary frame] 17 bytes</text>
+              <text x="20"  y="92" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">→ Order { id: ..., items: [...] }   ~180 bytes binary</text>
+              <text x="20"  y="110" font-family="JetBrains Mono" font-size="9" fill="#f1ece1">RPC method call · contract via .proto · binary frames over HTTP/2.</text>
+
+              <text x="600" y="44" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Caching: client/server custom.</text>
+              <text x="600" y="62" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Schema: .proto (mandatory).</text>
+              <text x="600" y="80" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Wire size: smallest. Binary.</text>
+              <text x="600" y="98" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">→ Service-to-service inside the cluster</text>
+            </g>
+
+            <g transform="translate(20, 330)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">GraphQL</text>
+              <rect x="0" y="30" width="540" height="120" fill="#1a1814"/>
+              <text x="20"  y="56" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">POST /graphql</text>
+              <text x="20"  y="74" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">{ order(id: "7c4a") { id, total, items { sku, product { name } } } }</text>
+              <text x="20"  y="92" font-family="JetBrains Mono" font-size="11" fill="#c2410c">→ 200 OK · JSON · exactly the shape requested</text>
+              <text x="20"  y="110" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">~480 bytes — no over-fetch, no under-fetch.</text>
+              <text x="20"  y="138" font-family="JetBrains Mono" font-size="9" fill="#f1ece1" opacity="0.7">client picks fields · single endpoint · server resolves multiple sources.</text>
+
+              <text x="600" y="44" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Caching: hard (every query different).</text>
+              <text x="600" y="62" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Schema: SDL (mandatory).</text>
+              <text x="600" y="80" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Wire size: client-controlled.</text>
+              <text x="600" y="98" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">→ BFF for mobile / multi-source aggregation</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 23</span><span>Same business operation, three idioms. The wire size, the cacheability, and the contract surface are all consequences of the protocol choice.</span></div>
+        </div>
+
+        <h3 class="sub">REST: the universal protocol</h3>
+        <div class="prose">
+          <p>HTTP verbs map to operations. Resources have URLs. Responses are JSON. Every client on Earth speaks it, every proxy caches it, every monitoring tool understands it. <strong>REST is the lowest-common-denominator protocol</strong> — and the lowest common denominator is exactly what you want for a public API. Stripe, Twilio, GitHub, every major SaaS publishes a REST API even when they have gRPC internally. The wire is bigger; the trust surface is universal.</p>
+        </div>
+
+        <h3 class="sub">gRPC: the cluster-internal protocol</h3>
+        <div class="prose">
+          <p>Protobuf-encoded frames over HTTP/2. Generated client and server stubs in 11 languages. Streaming in both directions. <strong>~10× smaller payloads than equivalent JSON; ~10× faster serialization.</strong> LinkedIn published a 2018 number — 60% latency reduction moving internal service-to-service from REST to Protobuf. The cost is the tooling: <code>.proto</code> files, codegen pipelines, no browser support without grpc-web, harder ad-hoc debugging.</p>
+        </div>
+
+        <h3 class="sub">GraphQL: the client-driven protocol</h3>
+        <div class="prose">
+          <p>The client describes the shape of the response in the query; the server returns exactly that shape. <strong>No over-fetch, no under-fetch, no v2/v3 endpoint sprawl.</strong> Born at Facebook for mobile clients on slow networks; now powers most BFF (backend-for-frontend) layers at companies with multi-screen surfaces. The tradeoff is operational: every query is unique, HTTP caching doesn't apply, N+1 query problems are real, query complexity limits are a deliberate engineering activity.</p>
+        </div>
+      </section>
+
+      <!-- 3 deeper -->
+      <section class="dd-section" id="deeper">
+        <h2 class="section"><span class="num">03</span>Schema, streaming, <span class="ital">tooling</span>.</h2>
+
+        <h3 class="sub">Schema discipline by force vs by convention</h3>
+        <div class="prose">
+          <p>gRPC and GraphQL require a schema (<code>.proto</code> file or SDL). Generated stubs and types make breaking changes loud at compile time. REST's schema (OpenAPI) is optional — most teams write it after the fact, and most clients don't enforce it. <strong>Schema-required protocols catch breaking changes; schema-optional protocols hope developers do it.</strong> The reality is mixed: with discipline, REST + OpenAPI is fine. Without discipline, gRPC and GraphQL make discipline non-negotiable.</p>
+        </div>
+
+        <h3 class="sub">Streaming</h3>
+        <div class="prose">
+          <p>gRPC has first-class server-streaming, client-streaming, and bidirectional streaming over HTTP/2. GraphQL has subscriptions (over WebSocket or SSE). REST has SSE for server-streaming and not much else; for bi-directional, you reach for WebSockets (see <a href="realtime-channels.html">Chapter 10</a>). <em>For high-fan-out push, gRPC is the most ergonomic, GraphQL subscriptions the most prevalent on the web.</em></p>
+        </div>
+
+        <h3 class="sub">Browser story</h3>
+        <div class="prose">
+          <p>Browsers cannot speak gRPC directly — HTTP/2 frame access isn't exposed to JS. <strong>grpc-web</strong> is the workaround: a proxy translates gRPC-web's restricted protocol to grpc-native. Cloudflare, Envoy, and Linkerd all support it. The DX is worse than native; for browser clients, REST or GraphQL is the smoother path. Mobile and server clients have no such restriction.</p>
+        </div>
+
+        <h3 class="sub">N+1 and query complexity</h3>
+        <div class="prose">
+          <p>GraphQL's killer footgun: a query that traverses many relations can fan out to many database calls per request. <strong>Use DataLoader (or HotChocolate's batching primitives) to coalesce reads</strong> within a single resolver execution. Set a maximum query depth and complexity score; reject queries above it. Without these, a malicious client can ship a single query that DOSes your database.</p>
+        </div>
+
+        <h3 class="sub">REST is not "no schema"</h3>
+        <div class="prose">
+          <p>OpenAPI v3 with codegen (NSwag, Refit) gets you most of gRPC's tooling benefits over plain HTTP. ASP.NET Core's minimal APIs generate OpenAPI automatically. <strong>If you've been hand-rolling REST clients in 2026, you've been doing it wrong.</strong> Treat the OpenAPI spec as the contract; generate clients; review breaking changes in CI.</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">.NET</span>.</h2>
+
+        <div class="prose">
+          <p>Three of the same service. Minimal API for public REST, gRPC for the cluster, HotChocolate for the BFF. They all share the same domain layer — only the wire shape differs.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">RestEndpoints.cs (minimal APIs)</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+builder.<span class="t">Services</span>.<span class="fn">AddEndpointsApiExplorer</span>();
+builder.<span class="t">Services</span>.<span class="fn">AddOpenApi</span>();
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+app.<span class="fn">MapOpenApi</span>();
+
+app.<span class="fn">MapGet</span>(<span class="s">"/v1/orders/{id:guid}"</span>, <span class="k">async</span> (
+    <span class="t">Guid</span> id, <span class="t">IOrderService</span> svc, <span class="t">CancellationToken</span> ct) =&gt;
+{
+    <span class="k">var</span> o = <span class="k">await</span> svc.<span class="fn">GetAsync</span>(id, ct);
+    <span class="k">return</span> o is <span class="k">null</span> ? <span class="t">Results</span>.<span class="fn">NotFound</span>() : <span class="t">Results</span>.<span class="fn">Ok</span>(o);
+})
+.<span class="fn">WithName</span>(<span class="s">"GetOrder"</span>)
+.<span class="fn">Produces</span>&lt;<span class="t">OrderDto</span>&gt;(<span class="n">200</span>)
+.<span class="fn">Produces</span>(<span class="n">404</span>);
+
+app.<span class="fn">MapPost</span>(<span class="s">"/v1/orders"</span>, <span class="k">async</span> (
+    <span class="t">PlaceOrderRequest</span> req, <span class="t">IOrderService</span> svc, <span class="t">CancellationToken</span> ct) =&gt;
+{
+    <span class="k">var</span> id = <span class="k">await</span> svc.<span class="fn">PlaceAsync</span>(req, ct);
+    <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Created</span>($<span class="s">"/v1/orders/{id}"</span>, <span class="k">new</span> { id });
+})
+.<span class="fn">WithName</span>(<span class="s">"PlaceOrder"</span>)
+.<span class="fn">Produces</span>(<span class="n">201</span>);
+
+app.<span class="fn">Run</span>();</pre>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">proto</span> &nbsp; <span class="file">orders.proto + OrdersService.cs (gRPC)</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// orders.proto — the contract. Lives in a shared package, codegen-ed for every consumer.</span>
+syntax = <span class="s">"proto3"</span>;
+package academy.orders.v1;
+
+service Orders {
+  rpc GetOrder(GetOrderRequest) returns (Order);
+  rpc PlaceOrder(PlaceOrderRequest) returns (Order);
+  rpc WatchOrder(GetOrderRequest) returns (stream OrderEvent);
+}
+
+message GetOrderRequest    { string id = 1; }
+message PlaceOrderRequest  { string customer_id = 1; repeated LineItem items = 2; }
+message LineItem           { string sku = 1; int32 qty = 2; }
+message Order              { string id = 1; string status = 2; repeated LineItem items = 3; }
+message OrderEvent         { string id = 1; string type = 2; google.protobuf.Timestamp at = 3; }
+
+<span class="c">// OrdersService.cs — server-side. Generated base class is &lt;Service&gt;.&lt;Service&gt;Base.</span>
+<span class="k">public sealed class</span> <span class="t">OrdersGrpcService</span> : <span class="t">Orders</span>.<span class="t">OrdersBase</span>
+{
+    <span class="k">private readonly</span> <span class="t">IOrderService</span> _svc;
+    <span class="k">public</span> <span class="fn">OrdersGrpcService</span>(<span class="t">IOrderService</span> svc) =&gt; _svc = svc;
+
+    <span class="k">public override async</span> <span class="t">Task</span>&lt;<span class="t">Order</span>&gt; <span class="fn">GetOrder</span>(
+        <span class="t">GetOrderRequest</span> req, <span class="t">ServerCallContext</span> ctx)
+    {
+        <span class="k">var</span> dto = <span class="k">await</span> _svc.<span class="fn">GetAsync</span>(<span class="t">Guid</span>.<span class="fn">Parse</span>(req.<span class="t">Id</span>), ctx.<span class="t">CancellationToken</span>)
+            ?? <span class="k">throw new</span> <span class="t">RpcException</span>(<span class="k">new</span>(<span class="t">StatusCode</span>.<span class="t">NotFound</span>, <span class="s">"order not found"</span>));
+        <span class="k">return new</span> <span class="t">Order</span> { <span class="t">Id</span> = dto.<span class="t">Id</span>.<span class="fn">ToString</span>(), <span class="t">Status</span> = dto.<span class="t">Status</span> };
+    }
+
+    <span class="c">// Server-streaming: push events to the caller as the order progresses.</span>
+    <span class="k">public override async</span> <span class="t">Task</span> <span class="fn">WatchOrder</span>(
+        <span class="t">GetOrderRequest</span> req, <span class="t">IServerStreamWriter</span>&lt;<span class="t">OrderEvent</span>&gt; stream, <span class="t">ServerCallContext</span> ctx)
+    {
+        <span class="k">await foreach</span> (<span class="k">var</span> ev <span class="k">in</span> _svc.<span class="fn">WatchAsync</span>(<span class="t">Guid</span>.<span class="fn">Parse</span>(req.<span class="t">Id</span>), ctx.<span class="t">CancellationToken</span>))
+            <span class="k">await</span> stream.<span class="fn">WriteAsync</span>(<span class="k">new</span> <span class="t">OrderEvent</span>
+            {
+                <span class="t">Id</span> = ev.<span class="t">OrderId</span>.<span class="fn">ToString</span>(),
+                <span class="t">Type</span> = ev.<span class="t">Type</span>,
+                <span class="t">At</span> = <span class="t">Timestamp</span>.<span class="fn">FromDateTimeOffset</span>(ev.<span class="t">At</span>)
+            });
+    }
+}
+
+<span class="c">// Program.cs adds:</span>
+builder.<span class="t">Services</span>.<span class="fn">AddGrpc</span>();
+app.<span class="fn">MapGrpcService</span>&lt;<span class="t">OrdersGrpcService</span>&gt;();</pre>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">GraphQL via HotChocolate</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package HotChocolate.AspNetCore</span>
+<span class="k">using</span> <span class="t">HotChocolate</span>;
+<span class="k">using</span> <span class="t">HotChocolate.Types</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Bff</span>;
+
+<span class="k">public sealed class</span> <span class="t">Query</span>
+{
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">OrderDto</span>?&gt; <span class="fn">GetOrder</span>(
+        <span class="t">Guid</span> id, [<span class="t">Service</span>] <span class="t">IOrderService</span> svc, <span class="t">CancellationToken</span> ct)
+        =&gt; <span class="k">await</span> svc.<span class="fn">GetAsync</span>(id, ct);
+}
+
+<span class="c">// Resolver for the nested Product field — uses DataLoader to batch lookups.</span>
+<span class="k">public sealed class</span> <span class="t">LineItemType</span> : <span class="t">ObjectType</span>&lt;<span class="t">LineItemDto</span>&gt;
+{
+    <span class="k">protected override void</span> <span class="fn">Configure</span>(<span class="t">IObjectTypeDescriptor</span>&lt;<span class="t">LineItemDto</span>&gt; d)
+    {
+        d.<span class="fn">Field</span>(<span class="s">"product"</span>)
+         .<span class="fn">Resolve</span>(<span class="k">async</span> (ctx, ct) =&gt;
+         {
+             <span class="k">var</span> item = ctx.<span class="fn">Parent</span>&lt;<span class="t">LineItemDto</span>&gt;();
+             <span class="k">var</span> loader = ctx.<span class="t">DataLoader</span>&lt;<span class="t">ProductByIdBatchLoader</span>&gt;();
+             <span class="k">return await</span> loader.<span class="fn">LoadAsync</span>(item.<span class="t">Sku</span>, ct);
+         });
+    }
+}
+
+<span class="k">public sealed class</span> <span class="t">ProductByIdBatchLoader</span> : <span class="t">BatchDataLoader</span>&lt;<span class="k">string</span>, <span class="t">ProductDto</span>&gt;
+{
+    <span class="k">private readonly</span> <span class="t">IProductService</span> _products;
+    <span class="k">public</span> <span class="fn">ProductByIdBatchLoader</span>(<span class="t">IBatchScheduler</span> s, <span class="t">IProductService</span> p,
+        <span class="t">DataLoaderOptions</span> o) : <span class="k">base</span>(s, o) { _products = p; }
+
+    <span class="k">protected override async</span> <span class="t">Task</span>&lt;<span class="t">IReadOnlyDictionary</span>&lt;<span class="k">string</span>, <span class="t">ProductDto</span>&gt;&gt;
+        <span class="fn">LoadBatchAsync</span>(<span class="t">IReadOnlyList</span>&lt;<span class="k">string</span>&gt; skus, <span class="t">CancellationToken</span> ct)
+        =&gt; (<span class="k">await</span> _products.<span class="fn">GetManyAsync</span>(skus, ct))
+            .<span class="fn">ToDictionary</span>(p =&gt; p.<span class="t">Sku</span>);
+}
+
+<span class="c">// Program.cs adds:</span>
+builder.<span class="t">Services</span>
+    .<span class="fn">AddGraphQLServer</span>()
+    .<span class="fn">AddQueryType</span>&lt;<span class="t">Query</span>&gt;()
+    .<span class="fn">AddType</span>&lt;<span class="t">LineItemType</span>&gt;()
+    .<span class="fn">AddDataLoader</span>&lt;<span class="t">ProductByIdBatchLoader</span>&gt;()
+    .<span class="fn">SetPagingOptions</span>(<span class="k">new</span>() { <span class="t">MaxPageSize</span> = <span class="n">50</span>, <span class="t">DefaultPageSize</span> = <span class="n">20</span> })
+    .<span class="fn">AddMaxExecutionDepthRule</span>(<span class="n">8</span>);
+
+app.<span class="fn">MapGraphQL</span>(<span class="s">"/graphql"</span>);</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">gRPC over HTTP/2 has a connection-balancing footgun</div>
+          <p>HTTP/2 multiplexes everything down one connection. Behind a standard K8s ClusterIP service, one client → one connection → one pod. The pod gets all the load. Use headless services + client-side load balancing, or an L7 proxy / service mesh (see <a href="service-discovery.html">Chapter 15</a>). The "90% of traffic on one pod" symptom is universal until fixed.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">GraphQL needs cost analysis from day one</div>
+          <p>A naive GraphQL endpoint can be DOSed by a single deep query. HotChocolate, Apollo Server, and most production servers ship cost/complexity analysis: each field has a cost, queries above a threshold are rejected. <strong>Configure it before exposing the endpoint, not after the first incident.</strong></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">REST + OpenAPI is more rigorous than people give it credit for</div>
+          <p>Minimal APIs generate OpenAPI. NSwag generates typed C# clients from OpenAPI. Spectral lints the OpenAPI for breaking changes in CI. <em>You can have schema-required REST without writing a line of contract code.</em> The "REST has no schema" framing is a 2014 framing.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">grpc-web is a real, useful escape hatch</div>
+          <p>Browsers can't speak native gRPC, but grpc-web (proxied through Envoy or Connect) gives you 95% of the type-safety with a slightly heavier wire format. <strong>For an internal admin tool, grpc-web saves you a separate REST surface</strong>; for a public website, REST or GraphQL is still the smoother default.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Don't use GraphQL for write-heavy APIs</div>
+          <p>GraphQL mutations work but lose the protocol's main advantage. Each mutation is its own RPC; you don't benefit from client-driven query shape on writes. <em>Mix freely</em>: GraphQL for reads, REST/gRPC for writes, on the same service. The "GraphQL all the way" purity has cost most teams that tried it.</p>
+        </div>
+
+        <div class="pull">"REST is a contract for humans. gRPC is a contract for machines. GraphQL is a contract for product managers."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Technology</th>
+              <th>Wire</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>REST (minimal APIs)<span class="sub">.NET</span></th>
+              <td>JSON / HTTP/1+2</td>
+              <td>Universal · cacheable · human-debuggable · OpenAPI codegen</td>
+              <td>$0 (lib)</td>
+              <td>Trivial</td>
+              <td><span class="verdict good">Default for public APIs &amp; CRUD</span></td>
+            </tr>
+            <tr>
+              <th>gRPC<span class="sub">.NET</span></th>
+              <td>Protobuf / HTTP/2</td>
+              <td>10× smaller payload · streaming · 11 languages · schema-required</td>
+              <td>$0 (lib)</td>
+              <td>Codegen pipeline, mesh for LB</td>
+              <td><span class="verdict good">Default for service-to-service</span></td>
+            </tr>
+            <tr>
+              <th>gRPC-Web<span class="sub">browser escape</span></th>
+              <td>Protobuf / HTTP/1+2</td>
+              <td>Type-safe gRPC in the browser via a proxy</td>
+              <td>$0 (lib) + proxy</td>
+              <td>Envoy / Connect proxy</td>
+              <td><span class="verdict warn">For internal tools; pure browser apps prefer REST/GraphQL</span></td>
+            </tr>
+            <tr>
+              <th>GraphQL (HotChocolate)<span class="sub">.NET</span></th>
+              <td>JSON / HTTP POST</td>
+              <td>Client-driven shape · single endpoint · multi-source aggregation</td>
+              <td>$0 (lib)</td>
+              <td>Resolver/N+1/cost discipline</td>
+              <td><span class="verdict good">Default for BFF / multi-screen products</span></td>
+            </tr>
+            <tr>
+              <th>OData<span class="sub">.NET</span></th>
+              <td>JSON / HTTP</td>
+              <td>Query semantics on REST · $filter, $expand, $orderby</td>
+              <td>$0 (lib)</td>
+              <td>Surface area is large</td>
+              <td><span class="verdict warn">For .NET-on-.NET internal tooling</span></td>
+            </tr>
+            <tr>
+              <th>Plain JSON-RPC<span class="sub">no framework</span></th>
+              <td>JSON / HTTP</td>
+              <td>RPC semantics without Protobuf</td>
+              <td>$0</td>
+              <td>No first-class .NET tooling</td>
+              <td><span class="verdict bad">Just use REST or gRPC.</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Public API for partners and integrations</h5>
+            <p>REST + OpenAPI. JSON over HTTP. Cacheable, debuggable, universal. Don't try to ship gRPC to your customers' procurement teams.</p>
+          </div>
+          <div class="cell">
+            <h5>Service-to-service inside a cluster</h5>
+            <p>gRPC. The 10× wire-size win pays for itself; the schema-required discipline keeps the contract honest. Use headless services for LB.</p>
+          </div>
+          <div class="cell">
+            <h5>Mobile + web BFF aggregating multiple services</h5>
+            <p>GraphQL with HotChocolate. One endpoint, client-driven shape, DataLoader for N+1, complexity caps. The BFF's natural shape.</p>
+          </div>
+          <div class="cell">
+            <h5>High-throughput stream of events to a client</h5>
+            <p>gRPC server-streaming if the client is server/mobile; SSE if browser (see <a href="realtime-channels.html">Chapter 10</a>). Both win over polling REST.</p>
+          </div>
+          <div class="cell">
+            <h5>Write-heavy command API</h5>
+            <p>REST with idempotency keys (<a href="idempotency-keys.html">Chapter 08</a>). GraphQL mutations are fine but you lose the protocol's edge.</p>
+          </div>
+          <div class="cell">
+            <h5>You have one of each already</h5>
+            <p>That's the production reality. REST for external, gRPC for internal, GraphQL for the BFF. Same domain layer behind all three.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — picking gRPC for the public API.</strong> Your customers don't want a Protobuf SDK. They want <code>curl</code>. REST is the right boundary at the edge of your organisation, every time.</p>
+        <p><strong>Two — picking GraphQL for everything.</strong> Mutations don't benefit from client-driven shape; the operational cost of N+1 protection and cost analysis is real. Use GraphQL where its shape pays — read-heavy multi-source aggregation.</p>
+        <p><strong>Three — gRPC behind a standard K8s service.</strong> HTTP/2 multiplexing concentrates traffic on one pod. Use headless services with client-side LB, or an L7 mesh.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="jwt-vs-sessions.html">
+          <div class="label">Chapter 21</div>
+          <div class="ttl">JWT vs sessions</div>
+        </a>
+        <a class="next-fwd" href="../system-design.html">
+          <div class="label">Back to index</div>
+          <div class="ttl">All chapters →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 22 · gRPC vs REST vs GraphQL · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

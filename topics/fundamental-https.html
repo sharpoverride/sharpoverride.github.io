@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>HTTPS · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#fundamentals">Fundamentals</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">HTTPS</span>
+    </div>
+    <nav>
+      <a href="../system-design.html">← Index</a>
+      <a href="fundamental-dns.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~12 min</b></span>
+        <span>Stack <b>TLS 1.3 · ECDHE · Let's Encrypt</b></span>
+      </div>
+      <h1>What the lock <span class="ital">actually</span> means.</h1>
+      <p class="lede">HTTPS is HTTP inside a TLS tunnel. The browser, the server, and a chain of certificate authorities cooperate so that nobody between them can read or modify the traffic. The handshake takes one round-trip in 2026 — down from three in 2010.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>What HTTPS gives you</h5>
+        <p>Three properties: <em>confidentiality</em> (eavesdroppers see ciphertext), <em>integrity</em> (tampering is detected), <em>authenticity</em> (the server is who it claims).</p>
+      </div>
+      <div>
+        <h5>What it doesn't</h5>
+        <p>It doesn't authenticate the client unless mTLS is configured. It doesn't hide who you're talking to (SNI is visible, though encrypted-SNI is shipping). It doesn't protect against a compromised server.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">TLS 1.3</span>
+          <span class="pill on">ECDHE key exchange</span>
+          <span class="pill on">X.509 certificates</span>
+          <span class="pill on">Let's Encrypt / ACME</span>
+          <span class="pill">HSTS</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Three problems, one protocol</a></li>
+        <li><a href="#handshake">The TLS 1.3 handshake</a></li>
+        <li><a href="#trust">The trust chain</a></li>
+        <li><a href="#dotnet">In ASP.NET Core</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Three problems, <span class="ital">one</span> protocol.</h2>
+        <div class="prose">
+          <p>Plain HTTP travels in the clear. A coffee-shop Wi-Fi router, your ISP, every transit network between you and the server can read every byte. They can also modify it — inject ads, replace responses, capture passwords. None of these adversaries are theoretical; all of them have been documented in the wild.</p>
+          <p>HTTPS solves three problems that have to be solved together. <strong>Confidentiality</strong>: ciphertext on the wire. <strong>Integrity</strong>: a MAC detects tampering. <strong>Authenticity</strong>: the server proves it owns the domain via a certificate signed by a trusted CA. Drop any one of these and the other two are nearly worthless — encrypted traffic to an attacker is still talking to an attacker; an authenticated server you can't trust isn't who you wanted.</p>
+        </div>
+
+        <div class="pull">"The padlock isn't a feature. It's the absence of a long list of attacks."</div>
+      </section>
+
+      <section class="dd-section" id="handshake">
+        <h2 class="section"><span class="num">02</span>The TLS 1.3 <span class="ital">handshake</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 380" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="tlsa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 24 · TLS 1.3 — ONE ROUND-TRIP</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(80, 80)">
+              <rect x="0"   y="0"  width="120" height="40" fill="#1a1814"/>
+              <text x="60"  y="24" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">CLIENT</text>
+
+              <rect x="900" y="0"  width="120" height="40" fill="#1a1814"/>
+              <text x="960" y="24" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">SERVER</text>
+
+              <line x1="60"  y1="40"  x2="60"  y2="280" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+              <line x1="960" y1="40"  x2="960" y2="280" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+              <line x1="60"  y1="80" x2="960" y2="80" stroke="#c2410c" stroke-width="2" marker-end="url(#tlsa)"/>
+              <text x="510" y="74" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#c2410c">ClientHello + key share + SNI</text>
+
+              <line x1="960" y1="120" x2="60"  y2="120" stroke="#c2410c" stroke-width="2" marker-end="url(#tlsa)"/>
+              <text x="510" y="114" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#c2410c">ServerHello + key share + cert + finished</text>
+
+              <line x1="60"  y1="170" x2="960" y2="170" stroke="#c2410c" stroke-width="2" marker-end="url(#tlsa)"/>
+              <text x="510" y="164" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#c2410c">Finished (verify cert)</text>
+
+              <line x1="60"  y1="220" x2="960" y2="220" stroke="#1a1814" stroke-width="2" marker-end="url(#tlsa)"/>
+              <text x="510" y="214" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#1a1814">HTTP request (encrypted)</text>
+
+              <text x="60"  y="310" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#1a1814">~0ms</text>
+              <text x="60"  y="324" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#c2410c">1× RTT</text>
+              <text x="60"  y="338" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#1a1814">application data</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 24</span><span>TLS 1.3 finishes the handshake in one round-trip. TLS 1.2 needed two. The win came from removing legacy key-exchange options and inlining the cert.</span></div>
+        </div>
+
+        <h3 class="sub">What's in the ClientHello</h3>
+        <div class="prose">
+          <p>The client announces: which TLS versions it supports, which cipher suites, the hostname it wants (SNI), and — new in TLS 1.3 — a key share for the ECDHE key exchange. <strong>That key share is the trick that compresses the handshake.</strong> Instead of waiting for the server to pick a cipher, the client speculatively sends a key offer for the most common curves. The server picks one and replies with its own key share in the same round-trip.</p>
+        </div>
+
+        <h3 class="sub">ECDHE: ephemeral key exchange</h3>
+        <div class="prose">
+          <p>Elliptic-curve Diffie–Hellman ephemeral. Each side generates a temporary key pair for this connection. They exchange the public halves; each side computes the same shared secret without ever transmitting it. <strong>The session key is ephemeral</strong> — discarded when the connection ends. This is what gives TLS 1.3 <em>forward secrecy</em>: even if the server's private key is later compromised, traffic recorded today cannot be decrypted retroactively.</p>
+        </div>
+
+        <h3 class="sub">0-RTT resumption</h3>
+        <div class="prose">
+          <p>For a returning client (same browser, same server, recent connection), TLS 1.3 supports 0-RTT: send the HTTP request together with the ClientHello, using a pre-shared key from the previous session. The HTTP response comes back in 1 RTT total. <em>This is fast but has a replay caveat</em>: an attacker who captures the 0-RTT data can replay it; only use 0-RTT for safely-replayable requests (GETs of public resources). POSTs go through the standard 1-RTT path.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="trust">
+        <h2 class="section"><span class="num">03</span>The trust <span class="ital">chain</span>.</h2>
+
+        <h3 class="sub">Certificate authorities</h3>
+        <div class="prose">
+          <p>Your browser trusts a list of root CAs — Microsoft, DigiCert, Let's Encrypt's parent ISRG, etc. — baked in. A server proves its identity by presenting a certificate signed by one of these (or by an intermediate CA, in turn signed by a root). <strong>The browser walks the chain</strong>: server cert → intermediate → root. If the root is on the trusted list and every signature validates, the browser accepts.</p>
+        </div>
+
+        <h3 class="sub">How Let's Encrypt changed the game</h3>
+        <div class="prose">
+          <p>Pre-2016: a TLS cert from a commercial CA cost $50–$500 per year, required manual application, was renewed by emailing PDFs. <strong>Let's Encrypt made it free and automated.</strong> The ACME protocol lets a server prove control of a domain (via DNS or HTTP challenge) and receive a 90-day certificate in seconds. <em>90 days is a feature</em>: the short lifetime forces automated renewal, which forces correct configuration, which makes the ecosystem safer.</p>
+        </div>
+
+        <h3 class="sub">Certificate transparency</h3>
+        <div class="prose">
+          <p>Every certificate issued by a public CA is logged to append-only certificate-transparency logs. Browsers refuse certs not present in a log. <strong>This makes mis-issued certificates discoverable.</strong> If a CA was tricked into issuing a cert for your domain to an attacker, you can detect it because the log is public. Without CT, mis-issuance was undetectable; with CT, it's a public event.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">ASP.NET Core</span>.</h2>
+
+        <div class="prose">
+          <p>Kestrel's defaults are mostly correct. The configuration you actually need to touch: HSTS, certificate provisioning, and TLS version pinning.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">Program.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+builder.<span class="t">Services</span>.<span class="fn">AddHsts</span>(o =&gt;
+{
+    o.<span class="t">Preload</span>           = <span class="k">true</span>;
+    o.<span class="t">IncludeSubDomains</span> = <span class="k">true</span>;
+    o.<span class="t">MaxAge</span>            = <span class="t">TimeSpan</span>.<span class="fn">FromDays</span>(<span class="n">365</span>);
+});
+
+builder.<span class="t">Services</span>.<span class="fn">AddHttpsRedirection</span>(o =&gt;
+{
+    o.<span class="t">HttpsPort</span>         = <span class="n">443</span>;
+    o.<span class="t">RedirectStatusCode</span> = <span class="t">StatusCodes</span>.<span class="t">Status308PermanentRedirect</span>;
+});
+
+builder.<span class="t">WebHost</span>.<span class="fn">ConfigureKestrel</span>(o =&gt;
+{
+    o.<span class="fn">ConfigureHttpsDefaults</span>(https =&gt;
+    {
+        <span class="c">// TLS 1.2 minimum; let OS negotiate 1.3 when supported.</span>
+        https.<span class="t">SslProtocols</span> = <span class="t">SslProtocols</span>.<span class="t">Tls12</span> | <span class="t">SslProtocols</span>.<span class="t">Tls13</span>;
+    });
+});
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+
+<span class="k">if</span> (!app.<span class="t">Environment</span>.<span class="fn">IsDevelopment</span>())
+{
+    app.<span class="fn">UseHsts</span>();             <span class="c">// browsers will refuse plain HTTP for 1 year</span>
+    app.<span class="fn">UseHttpsRedirection</span>(); <span class="c">// 308 redirect plain HTTP to HTTPS</span>
+}
+
+app.<span class="fn">MapGet</span>(<span class="s">"/"</span>, () =&gt; <span class="s">"hello over TLS"</span>);
+app.<span class="fn">Run</span>();</pre>
+        </div>
+
+        <h3 class="sub">Certificate provisioning</h3>
+        <div class="prose">
+          <p>Three production options: <strong>terminate TLS at the load balancer</strong> (Azure Front Door, AWS ALB, NGINX) and let it handle certs — this is the default; <strong>ACME-Caddy / Win-ACME</strong> as a sidecar that automates Let's Encrypt renewal; or <strong>certbot</strong> with a cronjob. Do not generate certs by hand for production. The 90-day expiry will catch you.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">HSTS preload is one-way</div>
+          <p>Adding your domain to the HSTS preload list means browsers refuse plain HTTP to it forever (until the list is rebuilt). <strong>Be confident before you submit</strong>; rolling back means waiting for browser updates. Set <code>max-age=300</code> first, verify, then bump to a year and request preload.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Cipher suites are mostly auto-managed</div>
+          <p>TLS 1.3 ships with five cipher suites; all are good. TLS 1.2 has dozens, most of which you don't want. Trust the OS's defaults on modern .NET. The "let me hand-pick my cipher suites" instinct is from 2010; it's a footgun now.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">SNI is in the clear (for now)</div>
+          <p>The hostname (Server Name Indication) is sent unencrypted in the ClientHello — so observers can see which site you're visiting, even if they can't read the traffic. <strong>Encrypted Client Hello (ECH)</strong> is shipping; it's the right way to hide SNI but isn't universally deployed yet. Don't rely on SNI privacy.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Mutual TLS for service-to-service</div>
+          <p>For internal service-to-service auth, mTLS is excellent: both ends present certs, both verify, no shared secrets in code. Service meshes (Linkerd, Istio) automate the cert rotation. <em>For internet-facing, mTLS is overkill</em>; for cluster-internal, it's the modern default.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Pin the chain, not the leaf</div>
+          <p>Certificate pinning used to mean "burn the leaf cert's fingerprint into the app." This made cert rotation a nightmare. Modern guidance: pin the issuer (intermediate or root). The leaf can rotate freely; the chain anchor stays stable. Or use HPKP — which is officially deprecated and nobody should use it now — and just rely on CT logs.</p>
+        </div>
+
+        <div class="pull">"TLS gets the protocol details right. The application engineer's job is to not undo any of it by mistake."</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">06</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Public website / API</h5>
+            <p>Terminate TLS at Front Door / CloudFront / ALB. Let it handle certs. HSTS with preload. TLS 1.2+.</p>
+          </div>
+          <div class="cell">
+            <h5>Self-hosted, single VM</h5>
+            <p>Caddy as the front proxy. Free Let's Encrypt certs, auto-renewed. Zero config; it just works.</p>
+          </div>
+          <div class="cell">
+            <h5>Kubernetes</h5>
+            <p>cert-manager + Let's Encrypt issuer. Renewal is automatic. Mount certs as secrets, rotate without restart.</p>
+          </div>
+          <div class="cell">
+            <h5>Internal service-to-service</h5>
+            <p>mTLS via service mesh (Linkerd or Istio). The mesh handles cert minting and rotation; your app just enables it.</p>
+          </div>
+          <div class="cell">
+            <h5>You inherited cert pinning</h5>
+            <p>Move to chain pinning. Plan the migration carefully — leaf pinning blocks cert rotation; you'll need a brick-by-brick mobile-app rollout.</p>
+          </div>
+          <div class="cell">
+            <h5>Custom CA (corporate, dev)</h5>
+            <p>Run a small private PKI (smallstep, HashiCorp Vault PKI). Distribute the root via MDM. Don't try to bypass cert validation in code.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="../system-design.html">
+          <div class="label">Back to index</div>
+          <div class="ttl">All fundamentals</div>
+        </a>
+        <a class="next-fwd" href="fundamental-dns.html">
+          <div class="label">Next fundamental</div>
+          <div class="ttl">DNS →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Fundamental · HTTPS · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

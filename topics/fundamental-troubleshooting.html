@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Troubleshooting a website · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Troubleshooting</span>
+    </div>
+    <nav><a href="fundamental-cloud-pitfalls.html">← Prev</a><a href="fundamental-stacked-diffs.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~9 min</b></span>
+        <span>Stack <b>dig · curl · ping · top of funnel</b></span>
+      </div>
+      <h1>"The site is <span class="ital">down</span>." Top to bottom.</h1>
+      <p class="lede">A user can't reach your website. Where's the problem? Use the request path as the troubleshooting tree: DNS, TCP, TLS, HTTP, app, database. Test each step; the first failure is the symptom; the symptom often is the bug.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The toolkit</h5><p><code>dig</code>, <code>curl -v</code>, <code>traceroute</code>, <code>nc</code>, <code>openssl s_client</code>. Plus the browser DevTools network panel.</p></div>
+      <div><h5>The discipline</h5><p>Bisect. Don't guess. Each test eliminates half the possible causes.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#tree">The decision tree</a></li>
+      <li><a href="#dns">DNS</a></li>
+      <li><a href="#tcp">TCP</a></li>
+      <li><a href="#tls">TLS</a></li>
+      <li><a href="#http">HTTP</a></li>
+      <li><a href="#app">App / DB</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="tree">
+        <h2 class="section"><span class="num">01</span>The decision <span class="ital">tree</span>.</h2>
+        <div class="prose">
+          <p>Walk the request from top to bottom. Each layer either works or doesn't; the first layer that doesn't is where to dig.</p>
+          <ol>
+            <li><strong>DNS</strong> — does the name resolve?</li>
+            <li><strong>TCP</strong> — does the port accept connections?</li>
+            <li><strong>TLS</strong> — does HTTPS complete a handshake?</li>
+            <li><strong>HTTP</strong> — does the server respond with anything?</li>
+            <li><strong>App</strong> — is the response correct, or 5xx?</li>
+            <li><strong>DB / downstream</strong> — is the app failing because something it depends on is?</li>
+          </ol>
+          <p>Test each. The first <em>"no"</em> is the failure layer.</p>
+        </div>
+        <div class="pull">"Diagnose by bisection. Half-eliminate at every step."</div>
+      </section>
+
+      <section class="dd-section" id="dns">
+        <h2 class="section"><span class="num">02</span><span class="ital">DNS</span>.</h2>
+        <div class="code"><div class="head"><span><span class="lang">sh</span> &nbsp; <span class="file">dig</span></span><div class="dots"><span></span><span></span><span></span></div></div>
+<pre><span class="c">$ dig example.com</span>
+<span class="c">$ dig @1.1.1.1 example.com         <span class="c"># bypass local resolver</span></span>
+<span class="c">$ dig +trace example.com           <span class="c"># walk the hierarchy</span></span>
+<span class="c">$ dig AAAA example.com             <span class="c"># IPv6</span></span></pre></div>
+        <div class="prose">
+          <p>If <code>dig</code> against a known-good public resolver (1.1.1.1, 8.8.8.8) returns the right IP but your local stub doesn't, the bug is in your network's DNS chain. If <code>dig</code> against the authoritative NS fails, the bug is at the DNS host. See <a href="fundamental-dns.html">DNS chapter</a>.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="tcp">
+        <h2 class="section"><span class="num">03</span><span class="ital">TCP</span>.</h2>
+        <div class="code"><div class="head"><span><span class="lang">sh</span> &nbsp; <span class="file">connect</span></span><div class="dots"><span></span><span></span><span></span></div></div>
+<pre><span class="c">$ nc -zv example.com 443           <span class="c"># can we reach the port?</span></span>
+<span class="c">$ traceroute example.com           <span class="c"># where in the path</span></span>
+<span class="c">$ mtr example.com                  <span class="c"># continuous traceroute, packet loss</span></span></pre></div>
+        <div class="prose">
+          <p>If <code>nc</code> connects, TCP is fine. If it hangs, packets aren't getting through; <code>traceroute</code> finds where. <strong>Watch out for asymmetric routing</strong> — packets get there; replies take a different path and time out.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="tls">
+        <h2 class="section"><span class="num">04</span><span class="ital">TLS</span>.</h2>
+        <div class="code"><div class="head"><span><span class="lang">sh</span> &nbsp; <span class="file">openssl s_client</span></span><div class="dots"><span></span><span></span><span></span></div></div>
+<pre><span class="c">$ openssl s_client -connect example.com:443 -servername example.com</span>
+<span class="c">  ... verify return code: 0 (ok)             # what you want</span>
+<span class="c">  ... verify return code: 18 (self-signed)   # cert chain broken</span>
+<span class="c">  ... verify return code: 10 (expired)       # cert expired</span></pre></div>
+        <div class="prose">
+          <p>Cert expired is the famous one. Cert mismatch (no SAN for the domain) is the second. Chain broken — an intermediate is missing — is the silent killer (works in browsers because they fetch the chain on their own; fails in libraries that don't).</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="http">
+        <h2 class="section"><span class="num">05</span><span class="ital">HTTP</span>.</h2>
+        <div class="code"><div class="head"><span><span class="lang">sh</span> &nbsp; <span class="file">curl -v</span></span><div class="dots"><span></span><span></span><span></span></div></div>
+<pre><span class="c">$ curl -v https://example.com/</span>
+<span class="c">  &gt; GET / HTTP/2</span>
+<span class="c">  &lt; HTTP/2 502 Bad Gateway              # upstream is down</span>
+<span class="c">  &lt; HTTP/2 504 Gateway Timeout          # upstream too slow</span>
+<span class="c">  &lt; HTTP/2 500 Internal Server Error    # app bug</span>
+<span class="c">  &lt; HTTP/2 503 Service Unavailable      # rate-limited or maintenance</span></pre></div>
+        <div class="prose">
+          <p>Each HTTP error has a different cause class. <strong>502 ≠ 503 ≠ 504</strong>; reading the code is the diagnosis. <code>curl -v</code> shows headers — <code>X-Request-ID</code> is useful for tracing in logs.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="app">
+        <h2 class="section"><span class="num">06</span>App / <span class="ital">DB</span>.</h2>
+        <div class="prose">
+          <p>If HTTP returns and the body is wrong (or 5xx), you've narrowed to "the app misbehaves." Now logs, metrics, traces.</p>
+        </div>
+
+        <h3 class="sub">The standard log triage</h3>
+        <div class="prose">
+          <p><strong>Filter by request-id from the failing request</strong>. Follow the trace through the app, into downstream calls, into the database. The first error in the trace is usually root cause. <strong>5xx without a stack trace is a config / infra problem</strong>; with a stack trace, an app bug.</p>
+        </div>
+
+        <h3 class="sub">Database</h3>
+        <div class="prose">
+          <p>Slow queries, locks, connection-pool exhausted, replica lag. <strong>Check active connections</strong> — if the count is at the pool max and growing, the bottleneck is downstream. <code>SELECT * FROM pg_stat_activity</code> (Postgres) or equivalent.</p>
+        </div>
+
+        <div class="callout"><div class="ctag">"It works on my machine"</div><p>The failure is environment-specific. DNS, TLS, network policies, secrets. The bisection still applies; just compare your machine's path against the broken one.</p></div>
+
+        <div class="callout"><div class="ctag">The intermittent bug</div><p>Half the requests fail. <strong>Likely one of N replicas is broken</strong> — load balancer routes randomly. Check per-replica error rates; isolate the bad pod; drain.</p></div>
+
+        <div class="pull">"Troubleshooting is a skill. The skill is the discipline of testing each layer instead of guessing."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-cloud-pitfalls.html"><div class="label">Prev</div><div class="ttl">Cloud pitfalls</div></a>
+        <a class="next-fwd" href="fundamental-stacked-diffs.html"><div class="label">Next</div><div class="ttl">Stacked diffs →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Troubleshooting · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

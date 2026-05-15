@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Load Balancing Algorithms · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#fundamentals">Fundamentals</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Load Balancing</span>
+    </div>
+    <nav>
+      <a href="fundamental-deployment.html">← Prev</a>
+      <a href="fundamental-sidecar.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>NGINX · Envoy · YARP · gRPC client LB</b></span>
+      </div>
+      <h1>Pick the algorithm by the <span class="ital">backend</span>.</h1>
+      <p class="lede">Round-robin works for stateless homogeneous backends. Least-connections beats it when request durations vary. Power-of-two-choices beats both when you can afford the lookup. Consistent hashing wins when state lives on the backend. Choose by what your backends are, not what's familiar.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The four to know</h5>
+        <p>Round-robin. Least-connections. Power-of-two-choices (P2C). Consistent hash. Each shines on a different backend shape.</p>
+      </div>
+      <div>
+        <h5>The classic mistake</h5>
+        <p>Defaulting to round-robin everywhere. Round-robin is the textbook example, not the production answer for most real workloads.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">NGINX</span>
+          <span class="pill on">Envoy</span>
+          <span class="pill on">YARP</span>
+          <span class="pill">HAProxy</span>
+          <span class="pill">AWS ALB</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">What "balance" actually means</a></li>
+        <li><a href="#algos">Four algorithms</a></li>
+        <li><a href="#layer">L4 vs L7</a></li>
+        <li><a href="#dotnet">In .NET / YARP</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>What "balance" <span class="ital">actually</span> means.</h2>
+        <div class="prose">
+          <p>"Spread requests evenly across N backends" is what people say. <strong>The interesting word is "evenly".</strong> Evenly by request count? Evenly by CPU consumed? Evenly by current concurrent connections? Each definition produces a different algorithm and a different bug when the assumption is wrong.</p>
+          <p>Round-robin is even by request count. <em>Least-connections</em> is even by in-flight count. <em>Least-latency</em> is even by recent response time. <strong>If your requests cost wildly different amounts, request-count fairness is unfairness.</strong> One backend serving 100 quick reads is doing less work than another serving 100 slow uploads.</p>
+        </div>
+
+        <div class="pull">"Round-robin only looks fair because we agreed not to measure what we cared about."</div>
+      </section>
+
+      <section class="dd-section" id="algos">
+        <h2 class="section"><span class="num">02</span>Four <span class="ital">algorithms</span>.</h2>
+
+        <h3 class="sub">Round-robin</h3>
+        <div class="prose">
+          <p>Cycle through backends in order: 1, 2, 3, 1, 2, 3. Stateless on the load balancer; trivial to implement; predictable. <strong>Wrong when request costs vary</strong>. Works fine for homogeneous stateless backends serving uniform requests — e.g. a fleet of static-file servers.</p>
+        </div>
+
+        <h3 class="sub">Least-connections</h3>
+        <div class="prose">
+          <p>Pick the backend with the fewest currently-active connections. <strong>Naturally adapts to variable request duration</strong>: a slow backend accumulates connections, gets less new traffic, recovers. The cost: the LB has to track per-backend connection counts. Most production LBs do this efficiently. Default in modern HAProxy and recommended in NGINX <code>least_conn</code>.</p>
+        </div>
+
+        <h3 class="sub">Power-of-two-choices (P2C)</h3>
+        <div class="prose">
+          <p>For each new request, pick two backends at random; send to whichever has fewer connections. <strong>Sounds dumb, performs near-optimally.</strong> Avoids the herd effect of strict least-connections (where every LB picks the same backend simultaneously), and avoids the worst-case overload that round-robin produces. <em>Cheap to compute, distributed-friendly, asymptotically optimal for most real workloads.</em> Used in Linkerd's data plane by default.</p>
+        </div>
+
+        <h3 class="sub">Consistent hashing</h3>
+        <div class="prose">
+          <p>Pick the backend based on a hash of some request key — user ID, session ID, partition key. <strong>Same key always goes to the same backend</strong> (modulo backend additions/removals). Essential when backends hold per-user state in memory (session affinity, in-process caches). See <a href="consistent-hashing.html">the consistent-hashing deep dive</a> for the math.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 320" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 28 · DISTRIBUTION UNDER VARIABLE REQUEST COSTS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <text x="0" y="14" font-family="JetBrains Mono" font-size="11" fill="#1a1814">Round-robin (request-count fair, work-unfair)</text>
+              <rect x="0"   y="30" width="50" height="40" fill="#c2410c"/>
+              <rect x="80"  y="30" width="200" height="40" fill="#c2410c"/>
+              <rect x="310" y="30" width="80" height="40" fill="#c2410c"/>
+              <rect x="420" y="30" width="60" height="40" fill="#c2410c"/>
+              <text x="240" y="92" font-family="JetBrains Mono" font-size="9" fill="#c2410c">backend 2 saturated; others idle</text>
+            </g>
+
+            <g transform="translate(40, 200)">
+              <text x="0" y="14" font-family="JetBrains Mono" font-size="11" fill="#1a1814">P2C (work-fair)</text>
+              <rect x="0"   y="30" width="100" height="40" fill="#1a1814"/>
+              <rect x="130" y="30" width="100" height="40" fill="#1a1814"/>
+              <rect x="260" y="30" width="100" height="40" fill="#1a1814"/>
+              <rect x="390" y="30" width="100" height="40" fill="#1a1814"/>
+              <text x="240" y="92" font-family="JetBrains Mono" font-size="9" fill="#1a1814">load roughly even — backends balance themselves</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 28</span><span>Same workload, two algorithms. Round-robin produces uneven utilisation when request costs differ; P2C self-balances.</span></div>
+        </div>
+      </section>
+
+      <section class="dd-section" id="layer">
+        <h2 class="section"><span class="num">03</span>L4 <span class="ital">vs</span> L7.</h2>
+        <div class="prose">
+          <p>Load balancers operate at one of two layers. <strong>L4 (TCP)</strong>: balances connections without inspecting payloads. Fast (line-rate), simple, blind to content. AWS NLB, Azure Load Balancer, Cloudflare Spectrum. Great for non-HTTP protocols (databases, gRPC, raw TCP). <strong>L7 (HTTP)</strong>: terminates the connection, parses HTTP, can route by URL/header/cookie. AWS ALB, NGINX, YARP, Envoy. <em>Required for HTTP-aware features</em>: per-route timeouts, header rewriting, cookie-based affinity.</p>
+          <p>The gotcha with HTTP/2 / gRPC: L4 LBs see one TCP connection and stick to one backend, so request multiplexing concentrates on one pod. <strong>For gRPC, L7 is mandatory</strong> — Envoy or Linkerd, not NLB.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">YARP</span>.</h2>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">json</span> &nbsp; <span class="file">appsettings.json — YARP route + cluster</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre>{
+  <span class="s">"ReverseProxy"</span>: {
+    <span class="s">"Routes"</span>: {
+      <span class="s">"orders"</span>: {
+        <span class="s">"ClusterId"</span>: <span class="s">"orders-cluster"</span>,
+        <span class="s">"Match"</span>: { <span class="s">"Path"</span>: <span class="s">"/orders/{**catch-all}"</span> }
+      }
+    },
+    <span class="s">"Clusters"</span>: {
+      <span class="s">"orders-cluster"</span>: {
+        <span class="s">"LoadBalancingPolicy"</span>: <span class="s">"PowerOfTwoChoices"</span>,
+        <span class="s">"Destinations"</span>: {
+          <span class="s">"d1"</span>: { <span class="s">"Address"</span>: <span class="s">"https://orders-1:5001/"</span> },
+          <span class="s">"d2"</span>: { <span class="s">"Address"</span>: <span class="s">"https://orders-2:5001/"</span> },
+          <span class="s">"d3"</span>: { <span class="s">"Address"</span>: <span class="s">"https://orders-3:5001/"</span> }
+        },
+        <span class="s">"HealthCheck"</span>: {
+          <span class="s">"Active"</span>: {
+            <span class="s">"Enabled"</span>: <span class="s">"true"</span>,
+            <span class="s">"Interval"</span>: <span class="s">"00:00:10"</span>,
+            <span class="s">"Path"</span>: <span class="s">"/healthz"</span>
+          },
+          <span class="s">"Passive"</span>: { <span class="s">"Enabled"</span>: <span class="s">"true"</span> }
+        }
+      }
+    }
+  }
+}</pre>
+        </div>
+
+        <h3 class="sub">YARP's policies</h3>
+        <div class="prose">
+          <p>YARP ships <code>RoundRobin</code>, <code>LeastRequests</code> (=least-connections), <code>PowerOfTwoChoices</code>, <code>Random</code>, <code>FirstAlphabetical</code>. <strong>Use PowerOfTwoChoices unless you have a specific reason</strong>; it dominates round-robin on real workloads.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Slow start vs cold backend</div>
+          <p>A newly-added backend with zero connections looks like "least connections" — every LB sends to it, it gets crushed. <strong>Enable "slow start"</strong>: the new backend ramps from 0% to full weight over a few minutes. NGINX <code>slow_start</code>, Envoy <code>slow_start_config</code>. Without this, every deploy briefly overloads the new pods.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">EWMA — adaptive least-time</div>
+          <p>Exponentially weighted moving average of response time per backend. The LB sends new traffic to the backend with the lowest recent latency. <em>Used in Linkerd's L7 LB.</em> The "I noticed this backend got slow" signal is faster than waiting for connection counts to diverge.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Sticky sessions are an anti-pattern (mostly)</div>
+          <p>Sticky sessions are how you preserve in-memory session state across requests for the same user. <strong>The cost: failover loses the state.</strong> Modern shape: stateless backends + sessions in Redis (see <a href="jwt-vs-sessions.html">JWT vs Sessions</a>). Use sticky only when needed: WebSocket connections (the TCP must terminate on one pod) and a few legacy stateful protocols.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Health checks: active and passive</div>
+          <p>Active: LB polls <code>/healthz</code> every N seconds. Catches "completely dead" fast. Passive: LB tracks recent failures from real traffic; ejects a backend after N consecutive errors. <strong>Use both</strong>: active is reliable; passive is responsive.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">gRPC needs client-side LB or L7</div>
+          <p>HTTP/2 multiplexes a single TCP connection; an L4 LB sticks one client to one pod for life. Either use an L7 LB (Envoy, Linkerd) that load-balances per-stream, or use gRPC's client-side LB with a headless service (DNS returns all pods, the gRPC client picks).</p>
+        </div>
+
+        <div class="pull">"The load balancer is the thing that turns a fleet into a service. Get it wrong and you have a list of computers."</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">06</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Stateless HTTP API, uniform requests</h5>
+            <p>Round-robin or P2C. AWS ALB / Azure Front Door / NGINX. Slow-start enabled. Active + passive health checks.</p>
+          </div>
+          <div class="cell">
+            <h5>HTTP API with variable request cost</h5>
+            <p>P2C or least-connections. Linkerd / Envoy / YARP with <code>PowerOfTwoChoices</code>. Lets slow backends shed load naturally.</p>
+          </div>
+          <div class="cell">
+            <h5>gRPC service</h5>
+            <p>L7 LB (Envoy / Linkerd) or client-side LB. L4 doesn't balance multiplexed HTTP/2 properly.</p>
+          </div>
+          <div class="cell">
+            <h5>WebSocket / SSE</h5>
+            <p>Sticky session cookie at the LB. Long-lived connections must stay on their pod. Pair with Redis backplane for state sharing (see <a href="realtime-channels.html">Realtime Channels</a>).</p>
+          </div>
+          <div class="cell">
+            <h5>Per-user state lives in backend memory</h5>
+            <p>Consistent hashing on user-id. Same user always lands on same backend. See <a href="consistent-hashing.html">consistent hashing deep dive</a>.</p>
+          </div>
+          <div class="cell">
+            <h5>TCP / DB / non-HTTP</h5>
+            <p>L4 LB. AWS NLB, Azure Load Balancer, HAProxy in TCP mode. L4 is faster and content-blind, which is what TCP wants.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-deployment.html">
+          <div class="label">Prev fundamental</div>
+          <div class="ttl">Deployment patterns</div>
+        </a>
+        <a class="next-fwd" href="fundamental-sidecar.html">
+          <div class="label">Next fundamental</div>
+          <div class="ttl">Sidecar pattern →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Fundamental · Load Balancing · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

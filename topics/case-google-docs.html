@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Google Docs — Real-time collaboration · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#cases">Case Studies</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Google Docs</span>
+    </div>
+    <nav><a href="case-slack.html">← Prev</a><a href="case-bitly.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Years <b>2006 → today</b></span>
+        <span>Scale <b>3B docs · 1B users</b></span>
+        <span>Stack <b>Operational Transform (OT) · WebSocket · Spanner</b></span>
+      </div>
+      <h1>Twenty people typing in <span class="ital">the same paragraph</span>.</h1>
+      <p class="lede">Google Docs' real-time multiplayer document editing was a 2007 product miracle. The underlying technique — Operational Transformation — predated Docs and is still the production answer for many collaborative editors. CRDTs are the modern alternative; both solve the same problem; both have tradeoffs.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The problem</h5><p>Two editors type at the same position simultaneously. Whose change wins? Without coordination — both. Convergence is the goal.</p></div>
+      <div><h5>OT vs CRDT</h5><p>OT (operational transformation): the server transforms ops to apply them consistently. CRDT: ops are designed to be commutative.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">The convergence problem</a></li>
+      <li><a href="#ot">Operational transformation</a></li>
+      <li><a href="#crdt">CRDTs — the modern alternative</a></li>
+      <li><a href="#numbers">The numbers</a></li>
+      <li><a href="#lessons">Lessons</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The convergence <span class="ital">problem</span>.</h2>
+        <div class="prose">
+          <p>Alice and Bob are editing the same paragraph. Alice inserts "X" at position 5. Bob inserts "Y" at position 5. Naively, both ops sent to each other; each applies the other's; final state diverges.</p>
+          <p>The convergence requirement: <strong>after every editor's ops have been delivered to every other editor, in any order, all editors converge to the same document</strong>. Without this, your "real-time collaboration" is "real-time divergence."</p>
+        </div>
+        <div class="pull">"Real-time collab isn't about speed. It's about converging on the same answer."</div>
+      </section>
+
+      <section class="dd-section" id="ot">
+        <h2 class="section"><span class="num">02</span>Operational <span class="ital">transformation</span>.</h2>
+        <div class="prose">
+          <p>Each edit is an op: <code>insert("X", pos: 5)</code>, <code>delete(pos: 7, len: 1)</code>. <strong>When ops arrive out of order, the server transforms them.</strong> If Alice's insert at 5 came before Bob's insert at 5, Bob's op gets transformed to insert at 6 (because Alice's "X" shifted everything by one). The transformation function depends on the data type; for text, it's well-studied.</p>
+        </div>
+
+        <h3 class="sub">Server is the truth</h3>
+        <div class="prose">
+          <p>Google Docs has a central server. Clients send ops; server linearises them (gives each a sequence number); server transforms incoming ops against any ops that landed since the client's last known sequence; broadcasts the transformed ops to all clients. <strong>The server is the convergence point.</strong></p>
+        </div>
+
+        <h3 class="sub">Why OT is hard</h3>
+        <div class="prose">
+          <p>The transformation functions for text editing are subtle. <em>"insert and delete interact in 9 different ways depending on relative positions and lengths."</em> Implementing them correctly is a multi-year project; Google has spent serious engineering effort on Docs' OT engine.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="crdt">
+        <h2 class="section"><span class="num">03</span>CRDTs — the <span class="ital">modern</span> alternative.</h2>
+        <div class="prose">
+          <p>Conflict-free Replicated Data Types. <strong>Operations are designed to be commutative by construction</strong>: the order in which they're applied doesn't change the outcome. No transformation needed. Each replica can apply ops as they arrive; convergence is mathematically guaranteed.</p>
+          <p>For text editing: <strong>tree-based CRDTs (RGA, Yjs, Y-CRDT, Automerge)</strong>. Each character has a stable identifier in a partial order; ops insert/delete by identifier, not by integer position. No transformation; the IDs encode the ordering.</p>
+        </div>
+
+        <h3 class="sub">CRDTs vs OT — the practical comparison</h3>
+        <table class="matrix"><thead><tr><th>Aspect</th><th>OT</th><th>CRDT</th></tr></thead><tbody>
+          <tr><th>Server required</th><td>Yes (central transformer)</td><td>No (peer-to-peer works)</td></tr>
+          <tr><th>Complexity to implement</th><td>Very high</td><td>Moderate</td></tr>
+          <tr><th>Memory per doc</th><td>Bounded</td><td>Grows with edits (compression mitigates)</td></tr>
+          <tr><th>Offline edits</th><td>Hard</td><td>Native</td></tr>
+          <tr><th>Latency</th><td>Server round-trip</td><td>Local (peer sync optional)</td></tr>
+        </tbody></table>
+        <div class="prose">
+          <p>Modern collaborative editors — Figma, Linear, Notion's newer surfaces, Tldraw — use CRDTs. <strong>Google Docs still uses OT</strong> because the rewrite cost outweighs the benefits at their scale. The 2007 design has been load-bearing for nearly two decades.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">numbers</span>.</h2>
+        <table class="matrix"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+          <tr><th>Documents</th><td>billions</td></tr>
+          <tr><th>Users</th><td>~1B</td></tr>
+          <tr><th>Concurrent editors per doc (typical)</th><td>1–10; can go higher</td></tr>
+          <tr><th>Op latency (typing → seen by collaborator)</th><td>~100–300 ms</td></tr>
+          <tr><th>Storage backing</th><td>Bigtable / Spanner</td></tr>
+          <tr><th>Sync protocol</th><td>WebSocket-shaped (proprietary)</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">lessons</span>.</h2>
+        <div class="callout"><div class="ctag">Pick the convergence mechanism early</div><p>OT and CRDT have different implications for offline support, server architecture, and op shapes. Choosing late = rewrite.</p></div>
+        <div class="callout"><div class="ctag">CRDTs are the modern default</div><p>For new collaborative editors in 2026, CRDTs (Yjs, Automerge, Loro) are the right starting point. Offline-first; peer-to-peer-capable; mature libraries.</p></div>
+        <div class="callout"><div class="ctag">OT can outlive its replacement</div><p>Google Docs still uses OT. The right answer for a new product isn't always "rewrite legacy products"; Docs ships.</p></div>
+        <div class="callout"><div class="ctag">Presence is a separate problem</div><p>Cursors, selection ranges, who-is-editing-what — different concerns from the convergence of edits. Usually solved via a separate ephemeral channel (Awareness in Yjs land).</p></div>
+        <div class="pull">"Real-time collaboration looks magical because the underlying algorithm has to be."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-slack.html"><div class="label">Prev</div><div class="ttl">Slack</div></a>
+        <a class="next-fwd" href="case-bitly.html"><div class="label">Next</div><div class="ttl">Bitly →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Case · Google Docs · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

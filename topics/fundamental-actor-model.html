@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Actor Model · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Actor Model</span>
+    </div>
+    <nav><a href="../system-design.html">← Index</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~11 min</b></span>
+        <span>Stack <b>Erlang/OTP · Akka.NET · Orleans · Pony</b></span>
+      </div>
+      <h1>One mailbox, one <span class="ital">state</span>, one thread of execution.</h1>
+      <p class="lede">Carl Hewitt formulated the actor model in 1973. Erlang built a phone system on it in 1986. PayPal ran a billion transactions/day on it in 2014 (see <a href="case-paypal-actor.html">PayPal case</a>). The primitive is unusual; the production track record is excellent.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>What an actor is</h5><p>(1) Private mutable state. (2) A mailbox of messages. (3) A handler that runs one message at a time. (4) The ability to send messages to other actors (by reference).</p></div>
+      <div><h5>What you don't have</h5><p>Shared memory. Locks. Direct method calls between actors. The constraints are the point.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#primitives">The four primitives</a></li>
+      <li><a href="#supervision">Supervision and "let it crash"</a></li>
+      <li><a href="#location">Location transparency</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="primitives">
+        <h2 class="section"><span class="num">01</span>The four <span class="ital">primitives</span>.</h2>
+        <div class="prose">
+          <p>An <strong>actor</strong> owns its state. No other actor can read or modify it. Communication is <em>message-passing only</em>: I send you a message; my code returns; later your handler runs, reads the message, may mutate your state, may send messages of its own.</p>
+          <p>The handler runs <em>one message at a time</em>. <strong>No locks are needed</strong>; concurrency-inside-an-actor doesn't exist. Concurrency-between-actors is the whole game; the runtime schedules thousands of actors across a small thread pool.</p>
+        </div>
+
+        <h3 class="sub">Mailbox</h3>
+        <div class="prose">
+          <p>Messages queued in the order received. <strong>FIFO per sender</strong> typically; ordering across senders is undefined. The mailbox is unbounded by default; production systems usually bound it to detect runaway producers.</p>
+        </div>
+
+        <h3 class="sub">Sending is fire-and-forget</h3>
+        <div class="prose">
+          <p>Send returns immediately. The receiver may process the message in microseconds or seconds. <em>The sender does not wait for the response.</em> If a reply is needed, the actor includes a reply address; the receiver sends back a separate message.</p>
+        </div>
+        <div class="pull">"The actor model says: state is private, computation is local, communication is the only public surface."</div>
+      </section>
+
+      <section class="dd-section" id="supervision">
+        <h2 class="section"><span class="num">02</span>Supervision and <span class="ital">"let it crash"</span>.</h2>
+        <div class="prose">
+          <p>Erlang's defining idea: <strong>don't try to handle every error in-process; let the actor crash and have its supervisor restart it.</strong> Hierarchical supervision trees. Each supervisor watches a set of children; on crash, applies a strategy: restart one, restart all, escalate.</p>
+          <p>This sounds reckless and is the opposite. <em>Bugs you didn't anticipate are bugs you can't write defensive code against.</em> Crashing reliably is better than corrupting silently. The system recovers; the audit log records; you fix root cause later.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="location">
+        <h2 class="section"><span class="num">03</span>Location <span class="ital">transparency</span>.</h2>
+        <div class="prose">
+          <p>An actor address looks the same whether the actor is in this process, on another machine, or in another datacenter. <strong>Send the message; the runtime routes it.</strong> Cross-network is just slower than in-process; the API is identical.</p>
+          <p>This is what makes distributed actor systems (Akka Cluster, Orleans, Erlang's distributed mode) feel coherent. You design as if everything were local; the runtime handles the wire.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">04</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>You have one entity per real-world thing (user, device, order)</h5><p>Actors fit naturally. Microsoft Orleans calls these "grains"; one actor per logical entity scales to millions of entities across a cluster.</p></div>
+          <div class="cell"><h5>High concurrency, I/O-bound</h5><p>Actors thrive. Each actor is cheap (~hundreds of bytes). Millions per machine. See <a href="case-paypal-actor.html">PayPal</a>.</p></div>
+          <div class="cell"><h5>Stateful long-running workflows</h5><p>Actors are durable state machines. Saga-style flows fit, especially with Orleans virtual actors (lazy-activated).</p></div>
+          <div class="cell"><h5>CPU-bound batch processing</h5><p>Actors are the wrong shape. Use thread pools, MapReduce, dataflow systems.</p></div>
+          <div class="cell"><h5>Already on .NET</h5><p>Microsoft Orleans is mature, well-documented, used in production at Microsoft. Akka.NET if you want the Akka API.</p></div>
+          <div class="cell"><h5>Already on JVM</h5><p>Akka is the standard — note 2022 license change (BSL); Pekko is the open fork.</p></div>
+        </div>
+        <div class="pull">"Actors are a model where the concurrency is obvious and the bugs are testable."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="../system-design.html"><div class="label">Index</div><div class="ttl">All fundamentals</div></a>
+        <a class="next-fwd" href="fundamental-concurrency-vs-parallelism.html"><div class="label">Next</div><div class="ttl">Concurrency vs parallelism →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Actor Model · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

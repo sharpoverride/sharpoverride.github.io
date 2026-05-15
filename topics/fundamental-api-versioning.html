@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>API Versioning · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">API versioning</span>
+    </div>
+    <nav><a href="fundamental-api-design.html">← Prev</a><a href="fundamental-high-availability.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~8 min</b></span>
+        <span>Stack <b>URL · header · date-based · sunset</b></span>
+      </div>
+      <h1>The version <span class="ital">is</span> the API.</h1>
+      <p class="lede">"How do we evolve an API without breaking clients" is the question. Four strategies, each with passionate defenders. The honest answer: it depends on who your callers are and how much you can ask of them.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The four strategies</h5><p>URL path (<code>/v1/</code>), URL host (<code>v1.api.example.com</code>), media-type header (<code>Accept: application/vnd.example.v1+json</code>), date-based version header (Stripe's choice).</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#why">Why versioning is hard</a></li>
+      <li><a href="#strategies">The four strategies</a></li>
+      <li><a href="#breaking">What counts as breaking</a></li>
+      <li><a href="#sunset">Sunset policy</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="why">
+        <h2 class="section"><span class="num">01</span>Why versioning is <span class="ital">hard</span>.</h2>
+        <div class="prose">
+          <p>Once you publish an API, clients code against it. A breaking change forces every client to update. <strong>For internal APIs you control both ends; for public ones, you have hundreds or thousands of integrators.</strong> Some will never update; their app is in someone's basement; the company is gone. You still have to serve them or they 500.</p>
+          <p>Versioning lets you ship breaking changes without killing those clients — they keep hitting the old version while you ship a new one alongside.</p>
+        </div>
+        <div class="pull">"The API contract is the public face of the company. Breaking it without a path forward burns trust no marketing can rebuild."</div>
+      </section>
+
+      <section class="dd-section" id="strategies">
+        <h2 class="section"><span class="num">02</span>The four <span class="ital">strategies</span>.</h2>
+
+        <h3 class="sub">URL path versioning</h3>
+        <div class="prose">
+          <p><code>/v1/charges</code>, <code>/v2/charges</code>. <strong>Easiest to understand</strong>; obvious in logs; easy to route. The downside: it confuses REST purists (URI identifies a resource; the resource is the same in v1 and v2). <em>Most public APIs use this.</em> GitHub, Twilio, Stripe (for major versions).</p>
+        </div>
+
+        <h3 class="sub">URL host versioning</h3>
+        <div class="prose">
+          <p><code>v1.api.example.com</code>. Lets you route entire versions to different infrastructure. <strong>Useful if v1 and v2 run on different stacks.</strong> Rare in practice; same shape as path versioning, more setup.</p>
+        </div>
+
+        <h3 class="sub">Media-type / Accept header</h3>
+        <div class="prose">
+          <p><code>Accept: application/vnd.example.v1+json</code>. <strong>The REST-pure way.</strong> Same URL; client requests the version. Hard to <code>curl</code>; works fine for SDKs. <em>GitHub's "preview" headers use this for opt-in features.</em></p>
+        </div>
+
+        <h3 class="sub">Date-based versioning (Stripe-style)</h3>
+        <div class="prose">
+          <p><code>Stripe-Version: 2024-11-20</code> header. Every breaking change gets a date. <strong>Clients pin a version once and stay on it until they're ready to upgrade.</strong> The API documents a changelog of "what changed in this version." New version is the default for new accounts. <em>This is the most disciplined; also the most operational</em> — the server has to maintain compat for every published date.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="breaking">
+        <h2 class="section"><span class="num">03</span>What counts as <span class="ital">breaking</span>.</h2>
+        <table class="matrix"><thead><tr><th>Change</th><th>Breaking?</th></tr></thead><tbody>
+          <tr><th>Add a new optional field to response</th><td>No (clients should ignore unknown fields)</td></tr>
+          <tr><th>Add a new endpoint</th><td>No</td></tr>
+          <tr><th>Remove a field</th><td>Yes</td></tr>
+          <tr><th>Rename a field</th><td>Yes</td></tr>
+          <tr><th>Change field type (string → int)</th><td>Yes</td></tr>
+          <tr><th>Change a default value</th><td>Yes (clients may rely on it)</td></tr>
+          <tr><th>Add a required parameter</th><td>Yes</td></tr>
+          <tr><th>Change pagination shape</th><td>Yes</td></tr>
+          <tr><th>Change error code for an existing condition</th><td>Yes</td></tr>
+          <tr><th>Tighten validation</th><td>Yes (formerly-valid requests now fail)</td></tr>
+        </tbody></table>
+        <div class="prose">
+          <p><strong>"Tolerant readers" don't save you for the tightening cases.</strong> Servers must enforce; clients break when enforcement tightens. Treat any visible-behaviour-change as breaking; if in doubt, version it.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="sunset">
+        <h2 class="section"><span class="num">04</span>Sunset <span class="ital">policy</span>.</h2>
+        <div class="callout"><div class="ctag">Announce deprecation publicly</div><p>Blog post, email to integrators, docs banner. Lead time: typically 6–12 months for public APIs.</p></div>
+        <div class="callout"><div class="ctag">Add Sunset and Deprecation headers</div><p>RFC 8594 (Sunset), draft (Deprecation). Tooling can detect and warn integrators.</p></div>
+        <div class="callout"><div class="ctag">Soft-disable before hard-disable</div><p>2 weeks before sunset, return success but inject a noisy log header. Forces noisy attention.</p></div>
+        <div class="callout"><div class="ctag">After sunset</div><p>Return 410 Gone with a body explaining what to upgrade to. Not 404 — 410 is the "permanently retired" signal.</p></div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">05</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Public API, broad integrator base</h5><p>URL path versioning. Major versions only. Bump rarely. Date-based as an inner mechanism for finer control.</p></div>
+          <div class="cell"><h5>SDK-only API (no <code>curl</code>)</h5><p>Date-based header versioning. The SDK pins on behalf of the user; users don't see the header.</p></div>
+          <div class="cell"><h5>Internal microservices</h5><p>Don't version. Coordinate change across the org. If you can't, you have an organisational problem; versioning hides it.</p></div>
+          <div class="cell"><h5>Mobile-app-backing API</h5><p>Mobile clients persist for years. Use sticky versioning; never break old versions until you can confirm zero traffic.</p></div>
+          <div class="cell"><h5>You shipped no versioning v1</h5><p>Your v1 IS v1. Add <code>/v2/</code> when you need the first breaking change; route everything else to v1. Don't try to retrofit versioning to v1 — you can't.</p></div>
+          <div class="cell"><h5>GraphQL</h5><p>Don't version. Deprecate fields with @deprecated, add new ones in parallel. Schema is forever-extending.</p></div>
+        </div>
+        <div class="pull">"You don't pick a versioning strategy. You pick the support burden you're willing to live with for ten years."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-api-design.html"><div class="label">Prev</div><div class="ttl">API design</div></a>
+        <a class="next-fwd" href="fundamental-high-availability.html"><div class="label">Next</div><div class="ttl">High availability →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · API versioning · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

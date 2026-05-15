@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Back of the Envelope · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Back of the envelope</span>
+    </div>
+    <nav><a href="../system-design.html">← Index</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★☆☆☆</b></span>
+        <span>Read <b>~8 min</b></span>
+        <span>Stack <b>orders of magnitude · latency tables · power-of-2</b></span>
+      </div>
+      <h1>Math that fits in a <span class="ital">whiteboard</span>.</h1>
+      <p class="lede">Back-of-envelope estimation is the skill that turns "design Twitter" into "your design needs 6k QPS of writes and 600k of reads." Two minutes of math anchors every subsequent decision. The trick: memorise a handful of numbers; convert everything else.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The numbers to memorise</h5><p>1 byte/char. ~10⁵ seconds per day. ~10⁹ in a year. DRAM ns; SSD μs; cross-region 100 ms.</p></div>
+      <div><h5>The shape</h5><p>Users → events/user → events/sec → QPS · storage · bandwidth. Convert each into a budget.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">Why estimate</a></li>
+      <li><a href="#nums">The numbers</a></li>
+      <li><a href="#worked">A worked example</a></li>
+      <li><a href="#latency">Latency table</a></li>
+      <li><a href="#tips">Tips</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why <span class="ital">estimate</span>.</h2>
+        <div class="prose">
+          <p>Architectural choices follow from numbers. <em>"100M users"</em> tells you almost nothing; <em>"6k writes/sec"</em> tells you whether you can fit on one Postgres or need sharding. <strong>The estimation step is the bridge from product requirement to engineering decision.</strong> Skipping it leaves the decision unanchored.</p>
+          <p>The interview signal is that you <em>can</em> estimate, not that your numbers are perfect. "About 5k QPS" is a fine answer; "I have no idea" isn't.</p>
+        </div>
+        <div class="pull">"The number is the design. Without it you're just naming boxes."</div>
+      </section>
+
+      <section class="dd-section" id="nums">
+        <h2 class="section"><span class="num">02</span>The <span class="ital">numbers</span>.</h2>
+
+        <h3 class="sub">Time</h3>
+        <table class="matrix"><thead><tr><th>Unit</th><th>Seconds</th></tr></thead><tbody>
+          <tr><th>1 day</th><td>~86,400 ≈ 10⁵</td></tr>
+          <tr><th>1 month</th><td>~2.6M ≈ 2.6 × 10⁶</td></tr>
+          <tr><th>1 year</th><td>~3.15 × 10⁷</td></tr>
+        </tbody></table>
+
+        <h3 class="sub">Size</h3>
+        <table class="matrix"><thead><tr><th>Item</th><th>Size</th></tr></thead><tbody>
+          <tr><th>ASCII char</th><td>1 B</td></tr>
+          <tr><th>Tweet (280 chars + metadata)</th><td>~1 KB</td></tr>
+          <tr><th>Average HTTP request</th><td>~2 KB</td></tr>
+          <tr><th>Web page (HTML, no media)</th><td>~50 KB</td></tr>
+          <tr><th>Small image (compressed)</th><td>~200 KB</td></tr>
+          <tr><th>Smartphone photo</th><td>~3 MB</td></tr>
+          <tr><th>Music track (compressed)</th><td>~5 MB</td></tr>
+          <tr><th>1 minute of HD video</th><td>~100 MB</td></tr>
+          <tr><th>UUID</th><td>16 B (binary) / 36 B (string)</td></tr>
+        </tbody></table>
+
+        <h3 class="sub">Powers of two</h3>
+        <table class="matrix"><thead><tr><th>2ⁿ</th><th>Approximate</th></tr></thead><tbody>
+          <tr><th>2¹⁰</th><td>~10³</td></tr>
+          <tr><th>2²⁰</th><td>~10⁶</td></tr>
+          <tr><th>2³⁰</th><td>~10⁹</td></tr>
+          <tr><th>2⁴⁰</th><td>~10¹²</td></tr>
+        </tbody></table>
+
+        <h3 class="sub">Throughput per machine (ballpark)</h3>
+        <table class="matrix"><thead><tr><th>Thing</th><th>Order of magnitude</th></tr></thead><tbody>
+          <tr><th>Web server QPS</th><td>~10k</td></tr>
+          <tr><th>Cached responses / sec</th><td>~100k</td></tr>
+          <tr><th>SQL writes / sec / primary</th><td>~5k–20k (with batching)</td></tr>
+          <tr><th>Kafka throughput / broker</th><td>~100 MB/sec</td></tr>
+          <tr><th>Redis ops / sec</th><td>~100k</td></tr>
+          <tr><th>HDD seek</th><td>~5 ms</td></tr>
+          <tr><th>SSD read</th><td>~100 μs</td></tr>
+          <tr><th>RAM read</th><td>~100 ns</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="worked">
+        <h2 class="section"><span class="num">03</span>A worked <span class="ital">example</span> — Twitter.</h2>
+        <div class="prose">
+          <p>500M DAU. Average user writes 1 tweet/day, reads 100/day.</p>
+          <ul>
+            <li><strong>Writes/day:</strong> 500M × 1 = 5 × 10⁸ tweets/day</li>
+            <li><strong>Writes/sec:</strong> 5 × 10⁸ ÷ 10⁵ = 5 × 10³ ≈ <em>5k tweets/sec</em></li>
+            <li><strong>Reads/sec:</strong> 100× writes ≈ <em>500k QPS</em></li>
+            <li><strong>Storage/day:</strong> 5 × 10⁸ × 1 KB = 500 GB/day</li>
+            <li><strong>Storage/year:</strong> 500 GB × 365 = ~180 TB/year</li>
+            <li><strong>Bandwidth (reads):</strong> 500k QPS × ~1 KB = ~500 MB/sec = ~4 Gbps</li>
+          </ul>
+          <p>Conclusion in 90 seconds: needs sharded storage, aggressive caching (you cannot hit DB at 500k QPS), CDN for media. <strong>Numbers chose the design.</strong></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="latency">
+        <h2 class="section"><span class="num">04</span>Latency <span class="ital">table</span> (Jeff Dean numbers, modernised).</h2>
+        <table class="matrix"><thead><tr><th>Operation</th><th>Time</th></tr></thead><tbody>
+          <tr><th>L1 cache reference</th><td>~0.5 ns</td></tr>
+          <tr><th>L2 cache reference</th><td>~7 ns</td></tr>
+          <tr><th>Mutex lock/unlock</th><td>~25 ns</td></tr>
+          <tr><th>Main memory reference</th><td>~100 ns</td></tr>
+          <tr><th>Compress 1 KB (zstd)</th><td>~3 μs</td></tr>
+          <tr><th>Send 1 KB over 10 Gbps NIC</th><td>~1 μs</td></tr>
+          <tr><th>SSD random read (4 KB)</th><td>~100 μs</td></tr>
+          <tr><th>Read 1 MB from SSD</th><td>~1 ms</td></tr>
+          <tr><th>Round-trip same datacenter</th><td>~500 μs</td></tr>
+          <tr><th>Round-trip same continent</th><td>~50 ms</td></tr>
+          <tr><th>Round-trip across ocean</th><td>~150 ms</td></tr>
+        </tbody></table>
+        <div class="prose">
+          <p>The relevant rule of thumb: <strong>cross-network is ~1000× memory. Disk is in between.</strong> Any design that hits the network on the hot path has paid that tax.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="tips">
+        <h2 class="section"><span class="num">05</span><span class="ital">Tips</span>.</h2>
+        <div class="callout"><div class="ctag">Round generously</div><p>2.78 × 10⁵ becomes "about 300k." The interviewer doesn't care about precision; they care that you can compute.</p></div>
+        <div class="callout"><div class="ctag">Read/write ratios are the unlock</div><p>Most products are read-heavy (100:1 typical for social, 10:1 for SaaS, 1:1 for chat). Naming the ratio early simplifies everything that follows.</p></div>
+        <div class="callout"><div class="ctag">Peak ≈ 4× average</div><p>Daily peak is roughly 4× the mean. If average is 5k QPS, design for 20k peak.</p></div>
+        <div class="callout"><div class="ctag">Don't estimate things that don't matter</div><p>If the answer makes no architectural decision turn, skip it. Estimation serves design choice.</p></div>
+        <div class="pull">"In system design interviews, the people who can't do mental math sound less senior. That's the bar."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="../system-design.html"><div class="label">Index</div><div class="ttl">All fundamentals</div></a>
+        <a class="next-fwd" href="fundamental-url-walkthrough.html"><div class="label">Next</div><div class="ttl">What happens when you type a URL →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · BoE · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

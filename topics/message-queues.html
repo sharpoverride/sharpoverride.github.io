@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Message Queues · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">03 · Message Queues</span>
+    </div>
+    <nav>
+      <a href="caching-patterns.html">← Prev</a>
+      <a href="consistency-patterns.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>03</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~16 min</b></span>
+        <span>Stack <b>ASP.NET Core · EF Core · Kafka / Service Bus</b></span>
+      </div>
+      <h1>Message <span class="ital">queues</span>.</h1>
+      <p class="lede">Logs versus brokers, the <em>outbox pattern</em> that fixes the only hard problem, and how to pick between Kafka, Service Bus, RabbitMQ and SQS without lying to yourself about cost.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The two models</h5>
+        <p><strong>Log</strong> (Kafka) — append-only, consumers track offsets, replay is free. <strong>Broker</strong> (RabbitMQ, SB, SQS) — messages have lives; acks delete them; replay needs work.</p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Pick the broker model unless you actually need replay or fan-out. Run an outbox. Make consumers idempotent. Everything else is decoration.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Confluent.Kafka</span>
+          <span class="pill on">Azure Service Bus</span>
+          <span class="pill on">EF Core outbox</span>
+          <span class="pill">RabbitMQ</span>
+          <span class="pill">AWS SQS</span>
+          <span class="pill">MassTransit</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">What queues solve</a></li>
+        <li><a href="#models">Log vs broker</a></li>
+        <li><a href="#reliability">The reliability triangle</a></li>
+        <li><a href="#outbox">Transactional outbox</a></li>
+        <li><a href="#consumer">Idempotent consumers</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>What queues <span class="ital">solve</span>.</h2>
+        <div class="prose">
+          <p>A message queue is not a clever piece of infrastructure. It's a piece of infrastructure that lets you <strong>say no later</strong>. The producer hands a message to the broker, the broker takes responsibility, and the producer goes back to serving its next request. Five problems collapse into one shape:</p>
+          <ul>
+            <li><strong>Decoupling.</strong> The order service doesn't know how many things care about a new order — email, inventory, fraud, analytics. It publishes; consumers self-select.</li>
+            <li><strong>Smoothing.</strong> A 10× traffic spike at the producer does not become a 10× spike at every downstream. The queue absorbs the difference.</li>
+            <li><strong>Retry.</strong> If the email service is down for 8 minutes, the message waits 8 minutes. No retry loop in your hot path.</li>
+            <li><strong>Ordering.</strong> Per-partition ordering — every event for <code>order:42</code> goes to the same consumer instance, in order.</li>
+            <li><strong>Audit.</strong> Every state change is, by construction, a durable record.</li>
+          </ul>
+          <div class="pull">"A queue is what you reach for when 'try again' is no longer a good enough answer."</div>
+        </div>
+      </section>
+
+      <!-- 2 -->
+      <section class="dd-section" id="models">
+        <h2 class="section"><span class="num">02</span>Log <span class="ital">vs</span> broker.</h2>
+        <div class="prose">
+          <p>The single most useful mental model for messaging: <strong>does the broker delete messages after consumers ack them?</strong></p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 380" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="ma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="#1a1814"/>
+              </marker>
+              <marker id="mao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/>
+              </marker>
+            </defs>
+
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 03 · TWO MODELS · WHO OWNS THE READ POSITION</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- ── LOG model (Kafka) ── -->
+            <g transform="translate(40, 70)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="26" fill="#1a1814">Log model</text>
+              <text x="0" y="20" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">KAFKA · KINESIS · EVENT HUBS · PULSAR</text>
+
+              <!-- producer -->
+              <rect x="0" y="60" width="80" height="36" fill="#1a1814"/>
+              <text x="40" y="83" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">PRODUCER</text>
+
+              <!-- the log -->
+              <g transform="translate(140, 50)">
+                <rect x="0" y="0" width="320" height="60" fill="none" stroke="#1a1814" stroke-width="2"/>
+                <text x="6"  y="-6" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">TOPIC · PARTITION 0</text>
+                <g fill="#c2410c">
+                  <rect x="6"   y="6" width="34" height="48"/>
+                  <rect x="44"  y="6" width="34" height="48"/>
+                  <rect x="82"  y="6" width="34" height="48"/>
+                  <rect x="120" y="6" width="34" height="48"/>
+                  <rect x="158" y="6" width="34" height="48"/>
+                  <rect x="196" y="6" width="34" height="48"/>
+                  <rect x="234" y="6" width="34" height="48" opacity="0.5"/>
+                  <rect x="272" y="6" width="34" height="48" opacity="0.3"/>
+                </g>
+                <text x="23"  y="34" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">0</text>
+                <text x="61"  y="34" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">1</text>
+                <text x="99"  y="34" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">2</text>
+                <text x="137" y="34" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">3</text>
+                <text x="175" y="34" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">4</text>
+                <text x="213" y="34" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">5</text>
+                <text x="251" y="34" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">6</text>
+              </g>
+              <line x1="80" y1="78" x2="138" y2="78" stroke="#c2410c" stroke-width="2" marker-end="url(#mao)"/>
+
+              <!-- 3 independent consumer groups, each with own offset -->
+              <g transform="translate(140, 130)">
+                <text x="0" y="0" font-family="JetBrains Mono" font-size="10" letter-spacing="0.1em" fill="#8a8478">GROUP A &middot; offset = 4</text>
+                <line x1="158" y1="-12" x2="158" y2="-30" stroke="#1a1814" stroke-width="2" marker-end="url(#ma)"/>
+                <text x="160" y="20" font-family="JetBrains Mono" font-size="10" fill="#1a1814">→ email service</text>
+              </g>
+              <g transform="translate(140, 168)">
+                <text x="0" y="0" font-family="JetBrains Mono" font-size="10" letter-spacing="0.1em" fill="#8a8478">GROUP B &middot; offset = 2</text>
+                <line x1="82" y1="-50" x2="82" y2="-68" stroke="#1a1814" stroke-width="2" marker-end="url(#ma)"/>
+                <text x="160" y="20" font-family="JetBrains Mono" font-size="10" fill="#1a1814">→ analytics</text>
+              </g>
+              <g transform="translate(140, 206)">
+                <text x="0" y="0" font-family="JetBrains Mono" font-size="10" letter-spacing="0.1em" fill="#8a8478">GROUP C &middot; offset = 0  ★ replay</text>
+                <line x1="6"  y1="-88" x2="6"  y2="-106" stroke="#c2410c" stroke-width="2" marker-end="url(#mao)"/>
+                <text x="160" y="20" font-family="JetBrains Mono" font-size="10" fill="#1a1814">→ search re-index</text>
+              </g>
+
+              <text x="0" y="270" font-family="Instrument Serif" font-size="18" fill="#1a1814">Messages persist on retention (days/weeks).</text>
+              <text x="0" y="292" font-family="Instrument Serif" font-size="18" fill="#1a1814">Consumers store their own offset.</text>
+              <text x="0" y="314" font-family="Instrument Serif" font-size="18" fill="#1a1814">Replay = read from an earlier offset.</text>
+            </g>
+
+            <!-- divider -->
+            <line x1="600" y1="60" x2="600" y2="360" stroke="#1a1814" stroke-dasharray="3 3"/>
+
+            <!-- ── BROKER model ── -->
+            <g transform="translate(640, 70)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="26" fill="#1a1814">Broker model</text>
+              <text x="0" y="20" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">RABBITMQ · SERVICE BUS · SQS · ACTIVEMQ</text>
+
+              <!-- producer -->
+              <rect x="0" y="60" width="80" height="36" fill="#1a1814"/>
+              <text x="40" y="83" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">PRODUCER</text>
+
+              <!-- queue -->
+              <g transform="translate(140, 50)">
+                <rect x="0" y="0" width="240" height="60" fill="none" stroke="#1a1814" stroke-width="2"/>
+                <text x="6"  y="-6" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">QUEUE</text>
+                <g fill="#c2410c">
+                  <rect x="6"   y="6" width="34" height="48"/>
+                  <rect x="44"  y="6" width="34" height="48"/>
+                  <rect x="82"  y="6" width="34" height="48"/>
+                  <rect x="120" y="6" width="34" height="48"/>
+                  <rect x="158" y="6" width="34" height="48" opacity="0.4"/>
+                  <rect x="196" y="6" width="34" height="48" opacity="0.2"/>
+                </g>
+              </g>
+              <line x1="80" y1="78" x2="138" y2="78" stroke="#c2410c" stroke-width="2" marker-end="url(#mao)"/>
+
+              <!-- competing consumers -->
+              <g transform="translate(420, 50)">
+                <rect x="0" y="0" width="100" height="28" fill="#1a1814"/>
+                <text x="50" y="18" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CONSUMER 1</text>
+                <rect x="0" y="32" width="100" height="28" fill="#1a1814"/>
+                <text x="50" y="50" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CONSUMER 2</text>
+              </g>
+              <line x1="380" y1="68" x2="418" y2="58" stroke="#1a1814" stroke-width="1.5" marker-end="url(#ma)"/>
+              <line x1="380" y1="98" x2="418" y2="92" stroke="#1a1814" stroke-width="1.5" marker-end="url(#ma)"/>
+
+              <!-- ack/delete -->
+              <g transform="translate(140, 130)">
+                <text x="0" y="0" font-family="JetBrains Mono" font-size="10" letter-spacing="0.1em" fill="#c2410c">ACK → DELETE</text>
+                <line x1="0" y1="-20" x2="80" y2="-20" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3"/>
+                <text x="0" y="22" font-family="JetBrains Mono" font-size="10" letter-spacing="0.1em" fill="#8a8478">NACK → RETRY → DLQ</text>
+              </g>
+
+              <text x="0" y="270" font-family="Instrument Serif" font-size="18" fill="#1a1814">Messages have lives. Ack deletes.</text>
+              <text x="0" y="292" font-family="Instrument Serif" font-size="18" fill="#1a1814">Broker owns the read position.</text>
+              <text x="0" y="314" font-family="Instrument Serif" font-size="18" fill="#1a1814">DLQ catches the poison messages.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 03</span><span>The log model fans out and replays; the broker model competes and forgets</span></div>
+        </div>
+
+        <div class="compare-3">
+          <div class="col">
+            <div class="meta">Log model wins</div>
+            <h4>Replay, fan-out, audit</h4>
+            <ul>
+              <li>Multiple independent consumer groups (analytics, search, billing) all read the same stream</li>
+              <li>Add a new consumer 6 months later — replay from offset 0</li>
+              <li>Event sourcing / CDC / streaming joins</li>
+              <li>Per-partition ordering by key</li>
+            </ul>
+          </div>
+          <div class="col">
+            <div class="meta">Broker model wins</div>
+            <h4>Work queues, RPC, DLQ</h4>
+            <ul>
+              <li>"Send this email" is consumed once and gone</li>
+              <li>Priority queues, scheduled delivery, TTL per message</li>
+              <li>Native DLQ semantics — poison messages have a home</li>
+              <li>Lower operational burden than running Kafka</li>
+            </ul>
+          </div>
+          <div class="col">
+            <div class="meta">Don't conflate</div>
+            <h4>The wrong choice hurts</h4>
+            <ul>
+              <li>Using Kafka as a work queue — no priority, awkward retries, no native scheduled delivery</li>
+              <li>Using SQS for event sourcing — replay requires rebuilding all the infrastructure Kafka gives you free</li>
+              <li>"We'll just use Postgres as a queue" — works to ~1k msg/s, then breaks in confusing ways</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3 reliability -->
+      <section class="dd-section" id="reliability">
+        <h2 class="section"><span class="num">03</span>The <span class="ital">reliability</span> triangle.</h2>
+        <div class="prose">
+          <p>Three guarantees, pick two — but with messaging, the unpicked one is always "exactly once," and that's because <strong>exactly-once delivery does not exist</strong>. It's a marketing word. Every production system that says "exactly once" means <em>at-least-once delivery + idempotent processing</em>. Internalise that and the rest falls into place.</p>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 800 200" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. 04 · DELIVERY SEMANTICS</text>
+
+            <g transform="translate(20, 60)">
+              <rect x="0" y="0" width="240" height="120" fill="none" stroke="#1a1814" stroke-width="2"/>
+              <text x="14" y="24" font-family="Instrument Serif" font-size="22" fill="#1a1814">At-most-once</text>
+              <text x="14" y="48" font-family="JetBrains Mono" font-size="10" fill="#8a8478">FIRE-AND-FORGET</text>
+              <text x="14" y="72" font-family="IBM Plex Sans" font-size="13" fill="#1a1814">→ Loses messages on crash</text>
+              <text x="14" y="92" font-family="IBM Plex Sans" font-size="13" fill="#1a1814">→ Never duplicates</text>
+              <text x="14" y="112" font-family="IBM Plex Sans" font-size="13" fill="#c2410c" font-style="italic">use: telemetry, metrics</text>
+            </g>
+
+            <g transform="translate(280, 60)">
+              <rect x="0" y="0" width="240" height="120" fill="#c2410c"/>
+              <text x="14" y="24" font-family="Instrument Serif" font-size="22" fill="#f1ece1">At-least-once ★</text>
+              <text x="14" y="48" font-family="JetBrains Mono" font-size="10" fill="#f1ece1" opacity="0.8">ACK ON SUCCESS</text>
+              <text x="14" y="72" font-family="IBM Plex Sans" font-size="13" fill="#f1ece1">→ Never loses messages</text>
+              <text x="14" y="92" font-family="IBM Plex Sans" font-size="13" fill="#f1ece1">→ May duplicate on retry</text>
+              <text x="14" y="112" font-family="IBM Plex Sans" font-size="13" fill="#f1ece1" font-style="italic">use: everything important</text>
+            </g>
+
+            <g transform="translate(540, 60)">
+              <rect x="0" y="0" width="240" height="120" fill="none" stroke="#1a1814" stroke-width="2" stroke-dasharray="4 3"/>
+              <text x="14" y="24" font-family="Instrument Serif" font-size="22" fill="#1a1814">"Exactly-once"</text>
+              <text x="14" y="48" font-family="JetBrains Mono" font-size="10" fill="#8a8478">A LIE WE TELL OURSELVES</text>
+              <text x="14" y="72" font-family="IBM Plex Sans" font-size="13" fill="#1a1814">→ At-least-once delivery</text>
+              <text x="14" y="92" font-family="IBM Plex Sans" font-size="13" fill="#1a1814">→ + idempotent consumer</text>
+              <text x="14" y="112" font-family="IBM Plex Sans" font-size="13" fill="#c2410c" font-style="italic">"effectively once"</text>
+            </g>
+          </svg>
+          <div class="cap"><span>Fig. 04 · The only two semantics you can build with</span><b>at-least-once + idempotency = "exactly once"</b></div>
+        </div>
+
+        <div class="prose">
+          <p>At-least-once delivery is on by default in every broker worth using. Idempotency is your job. There are three places to put it:</p>
+          <ul>
+            <li><strong>At the message.</strong> Stamp every message with a stable <code>messageId</code> at publish time. Consumer stores processed IDs (a fast Redis set, or a unique-constrained table).</li>
+            <li><strong>At the operation.</strong> Make the side-effect itself idempotent: <code>UPSERT</code> instead of <code>INSERT</code>; <code>SET counter = 5</code> instead of <code>INCR</code>.</li>
+            <li><strong>At the boundary.</strong> Pair the message with the outbound side-effect's natural idempotency key — Stripe's <code>Idempotency-Key</code> header, an order number, a tax-document UUID.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 4 outbox -->
+      <section class="dd-section" id="outbox">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">transactional outbox</span>.</h2>
+        <div class="prose">
+          <p>The most common bug in event-driven .NET code: <em>"we saved the order, but the OrderCreated event never went out"</em>. Or worse: <em>"we sent the event but the DB transaction rolled back"</em>. These are two faces of one problem — you're trying to atomically update two systems (the database and the broker) without a distributed transaction.</p>
+          <p>The fix has a name. The <strong>outbox pattern</strong> writes the message to an <em>outbox</em> table in the same EF Core transaction as the business write. A separate process drains the outbox to the broker. The database becomes the single source of truth for both state and intent.</p>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 800 200" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="ob" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a1814"/></marker>
+              <marker id="obo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <!-- step 1 -->
+            <rect x="20"  y="40" width="120" height="50" fill="#1a1814"/>
+            <text x="80" y="60" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">HTTP HANDLER</text>
+            <text x="80" y="78" font-family="JetBrains Mono" font-size="9"  text-anchor="middle" fill="#c2410c">SaveChanges</text>
+
+            <!-- DB box with two tables -->
+            <rect x="200" y="20" width="220" height="120" fill="none" stroke="#1a1814" stroke-width="2"/>
+            <text x="210" y="38" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">POSTGRES · ONE TX</text>
+            <rect x="216" y="50" width="90" height="34" fill="#c2410c"/>
+            <text x="261" y="71" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">orders</text>
+            <rect x="316" y="50" width="92" height="34" fill="#c2410c"/>
+            <text x="362" y="71" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">outbox</text>
+            <text x="216" y="110" font-family="Instrument Serif" font-size="14" fill="#1a1814" font-style="italic">commit both, or neither.</text>
+
+            <line x1="140" y1="64" x2="198" y2="64" stroke="#c2410c" stroke-width="2" marker-end="url(#obo)"/>
+
+            <!-- worker -->
+            <rect x="480" y="40" width="120" height="50" fill="#1a1814"/>
+            <text x="540" y="60" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">OUTBOX WORKER</text>
+            <text x="540" y="78" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#c2410c">poll · publish · mark</text>
+            <line x1="420" y1="64" x2="478" y2="64" stroke="#1a1814" stroke-width="2" marker-end="url(#ob)"/>
+
+            <!-- broker -->
+            <rect x="660" y="30" width="120" height="120" fill="none" stroke="#1a1814" stroke-width="2"/>
+            <text x="720" y="52" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#1a1814">BROKER</text>
+            <g fill="#c2410c">
+              <rect x="675" y="70" width="90" height="14"/>
+              <rect x="675" y="90" width="90" height="14"/>
+              <rect x="675" y="110" width="90" height="14"/>
+            </g>
+            <line x1="600" y1="64" x2="658" y2="64" stroke="#1a1814" stroke-width="2" marker-end="url(#ob)"/>
+
+            <text x="20" y="180" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. 05 · ONE TX WRITES BOTH ROWS &middot; WORKER DRAINS THE OUTBOX</text>
+          </svg>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">OutboxMessage.cs · DbContext</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">namespace</span> <span class="t">Academy.Messaging</span>;
+
+<span class="c">// The outbox row. One per message. Single table for all message types.</span>
+<span class="k">public sealed class</span> <span class="t">OutboxMessage</span>
+{
+    <span class="k">public</span> <span class="t">Guid</span>      <span class="t">Id</span>            { <span class="k">get</span>; <span class="k">set</span>; } = <span class="t">Guid</span>.<span class="fn">NewGuid</span>();
+    <span class="k">public</span> <span class="k">string</span>    <span class="t">Type</span>          { <span class="k">get</span>; <span class="k">set</span>; } = <span class="k">default</span>!;   <span class="c">// e.g. "order.created.v1"</span>
+    <span class="k">public</span> <span class="k">string</span>    <span class="t">Payload</span>       { <span class="k">get</span>; <span class="k">set</span>; } = <span class="k">default</span>!;   <span class="c">// JSON</span>
+    <span class="k">public</span> <span class="k">string</span>    <span class="t">PartitionKey</span>  { <span class="k">get</span>; <span class="k">set</span>; } = <span class="k">default</span>!;   <span class="c">// for ordering</span>
+    <span class="k">public</span> <span class="t">DateTimeOffset</span> <span class="t">CreatedAt</span>  { <span class="k">get</span>; <span class="k">set</span>; } = <span class="t">DateTimeOffset</span>.<span class="t">UtcNow</span>;
+    <span class="k">public</span> <span class="t">DateTimeOffset</span>? <span class="t">PublishedAt</span> { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="k">int</span>       <span class="t">Attempts</span>      { <span class="k">get</span>; <span class="k">set</span>; }
+}
+
+<span class="k">public sealed class</span> <span class="t">ShopDbContext</span>(<span class="t">DbContextOptions</span>&lt;<span class="t">ShopDbContext</span>&gt; opts) : <span class="t">DbContext</span>(opts)
+{
+    <span class="k">public</span> <span class="t">DbSet</span>&lt;<span class="t">Order</span>&gt;          <span class="t">Orders</span> =&gt; <span class="fn">Set</span>&lt;<span class="t">Order</span>&gt;();
+    <span class="k">public</span> <span class="t">DbSet</span>&lt;<span class="t">OutboxMessage</span>&gt; <span class="t">Outbox</span> =&gt; <span class="fn">Set</span>&lt;<span class="t">OutboxMessage</span>&gt;();
+
+    <span class="k">protected override void</span> <span class="fn">OnModelCreating</span>(<span class="t">ModelBuilder</span> b)
+    {
+        b.<span class="fn">Entity</span>&lt;<span class="t">OutboxMessage</span>&gt;(<span class="k">e</span> =&gt;
+        {
+            <span class="k">e</span>.<span class="fn">HasIndex</span>(x =&gt; <span class="k">new</span> { x.<span class="t">PublishedAt</span>, x.<span class="t">CreatedAt</span> })
+             .<span class="fn">HasFilter</span>(<span class="s">"\"PublishedAt\" IS NULL"</span>);    <span class="c">// partial index — fast drain</span>
+            <span class="k">e</span>.<span class="t">Property</span>(x =&gt; x.<span class="t">Payload</span>).<span class="fn">HasColumnType</span>(<span class="s">"jsonb"</span>);
+        });
+    }
+}</pre>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">CreateOrderHandler.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// Notice: no broker call here. Just the DB. SaveChangesAsync commits both rows.</span>
+<span class="k">public sealed class</span> <span class="t">CreateOrderHandler</span>(<span class="t">ShopDbContext</span> db)
+{
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">Order</span>&gt; <span class="fn">HandleAsync</span>(<span class="t">CreateOrderCommand</span> cmd, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">var</span> order = <span class="k">new</span> <span class="t">Order</span> {
+            <span class="t">Id</span> = <span class="t">Guid</span>.<span class="fn">NewGuid</span>(),
+            <span class="t">CustomerId</span> = cmd.<span class="t">CustomerId</span>,
+            <span class="t">Total</span>      = cmd.<span class="t">Total</span>,
+            <span class="t">Status</span>     = <span class="t">OrderStatus</span>.<span class="t">Pending</span>,
+        };
+        db.<span class="t">Orders</span>.<span class="fn">Add</span>(order);
+
+        db.<span class="t">Outbox</span>.<span class="fn">Add</span>(<span class="k">new</span> <span class="t">OutboxMessage</span>
+        {
+            <span class="t">Type</span>         = <span class="s">"order.created.v1"</span>,
+            <span class="t">Payload</span>      = <span class="t">JsonSerializer</span>.<span class="fn">Serialize</span>(<span class="k">new</span> {
+                                  order.<span class="t">Id</span>, order.<span class="t">CustomerId</span>, order.<span class="t">Total</span>
+                              }),
+            <span class="t">PartitionKey</span> = order.<span class="t">CustomerId</span>.<span class="fn">ToString</span>(),   <span class="c">// keep customer events ordered</span>
+        });
+
+        <span class="k">await</span> db.<span class="fn">SaveChangesAsync</span>(ct);   <span class="c">// ★ both rows in one tx</span>
+        <span class="k">return</span> order;
+    }
+}</pre>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">OutboxPublisher.cs · BackgroundService</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// One per pod. Drains the outbox in small batches; idempotent on retry.</span>
+<span class="k">public sealed class</span> <span class="t">OutboxPublisher</span>(
+    <span class="t">IServiceScopeFactory</span> scopes,
+    <span class="t">IMessageBroker</span> broker,
+    <span class="t">ILogger</span>&lt;<span class="t">OutboxPublisher</span>&gt; log) : <span class="t">BackgroundService</span>
+{
+    <span class="k">protected override async</span> <span class="t">Task</span> <span class="fn">ExecuteAsync</span>(<span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">while</span> (!ct.<span class="t">IsCancellationRequested</span>)
+        {
+            <span class="k">try</span>
+            {
+                <span class="k">using var</span> scope = scopes.<span class="fn">CreateScope</span>();
+                <span class="k">var</span> db = scope.<span class="t">ServiceProvider</span>.<span class="fn">GetRequiredService</span>&lt;<span class="t">ShopDbContext</span>&gt;();
+
+                <span class="c">// SKIP LOCKED — many pods can drain concurrently, each grabs disjoint rows.</span>
+                <span class="k">var</span> batch = <span class="k">await</span> db.<span class="t">Outbox</span>
+                    .<span class="fn">FromSqlInterpolated</span>($@"
+                        SELECT * FROM ""Outbox""
+                        WHERE ""PublishedAt"" IS NULL
+                        ORDER BY ""CreatedAt""
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 100")
+                    .<span class="fn">ToListAsync</span>(ct);
+
+                <span class="k">if</span> (batch.<span class="t">Count</span> == <span class="n">0</span>)
+                {
+                    <span class="k">await</span> <span class="t">Task</span>.<span class="fn">Delay</span>(<span class="t">TimeSpan</span>.<span class="fn">FromMilliseconds</span>(<span class="n">200</span>), ct);
+                    <span class="k">continue</span>;
+                }
+
+                <span class="k">foreach</span> (<span class="k">var</span> m <span class="k">in</span> batch)
+                {
+                    <span class="k">try</span>
+                    {
+                        <span class="c">// Pass m.Id as broker's message-id so consumer can dedupe.</span>
+                        <span class="k">await</span> broker.<span class="fn">PublishAsync</span>(
+                            topic: m.<span class="t">Type</span>,
+                            messageId: m.<span class="t">Id</span>,
+                            partitionKey: m.<span class="t">PartitionKey</span>,
+                            payload: m.<span class="t">Payload</span>,
+                            ct);
+                        m.<span class="t">PublishedAt</span> = <span class="t">DateTimeOffset</span>.<span class="t">UtcNow</span>;
+                    }
+                    <span class="k">catch</span> (<span class="t">Exception</span> ex)
+                    {
+                        m.<span class="t">Attempts</span>++;
+                        log.<span class="fn">LogWarning</span>(ex, <span class="s">"outbox publish failed {Id} attempt={Attempts}"</span>,
+                            m.<span class="t">Id</span>, m.<span class="t">Attempts</span>);
+                        <span class="k">if</span> (m.<span class="t">Attempts</span> &gt;= <span class="n">10</span>) {
+                            <span class="c">// Move to a separate dead-letter table; alert.</span>
+                        }
+                    }
+                }
+                <span class="k">await</span> db.<span class="fn">SaveChangesAsync</span>(ct);
+            }
+            <span class="k">catch</span> (<span class="t">Exception</span> ex)
+            {
+                log.<span class="fn">LogError</span>(ex, <span class="s">"outbox loop crashed; backing off"</span>);
+                <span class="k">await</span> <span class="t">Task</span>.<span class="fn">Delay</span>(<span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">2</span>), ct);
+            }
+        }
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Three details that separate a textbook outbox from a production one:</p>
+          <ul>
+            <li><strong><code>SKIP LOCKED</code></strong>. Without it, every pod grabs the same first 100 rows, three pods see 33 each through MVCC, and you serialise. With it, each pod gets a disjoint slice. Postgres &ge; 9.5 supports it; SQL Server uses <code>READPAST</code>.</li>
+            <li><strong>Partial index on <code>PublishedAt IS NULL</code></strong>. A million published rows shouldn't slow down the drain query. The index only stores the few thousand un-published.</li>
+            <li><strong>The outbox row's <code>Id</code> becomes the message-id</strong>. Consumers can dedupe with it. Re-publishing the same row is harmless — at-least-once delivery, idempotent consumer.</li>
+          </ul>
+          <div class="callout">
+            <div class="ctag">When CAN you skip the outbox?</div>
+            <p>If the consumer can tolerate <em>some</em> events being lost and you never need to correlate a DB state to an event — for example, fire-and-forget metrics, request logs, low-stakes notifications. In every other case, the outbox is the smallest amount of complexity that buys you sanity.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5 idempotent consumer -->
+      <section class="dd-section" id="consumer">
+        <h2 class="section"><span class="num">05</span>Idempotent <span class="ital">consumers</span>.</h2>
+        <div class="prose">
+          <p>The other half of the contract. If the producer can deliver twice, the consumer must handle twice. Two patterns; pick by data volume.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">IdempotentConsumer.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// Pattern A — dedupe table. Strong, audit-friendly, costs a row per message.</span>
+<span class="k">public sealed class</span> <span class="t">OrderEventConsumer</span>(<span class="t">ShopDbContext</span> db, <span class="t">IPaymentClient</span> pay)
+{
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">HandleAsync</span>(<span class="t">Guid</span> messageId, <span class="t">OrderCreated</span> evt, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="c">// Atomic: insert dedupe row + do business work in the same tx.</span>
+        <span class="k">await using var</span> tx = <span class="k">await</span> db.<span class="t">Database</span>.<span class="fn">BeginTransactionAsync</span>(ct);
+        <span class="k">try</span>
+        {
+            db.<span class="t">ProcessedMessages</span>.<span class="fn">Add</span>(<span class="k">new</span> <span class="t">ProcessedMessage</span>(messageId, <span class="t">DateTimeOffset</span>.<span class="t">UtcNow</span>));
+            <span class="k">await</span> db.<span class="fn">SaveChangesAsync</span>(ct);     <span class="c">// unique key on Id → 23505 if duplicate</span>
+
+            <span class="k">await</span> pay.<span class="fn">ChargeAsync</span>(evt.<span class="t">OrderId</span>, evt.<span class="t">Total</span>, ct);
+            <span class="k">await</span> tx.<span class="fn">CommitAsync</span>(ct);
+        }
+        <span class="k">catch</span> (<span class="t">DbUpdateException</span> ex) <span class="k">when</span> (<span class="fn">IsUniqueViolation</span>(ex))
+        {
+            <span class="c">// Already processed; ack and move on.</span>
+            <span class="k">await</span> tx.<span class="fn">RollbackAsync</span>(ct);
+        }
+    }
+
+    <span class="k">static bool</span> <span class="fn">IsUniqueViolation</span>(<span class="t">DbUpdateException</span> ex) =&gt;
+        ex.<span class="t">InnerException</span> <span class="k">is</span> <span class="t">PostgresException</span> { <span class="t">SqlState</span>: <span class="s">"23505"</span> };
+}
+
+<span class="c">// Pattern B — natural idempotency. No dedupe row needed at all.
+// Just write the operation to be the same regardless of how many times it runs.</span>
+<span class="k">public sealed class</span> <span class="t">ProductPriceConsumer</span>(<span class="t">ShopDbContext</span> db)
+{
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">HandleAsync</span>(<span class="t">ProductPriceUpdated</span> evt, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="c">// SET, not INCR. Conditional on version, not on prior state.</span>
+        <span class="k">await</span> db.<span class="t">Products</span>
+            .<span class="fn">Where</span>(p =&gt; p.<span class="t">Id</span> == evt.<span class="t">ProductId</span> &amp;&amp; p.<span class="t">Version</span> &lt; evt.<span class="t">Version</span>)
+            .<span class="fn">ExecuteUpdateAsync</span>(s =&gt; s
+                .<span class="fn">SetProperty</span>(p =&gt; p.<span class="t">Price</span>,   evt.<span class="t">NewPrice</span>)
+                .<span class="fn">SetProperty</span>(p =&gt; p.<span class="t">Version</span>, evt.<span class="t">Version</span>), ct);
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Pattern A is universal. Pattern B is better when you can pull it off — no extra table, no extra round-trip. The event payload simply contains everything needed for the operation to be a no-op on replay (a monotonic <code>Version</code>, an absolute <code>NewPrice</code> rather than a delta).</p>
+        </div>
+      </section>
+
+      <!-- 6 tradeoff matrix -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th style="width:14%;">Broker</th>
+              <th>Model</th>
+              <th>Throughput</th>
+              <th>Replay</th>
+              <th>Cost / mo (mid-scale)</th>
+              <th>Ops burden</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Apache Kafka<span class="sub">self-hosted</span></th>
+              <td>Log</td>
+              <td><strong>1M+ msg/s</strong> per cluster</td>
+              <td>Native (offsets, days–weeks)</td>
+              <td>$0 (your servers + ZK/KRaft)</td>
+              <td>High · ZooKeeper, JVM tuning, partition planning</td>
+              <td><span class="verdict warn">Powerful, demanding</span></td>
+            </tr>
+            <tr>
+              <th>Confluent Cloud<span class="sub">managed Kafka</span></th>
+              <td>Log</td>
+              <td>Multi-GB/s</td>
+              <td>Native + schema registry</td>
+              <td><strong>$500 → $10k+</strong> Basic → Dedicated</td>
+              <td>Low · they run it</td>
+              <td><span class="verdict good">Default for event streams</span></td>
+            </tr>
+            <tr>
+              <th>Azure Event Hubs<span class="sub">Kafka-compatible</span></th>
+              <td>Log</td>
+              <td>20 MB/s per TU; scales linearly</td>
+              <td>1 – 7 days (90 in Premium)</td>
+              <td><strong>$22 → $1.4k</strong> Standard → Premium</td>
+              <td>Low · Azure-native</td>
+              <td><span class="verdict good">Pick if Azure-native shop</span></td>
+            </tr>
+            <tr>
+              <th>RabbitMQ<span class="sub">self-hosted broker</span></th>
+              <td>Broker</td>
+              <td>10–50k msg/s per node</td>
+              <td>Not native (re-publish)</td>
+              <td>$0 + 2–3 VMs HA cluster</td>
+              <td>Mid · queue ops, mirroring, plug-ins</td>
+              <td><span class="verdict good">Work queues, RPC, low scale</span></td>
+            </tr>
+            <tr>
+              <th>Azure Service Bus<span class="sub">managed broker</span></th>
+              <td>Broker</td>
+              <td>Standard ~1k msg/s; Premium 10k+</td>
+              <td>Not native</td>
+              <td><strong>$10 + $0.05/M ops</strong> Std · <strong>$680+</strong> Prem</td>
+              <td>Very low · queues, topics, sessions, DLQ all built-in</td>
+              <td><span class="verdict good">Default for line-of-business</span></td>
+            </tr>
+            <tr>
+              <th>AWS SQS<span class="sub">managed broker</span></th>
+              <td>Broker</td>
+              <td>Effectively unlimited (Standard)</td>
+              <td>Not native (max 14d retention)</td>
+              <td><strong>$0.40 per M</strong> Std · $0.50 FIFO</td>
+              <td>Trivial · just queues</td>
+              <td><span class="verdict good">Best price/perf if AWS-native</span></td>
+            </tr>
+            <tr>
+              <th>Postgres-as-queue<span class="sub">SKIP LOCKED + LISTEN</span></th>
+              <td>Broker</td>
+              <td>~5k msg/s sustained</td>
+              <td>Trivial (it's a table)</td>
+              <td>$0 (your existing DB)</td>
+              <td>Trivial · until it isn't</td>
+              <td><span class="verdict warn">Great until ~5k/s; then migrate</span></td>
+            </tr>
+            <tr>
+              <th>Redis Streams<span class="sub">in-memory log</span></th>
+              <td>Log</td>
+              <td>200k+ msg/s</td>
+              <td>Native (XRANGE)</td>
+              <td>Your Redis bill</td>
+              <td>Low if you already run Redis</td>
+              <td><span class="verdict warn">Niche; not a Kafka replacement</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="prose">
+          <p><strong>How to read the table.</strong> The honest cost of each row isn't the broker bill — it's the people-time. Confluent Cloud at $500/mo is cheaper than one quarter-time platform engineer babysitting your own Kafka. Service Bus Standard at $10 is cheaper than the RabbitMQ HA cluster nobody on your team wants to upgrade.</p>
+          <p>The fork in the road is clean: <strong>log model</strong> if multiple independent consumer groups will read the same stream and you need replay; <strong>broker model</strong> for everything else, which is most things. People over-pick Kafka because it sounds like the serious answer. Service Bus or SQS is the serious answer 80% of the time.</p>
+        </div>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>"Run this work asynchronously"</h5>
+            <p>SQS or Service Bus standard queue. Outbox to it. Single competing-consumer pattern. Don't reach for Kafka.</p>
+          </div>
+          <div class="cell">
+            <h5>"Multiple services react to this event"</h5>
+            <p>Event Hubs / Kafka / Service Bus topic (with subscriptions). Each consumer group tracks its own offset.</p>
+          </div>
+          <div class="cell">
+            <h5>"We might rebuild a downstream from history"</h5>
+            <p>Log model (Kafka / Event Hubs) with long retention. Set retention high enough to outlive your worst outage.</p>
+          </div>
+          <div class="cell">
+            <h5>"Strict per-customer ordering"</h5>
+            <p>Partition by customer id (Kafka) or use Service Bus sessions. Ordering is per-partition / per-session, never global.</p>
+          </div>
+          <div class="cell">
+            <h5>"Scheduled / delayed delivery"</h5>
+            <p>Service Bus scheduled enqueue or SQS message-timer. Not Kafka — its scheduling story is bolted on.</p>
+          </div>
+          <div class="cell">
+            <h5>"&lt; 5k msg/s, want to ship fast"</h5>
+            <p>Postgres + SKIP LOCKED as a queue. Plan the exit ramp on day one. When you outgrow it, the outbox carries over.</p>
+          </div>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Three production lessons, learned the hard way</div>
+          <p><strong>① Always have a DLQ.</strong> A queue without a dead-letter queue is a queue that will eventually back up to infinity over one bad payload. SB and SQS give you DLQs free; Kafka requires you to build it.</p>
+          <p><strong>② Don't put schemas in messages.</strong> Use Schema Registry (Confluent / Apicurio) or version your event types in the topic name (<code>order.created.v1</code>). Forwards/backwards compat is a contract, not a hope.</p>
+          <p><strong>③ Consumer lag is the only SLI that matters.</strong> Alert on lag, not on producer rate. Lag tells you the system is in trouble before users notice.</p>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="caching-patterns.html">
+          <div class="label">Chapter 02</div>
+          <div class="ttl">Caching patterns</div>
+        </a>
+        <a class="next-fwd" href="consistency-patterns.html">
+          <div class="label">Chapter 04</div>
+          <div class="ttl">Consistency patterns →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 03 of 06 · Message Queues · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

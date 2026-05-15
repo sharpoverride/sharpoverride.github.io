@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Search Architecture · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">18 · Search Architecture</span>
+    </div>
+    <nav>
+      <a href="change-data-capture.html">← Prev</a>
+      <a href="geographic-distribution.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>18</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~15 min</b></span>
+        <span>Stack <b>Elasticsearch · OpenSearch · Azure AI Search · Postgres FTS</b></span>
+      </div>
+      <h1>The query you wanted to write — <span class="ital">not</span> the one SQL allows.</h1>
+      <p class="lede">Full-text search is the part of every product that's invisibly outsourced to a different database. Inverted indexes, BM25 relevance, the indexing pipeline that fights schema drift — the work is real, the cost is real, and the alternative is <code>WHERE title LIKE '%foo%'</code> at 30 RPS.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>A B-tree index supports prefix lookups and equality. <em>It does not support "every document that mentions any of these tokens, ranked by relevance, with stemming, with faceted filters."</em></p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Use Postgres FTS for "good enough" search inside a product you already own. Use Elasticsearch / OpenSearch / Azure AI Search when relevance tuning, scale, or ML-augmented retrieval is the requirement. Build neither yourself.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Elasticsearch</span>
+          <span class="pill on">OpenSearch</span>
+          <span class="pill on">Azure AI Search</span>
+          <span class="pill on">Postgres FTS</span>
+          <span class="pill">Algolia</span>
+          <span class="pill">Meilisearch</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why SQL falls over</a></li>
+        <li><a href="#core">The inverted index</a></li>
+        <li><a href="#pipeline">The indexing pipeline</a></li>
+        <li><a href="#dotnet">In .NET</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why SQL falls <span class="ital">over</span>.</h2>
+        <div class="prose">
+          <p>The product manager asks for "search products by name." You ship <code>WHERE name LIKE '%shoe%'</code>. It works. Then they want a typo tolerance pass — "shooe" should match "shoe". Then synonyms — "trainer" should match "running shoe". Then faceted filters that update as the user types. Then "boost products in stock" and "deprioritise discontinued ones." <strong>Each request looks small; together they describe a search engine.</strong> A B-tree index gives you none of them.</p>
+          <p>The reason is structural. A B-tree maps a sorted key to row IDs. A search engine needs to map <em>every token in every document</em> to the documents that contain it, with scores, with positions, with field weights, with analyser pipelines. That data structure — the inverted index — is upside-down from the row-store layout. Trying to make Postgres do it with raw <code>LIKE</code> is the architectural equivalent of cutting bread with a hammer; trying to make it do it with <code>tsvector</code> works surprisingly well, up to a point.</p>
+        </div>
+
+        <div class="pull">"Search isn't a query problem. It's a different database in trench coat."</div>
+      </section>
+
+      <!-- 2 core -->
+      <section class="dd-section" id="core">
+        <h2 class="section"><span class="num">02</span>The inverted <span class="ital">index</span>.</h2>
+
+        <div class="prose">
+          <p>Forward index: <em>document → words</em>. Reverse it: <em>word → documents</em>. That single inversion is what every search engine is built on. Add positions, term frequencies, document frequencies, and you can score relevance with BM25. Add an analysis pipeline and you handle stemming and synonyms. Add sharding and you scale.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 460" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="sea" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 19 · FORWARD → ANALYSE → INVERTED</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 70)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Document store</text>
+
+              <rect x="0"   y="30" width="280" height="40" fill="#1a1814"/>
+              <text x="14"  y="55" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">D1: "Red running shoes"</text>
+
+              <rect x="0"   y="80" width="280" height="40" fill="#1a1814"/>
+              <text x="14"  y="105" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">D2: "Blue shoe polish"</text>
+
+              <rect x="0"   y="130" width="280" height="40" fill="#1a1814"/>
+              <text x="14"  y="155" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">D3: "Trainer running gear"</text>
+            </g>
+
+            <g transform="translate(360, 70)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Analyser pipeline</text>
+
+              <rect x="0"   y="30" width="240" height="22" fill="#c2410c"/>
+              <text x="120" y="46" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">TOKENISE  →  [red, running, shoes]</text>
+              <rect x="0"   y="56" width="240" height="22" fill="#c2410c"/>
+              <text x="120" y="72" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">LOWERCASE  →  [red, running, shoes]</text>
+              <rect x="0"   y="82" width="240" height="22" fill="#c2410c"/>
+              <text x="120" y="98" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">STEM  →  [red, run, shoe]</text>
+              <rect x="0"   y="108" width="240" height="22" fill="#c2410c"/>
+              <text x="120" y="124" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">SYNONYM  →  [red, run, shoe, sneaker]</text>
+            </g>
+
+            <line x1="280" y1="155" x2="358" y2="65" stroke="#c2410c" stroke-width="1.5" marker-end="url(#sea)"/>
+
+            <g transform="translate(680, 70)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Inverted index</text>
+
+              <rect x="0"   y="30" width="80" height="26" fill="#1a1814"/>
+              <text x="40"  y="48" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">red</text>
+              <rect x="84"  y="30" width="380" height="26" fill="#c2410c"/>
+              <text x="100" y="48" font-family="JetBrains Mono" font-size="10" fill="#f1ece1">D1:[0]   df=1   tf=1</text>
+
+              <rect x="0"   y="60" width="80" height="26" fill="#1a1814"/>
+              <text x="40"  y="78" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">run</text>
+              <rect x="84"  y="60" width="380" height="26" fill="#c2410c"/>
+              <text x="100" y="78" font-family="JetBrains Mono" font-size="10" fill="#f1ece1">D1:[1]   D3:[1]   df=2</text>
+
+              <rect x="0"   y="90" width="80" height="26" fill="#1a1814"/>
+              <text x="40"  y="108" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">shoe</text>
+              <rect x="84"  y="90" width="380" height="26" fill="#c2410c"/>
+              <text x="100" y="108" font-family="JetBrains Mono" font-size="10" fill="#f1ece1">D1:[2]   D2:[1]   df=2</text>
+
+              <rect x="0"   y="120" width="80" height="26" fill="#1a1814"/>
+              <text x="40"  y="138" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">trainer</text>
+              <rect x="84"  y="120" width="380" height="26" fill="#c2410c"/>
+              <text x="100" y="138" font-family="JetBrains Mono" font-size="10" fill="#f1ece1">D3:[0]   df=1</text>
+            </g>
+
+            <line x1="600" y1="78" x2="678" y2="55" stroke="#c2410c" stroke-width="1.5" marker-end="url(#sea)"/>
+
+            <line x1="20" y1="290" x2="1180" y2="290" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+            <g transform="translate(20, 310)">
+              <text x="0" y="20" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Query "running shoes"</text>
+              <text x="0" y="50" font-family="JetBrains Mono" font-size="11" fill="#1a1814">→ analyser produces [run, shoe]</text>
+              <text x="0" y="74" font-family="JetBrains Mono" font-size="11" fill="#1a1814">→ posting lists for run = {D1, D3}, shoe = {D1, D2}</text>
+              <text x="0" y="98" font-family="JetBrains Mono" font-size="11" fill="#1a1814">→ union, score with BM25 using tf · idf · field length</text>
+              <text x="0" y="122" font-family="JetBrains Mono" font-size="11" fill="#c2410c">→ D1 ranks highest (both terms), D3 + D2 follow</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 19</span><span>The same text passes the same analyser at index time and query time. Matching is on the tokens, not the raw words. Synonyms and stemming live in the analyser.</span></div>
+        </div>
+
+        <h3 class="sub">BM25 is the score you'll inherit</h3>
+        <div class="prose">
+          <p>Elasticsearch, OpenSearch, Lucene, Postgres FTS, Azure AI Search — they all default to BM25 (a refinement of TF-IDF). The score for a document <em>d</em> against a query <em>q</em> rewards documents where query terms are <strong>frequent inside the document</strong> but <strong>rare across the corpus</strong>, and penalises long documents (so a 50-word product description with "shoe" twice ranks higher than a 5,000-word manual that also says "shoe" twice). You almost never need to tune BM25's <code>k1</code> and <code>b</code> parameters; the defaults are good. What you tune is <strong>field weights</strong> — boost the title 3×, the brand 2×, the body 1×, the SEO tags 0.5×.</p>
+        </div>
+
+        <h3 class="sub">Hybrid retrieval is the 2026 default</h3>
+        <div class="prose">
+          <p>Pure BM25 misses semantic matches ("car" vs "automobile"). Pure dense vectors (embeddings + ANN search) miss exact matches and rare terms ("XJ-470-A"). <strong>Production search in 2026 is hybrid: run both, combine with a reciprocal rank fusion (RRF) score.</strong> Elasticsearch 8, OpenSearch 2, and Azure AI Search all ship native hybrid retrieval. Build new systems around hybrid from the start; retrofitting it later is a project of its own.</p>
+        </div>
+      </section>
+
+      <!-- 3 pipeline -->
+      <section class="dd-section" id="pipeline">
+        <h2 class="section"><span class="num">03</span>The indexing <span class="ital">pipeline</span>.</h2>
+        <div class="prose">
+          <p>The index is a derived store. Keeping it fresh is the unsexy half of search architecture and the half that causes most production incidents.</p>
+        </div>
+
+        <h3 class="sub">Three options for keeping the index fresh</h3>
+        <div class="prose">
+          <p><strong>Synchronous indexing on write:</strong> save to the database, index immediately. Newest data is searchable instantly; failure to index now blocks the write. <em>Don't do this in production</em>; the search cluster becomes part of your write SLA.</p>
+          <p><strong>Outbox + indexer:</strong> save to the database, write an outbox event (see <a href="change-data-capture.html">Chapter 17</a>), let a background indexer dispatch to the search cluster. Eventual consistency on the order of seconds, write path independent of search availability. <em>The boring correct answer.</em></p>
+          <p><strong>CDC → search:</strong> Debezium reads the WAL, transforms into search documents, ships to Elasticsearch via a sink connector. No app code. Works well for "the index is a mirror of the database table" use cases. Less great when you need to join across tables to produce a search document — joins live in the indexer, not in the WAL.</p>
+        </div>
+
+        <h3 class="sub">Denormalisation is forced</h3>
+        <div class="prose">
+          <p>A search document is one self-contained record. A product's brand name, category path, available sizes, image URL — all flattened into one JSON document, even if they live in five SQL tables. <strong>The index doesn't join.</strong> When the brand name changes, every product document carrying it must be re-indexed. Plan the reindex paths from day one. Typical pattern: a "rebuild all products affected by brand X" job runs nightly + after any brand mutation.</p>
+        </div>
+
+        <h3 class="sub">Reindex is a routine event, not an outage</h3>
+        <div class="prose">
+          <p>You'll change analysers, add fields, tweak mappings. Lucene-based engines can't change mappings on an existing index — you create a new index, reindex into it, atomically alias the old name to the new index, drop the old one. Elasticsearch's reindex API does this in place; the operation should be a deploy-time procedure, not a one-off heroic. <em>Make "rebuild the search index from source of truth" a one-command operation</em> and test it monthly.</p>
+        </div>
+
+        <h3 class="sub">Shards have memory; pick before you ingest</h3>
+        <div class="prose">
+          <p>Elasticsearch defaults to one primary shard per index in modern versions, which is fine for &lt;30 GB indexes. Bigger than that, you want sharding — but each shard adds JVM overhead. Rule of thumb: <strong>aim for shards of 10–50 GB each.</strong> Too few and you can't parallelise; too many and JVM heap dies a thousand cuts. Reshape requires reindex, so plan capacity before you commit.</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">.NET</span>.</h2>
+
+        <div class="prose">
+          <p>The modern .NET client for Elasticsearch is <code>Elastic.Clients.Elasticsearch</code> (or <code>OpenSearch.Client</code> for OpenSearch). The shape is the same: typed documents, an analyser-aware indexer, a query builder. Outbox handler subscribes to domain events and ships the affected document into the index.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">ProductSearchService.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Elastic.Clients.Elasticsearch</span>
+<span class="k">using</span> <span class="t">Elastic.Clients.Elasticsearch</span>;
+<span class="k">using</span> <span class="t">Elastic.Clients.Elasticsearch.QueryDsl</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Search</span>;
+
+<span class="k">public sealed record</span> <span class="t">ProductDoc</span>
+{
+    <span class="k">public required</span> <span class="t">Guid</span>   <span class="t">Id</span>      { <span class="k">get</span>; <span class="k">init</span>; }
+    <span class="k">public required</span> <span class="k">string</span> <span class="t">Title</span>   { <span class="k">get</span>; <span class="k">init</span>; }
+    <span class="k">public required</span> <span class="k">string</span> <span class="t">Brand</span>   { <span class="k">get</span>; <span class="k">init</span>; }
+    <span class="k">public required</span> <span class="k">string</span>[] <span class="t">Categories</span> { <span class="k">get</span>; <span class="k">init</span>; }
+    <span class="k">public required</span> <span class="k">decimal</span> <span class="t">Price</span>  { <span class="k">get</span>; <span class="k">init</span>; }
+    <span class="k">public required</span> <span class="k">bool</span>    <span class="t">InStock</span> { <span class="k">get</span>; <span class="k">init</span>; }
+    <span class="k">public</span>          <span class="t">DenseVector</span>? <span class="t">Embedding</span> { <span class="k">get</span>; <span class="k">init</span>; }   <span class="c">// optional, 768-d</span>
+}
+
+<span class="k">public sealed class</span> <span class="t">ProductSearchService</span>
+{
+    <span class="k">private readonly</span> <span class="t">ElasticsearchClient</span> _es;
+    <span class="k">private const</span> <span class="k">string</span> <span class="t">IndexName</span> = <span class="s">"products"</span>;
+
+    <span class="k">public</span> <span class="fn">ProductSearchService</span>(<span class="t">ElasticsearchClient</span> es) =&gt; _es = es;
+
+    <span class="c">// Index — called from an outbox consumer, not from the HTTP write path.</span>
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">UpsertAsync</span>(<span class="t">ProductDoc</span> doc, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">var</span> resp = <span class="k">await</span> _es.<span class="fn">IndexAsync</span>(doc, i =&gt; i
+            .<span class="fn">Index</span>(<span class="t">IndexName</span>)
+            .<span class="fn">Id</span>(doc.<span class="t">Id</span>)
+            .<span class="fn">Refresh</span>(<span class="t">Refresh</span>.<span class="t">False</span>),    <span class="c">// don't pay the refresh cost per call</span>
+            ct);
+
+        <span class="k">if</span> (!resp.<span class="t">IsValidResponse</span>)
+            <span class="k">throw new</span> <span class="t">InvalidOperationException</span>($<span class="s">"index failed: {resp.DebugInformation}"</span>);
+    }
+
+    <span class="c">// Hybrid BM25 + vector search with field boosts and a stock filter.</span>
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">SearchResult</span>&gt; <span class="fn">SearchAsync</span>(
+        <span class="k">string</span> query, <span class="t">DenseVector</span>? embedding, <span class="k">int</span> page, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">const int</span> pageSize = <span class="n">20</span>;
+
+        <span class="k">var</span> resp = <span class="k">await</span> _es.<span class="fn">SearchAsync</span>&lt;<span class="t">ProductDoc</span>&gt;(s =&gt; s
+            .<span class="fn">Index</span>(<span class="t">IndexName</span>)
+            .<span class="fn">From</span>(page * pageSize)
+            .<span class="fn">Size</span>(pageSize)
+            .<span class="fn">Query</span>(q =&gt; q
+                .<span class="fn">Bool</span>(b =&gt; b
+                    .<span class="fn">Must</span>(m =&gt; m.<span class="fn">MultiMatch</span>(mm =&gt; mm
+                        .<span class="fn">Query</span>(query)
+                        .<span class="fn">Fields</span>(<span class="k">new</span>[] { <span class="s">"title^3"</span>, <span class="s">"brand^2"</span>, <span class="s">"categories"</span> })
+                        .<span class="fn">Fuzziness</span>(<span class="k">new</span> <span class="t">Fuzziness</span>(<span class="s">"AUTO"</span>))))
+                    .<span class="fn">Filter</span>(f =&gt; f.<span class="fn">Term</span>(t =&gt; t.<span class="fn">Field</span>(d =&gt; d.<span class="t">InStock</span>).<span class="fn">Value</span>(<span class="k">true</span>)))))
+            .<span class="fn">Knn</span>(kn =&gt; embedding is { } emb ? kn
+                .<span class="fn">Field</span>(<span class="s">"embedding"</span>)
+                .<span class="fn">QueryVector</span>(emb)
+                .<span class="fn">K</span>(<span class="n">50</span>)
+                .<span class="fn">NumCandidates</span>(<span class="n">200</span>) : kn)
+            .<span class="fn">Aggregations</span>(a =&gt; a
+                .<span class="fn">Add</span>(<span class="s">"by_brand"</span>, agg =&gt; agg.<span class="fn">Terms</span>(t =&gt; t.<span class="fn">Field</span>(d =&gt; d.<span class="t">Brand</span>).<span class="fn">Size</span>(<span class="n">10</span>))))
+            .<span class="fn">Sort</span>(so =&gt; so.<span class="fn">Score</span>(o =&gt; o.<span class="fn">Order</span>(<span class="t">SortOrder</span>.<span class="t">Desc</span>))),
+            ct);
+
+        <span class="k">return new</span> <span class="t">SearchResult</span>(
+            <span class="t">Total</span>: resp.<span class="t">Total</span>,
+            <span class="t">Hits</span>:  resp.<span class="t">Documents</span>.<span class="fn">ToArray</span>(),
+            <span class="t">Facets</span>: resp.<span class="t">Aggregations</span>?.<span class="fn">GetStringTerms</span>(<span class="s">"by_brand"</span>)?
+                .<span class="t">Buckets</span>.<span class="fn">Select</span>(b =&gt; (b.<span class="t">Key</span>.<span class="t">Value</span>, b.<span class="t">DocCount</span>)).<span class="fn">ToArray</span>() ?? []);
+    }
+}
+
+<span class="k">public sealed record</span> <span class="t">SearchResult</span>(<span class="k">long</span> <span class="t">Total</span>, <span class="t">ProductDoc</span>[] <span class="t">Hits</span>, (<span class="k">string</span>, <span class="k">long</span>)[] <span class="t">Facets</span>);</pre>
+        </div>
+
+        <div class="prose">
+          <p>The outbox consumer keeps the index fresh. On a domain event of "product updated", load the canonical record, project to <code>ProductDoc</code>, upsert. The consumer is idempotent — re-running on the same event id is safe.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">ProductIndexConsumer.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">public sealed class</span> <span class="t">ProductIndexConsumer</span> : <span class="t">IConsumer</span>&lt;<span class="t">ProductChanged</span>&gt;
+{
+    <span class="k">private readonly</span> <span class="t">ProductSearchService</span> _search;
+    <span class="k">private readonly</span> <span class="t">IProductRepository</span> _repo;
+
+    <span class="k">public</span> <span class="fn">ProductIndexConsumer</span>(<span class="t">ProductSearchService</span> s, <span class="t">IProductRepository</span> r)
+    { _search = s; _repo = r; }
+
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">Consume</span>(<span class="t">ConsumeContext</span>&lt;<span class="t">ProductChanged</span>&gt; ctx)
+    {
+        <span class="k">var</span> product = <span class="k">await</span> _repo.<span class="fn">LoadAsync</span>(ctx.<span class="t">Message</span>.<span class="t">ProductId</span>, ctx.<span class="t">CancellationToken</span>);
+        <span class="k">if</span> (product is <span class="k">null</span>) <span class="k">return</span>;   <span class="c">// hard delete handled separately</span>
+
+        <span class="k">await</span> _search.<span class="fn">UpsertAsync</span>(<span class="k">new</span> <span class="t">ProductDoc</span>
+        {
+            <span class="t">Id</span>         = product.<span class="t">Id</span>,
+            <span class="t">Title</span>      = product.<span class="t">Title</span>,
+            <span class="t">Brand</span>      = product.<span class="t">Brand</span>.<span class="t">Name</span>,
+            <span class="t">Categories</span> = product.<span class="t">Categories</span>.<span class="fn">Select</span>(c =&gt; c.<span class="t">Path</span>).<span class="fn">ToArray</span>(),
+            <span class="t">Price</span>      = product.<span class="t">Price</span>,
+            <span class="t">InStock</span>    = product.<span class="t">Stock</span> &gt; <span class="n">0</span>,
+        }, ctx.<span class="t">CancellationToken</span>);
+    }
+}</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Refresh interval is your throughput knob</div>
+          <p>Elasticsearch's default <code>refresh_interval=1s</code> makes new docs searchable within a second. For bulk-load and reindex paths, set it to <code>-1</code> and refresh manually at the end — 10× ingest throughput. Set back to <code>1s</code> for steady-state. <em>The single most useful operational setting in the engine.</em></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Index name is not the alias name</div>
+          <p>Apps query <code>products</code>; the real index is <code>products-2026-01</code>; an alias maps the two. When you reindex into <code>products-2026-02</code>, atomically switch the alias. Zero downtime, zero app changes. Don't let app code ever reference the dated index directly — the alias <em>is</em> the contract.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Postgres FTS scales further than you think</div>
+          <p>Up to ~10M small documents on a beefy Postgres, with proper <code>tsvector</code> + GIN indexes, FTS matches Elasticsearch's relevance for most product-catalog workloads. No second cluster to operate, joins still possible, transactional with the row. <strong>Use Postgres FTS until you outgrow it</strong>; the migration to Elasticsearch is straightforward when the day comes.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Watch JVM heap and the field-data cache</div>
+          <p>Elasticsearch / OpenSearch nodes are JVMs. <code>heap_used_percent</code> &gt; 75% sustained = you're a node restart away from a paging incident. Field-data cache (for aggregations on text fields) is the most common bloater. <em>Limit aggregations to keyword fields; never to <code>text</code> fields</em> without a hard size cap.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Vendor or self-host?</div>
+          <p>Self-hosting Elasticsearch is feasible at small scale but the operational footprint at production scale — JVM tuning, snapshot management, cluster rolling upgrades, security patches — eats a full engineer. <strong>Elastic Cloud / OpenSearch Service / Azure AI Search costs 2–3× the raw compute and replaces that engineer.</strong> The math almost always favours the vendor past ~3 nodes.</p>
+        </div>
+
+        <div class="pull">"Search is the only feature where the user notices &lsquo;works most of the time&rsquo; instantly and stops trusting you forever."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Technology</th>
+              <th>Engine</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Postgres FTS<span class="sub">tsvector + GIN</span></th>
+              <td>SQL extension</td>
+              <td>No new infra · transactional · joins · BM25 (pg-trgm)</td>
+              <td><strong>$0</strong> (existing DB)</td>
+              <td>Same Postgres you already run</td>
+              <td><span class="verdict good">Start here for &lt;10M docs</span></td>
+            </tr>
+            <tr>
+              <th>Elasticsearch self-host<span class="sub">Lucene</span></th>
+              <td>Lucene + JVM</td>
+              <td>Most mature · best ecosystem · hybrid search · ML rerank</td>
+              <td><strong>$200 – $2k</strong> 3-node minimum</td>
+              <td>JVM tuning, rolling upgrades</td>
+              <td><span class="verdict warn">If you have an SRE for it</span></td>
+            </tr>
+            <tr>
+              <th>Elastic Cloud<span class="sub">managed Elasticsearch</span></th>
+              <td>Lucene + JVM</td>
+              <td>Same engine, vendor ops · auto-scaling · auto-backup</td>
+              <td><strong>$100 – $3k</strong></td>
+              <td>Vendor</td>
+              <td><span class="verdict good">Cloud-native default</span></td>
+            </tr>
+            <tr>
+              <th>OpenSearch (AWS)<span class="sub">fork</span></th>
+              <td>Lucene + JVM</td>
+              <td>Apache-licensed Elasticsearch fork · managed on AWS · OpenSearch ML</td>
+              <td><strong>$100 – $3k</strong> AWS managed</td>
+              <td>AWS-managed</td>
+              <td><span class="verdict good">Strong AWS-native alternative</span></td>
+            </tr>
+            <tr>
+              <th>Azure AI Search<span class="sub">managed</span></th>
+              <td>Lucene</td>
+              <td>Native Azure integration · semantic + vector · skillsets for enrichment</td>
+              <td><strong>$75 – $4k</strong> per replica</td>
+              <td>Vendor</td>
+              <td><span class="verdict good">Default on Azure</span></td>
+            </tr>
+            <tr>
+              <th>Algolia / Meilisearch<span class="sub">SaaS</span></th>
+              <td>Custom</td>
+              <td>Sub-100ms autocomplete · gorgeous DX · typo tolerance out of the box</td>
+              <td><strong>$50 – $1.5k</strong> (Algolia steepens fast)</td>
+              <td>Vendor</td>
+              <td><span class="verdict warn">Premium DX for the catalog-search use case</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>SaaS app, &lt;1M docs, search is a sideline</h5>
+            <p>Postgres FTS with GIN indexes on <code>tsvector</code>. No second cluster, transactional with rows, joins still work. The boring correct answer.</p>
+          </div>
+          <div class="cell">
+            <h5>E-commerce, &gt;1M products, relevance matters</h5>
+            <p>Managed Elasticsearch or Azure AI Search. Hybrid retrieval (BM25 + vectors). Outbox consumer for indexing. Reindex pattern from day one.</p>
+          </div>
+          <div class="cell">
+            <h5>Logs / observability</h5>
+            <p>OpenSearch on AWS, or Elastic's Observability tier. Different use case from product search; same engine.</p>
+          </div>
+          <div class="cell">
+            <h5>RAG / AI search over docs</h5>
+            <p>Azure AI Search's semantic + vector or Elastic's ELSER. Pure vector DBs (Qdrant, Pinecone) are fine but you'll want lexical too — hybrid wins.</p>
+          </div>
+          <div class="cell">
+            <h5>Autocomplete in a marketing site</h5>
+            <p>Algolia or Meilisearch. The DX and latency advantage is real for the "search box at the top of the page" pattern. Pay the tax.</p>
+          </div>
+          <div class="cell">
+            <h5>Already on Cosmos DB</h5>
+            <p>Azure AI Search with a Cosmos data source. Native indexer keeps the index in sync; no outbox to write.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — synchronous indexing on the write path.</strong> Search cluster blip = checkout outage. Always go through an outbox / CDC and let the index be eventually consistent.</p>
+        <p><strong>Two — aggregating on text fields.</strong> Aggregations need keyword fields. Use <code>text</code> for analysis, <code>keyword</code> for grouping. Mixing them blows the field-data cache and OOMs the node.</p>
+        <p><strong>Three — skipping the reindex muscle.</strong> The day you change an analyser, you'll need to rebuild from scratch. Build the alias-swap pattern early and exercise it monthly so the procedure is boring.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="change-data-capture.html">
+          <div class="label">Chapter 17</div>
+          <div class="ttl">CDC &amp; outbox</div>
+        </a>
+        <a class="next-fwd" href="geographic-distribution.html">
+          <div class="label">Chapter 19</div>
+          <div class="ttl">Geographic distribution →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 18 · Search Architecture · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

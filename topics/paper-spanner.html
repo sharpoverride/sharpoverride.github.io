@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Google Spanner — White paper · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive paper">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#papers">White Papers</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Spanner</span>
+    </div>
+    <nav>
+      <a href="paper-dynamo.html">← Prev</a>
+      <a href="paper-xfaas.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>White <b>paper</b></span>
+        <span>Year <b>2012</b></span>
+        <span>Authors <b>Corbett et al., Google</b></span>
+        <span>Stack <b>TrueTime · Paxos · 2PC · external consistency</b></span>
+      </div>
+      <h1>Globally distributed, <span class="ital">linearisable</span>.</h1>
+      <p class="lede">"Spanner: Google's Globally-Distributed Database" (OSDI 2012). The paper that did what Dynamo said was impossible — global ACID transactions with external consistency. The trick: a global synchronised clock built from GPS and atomic hardware.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The thesis Dynamo rejected</h5>
+        <p>Strong consistency across continents. Linearisable transactions. SQL. <em>Eventually-consistent NoSQL was the 2007 answer; Spanner argued there was a better one — if you could pay the engineering bill.</em></p>
+      </div>
+      <div>
+        <h5>The key idea</h5>
+        <p><strong>TrueTime</strong>: a clock API that returns an interval, not an instant. By bounding clock uncertainty to a few milliseconds, Spanner can assign globally-meaningful timestamps to transactions.</p>
+      </div>
+      <div>
+        <h5>What it influenced</h5>
+        <p>CockroachDB, YugabyteDB, TiDB, Aurora DSQL, Cosmos DB strong consistency. The "NewSQL" category exists because of this paper.</p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The "CAP says no" challenge</a></li>
+        <li><a href="#truetime">TrueTime</a></li>
+        <li><a href="#transactions">Transactions across the world</a></li>
+        <li><a href="#cost">What it costs</a></li>
+        <li><a href="#legacy">What it influenced</a></li>
+        <li><a href="#today">What still applies in 2026</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The "CAP says <span class="ital">no</span>" challenge.</h2>
+        <div class="prose">
+          <p>The 2000s consensus, codified by Dynamo: choose two of consistency, availability, partition-tolerance. In a wide-area network, partitions happen, so it's A or C. Most NoSQL systems chose A. Spanner refused the dilemma. <strong>Spanner is consistent and available — except during partitions, where it sacrifices availability to preserve consistency.</strong> That's CAP-allowed; it's just that nobody had built it for a global system.</p>
+          <p>Why bother? Google had workloads where eventual consistency was unacceptable: <em>AdWords, where a customer's ad spend has to be globally accurate</em>. F1, the relational store that replaced MySQL for AdWords, was the first internal customer. The cost of getting consistency wrong was direct revenue loss; the team got the budget to build the impossible.</p>
+        </div>
+
+        <div class="pull">"CAP doesn't say you can't have strong consistency at global scale. It says when partitions happen, somebody pays — and Spanner decided that somebody is availability."</div>
+      </section>
+
+      <section class="dd-section" id="truetime">
+        <h2 class="section"><span class="num">02</span><span class="ital">TrueTime</span>.</h2>
+        <div class="prose">
+          <p>The single most-cited innovation in the paper. Spanner needs to order transactions globally. NTP-synchronised clocks across continents have ~100ms uncertainty — not good enough for a database. <strong>Google deployed GPS receivers and atomic clocks in every datacenter</strong>, built a daemon that aggregates them, and exposed an API:</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">api</span> &nbsp; <span class="file">TrueTime.now()</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// Returns an interval, not a single timestamp.</span>
+<span class="t">TT.Interval</span> { earliest, latest }
+
+<span class="c">// Where (latest - earliest) is the current clock uncertainty,</span>
+<span class="c">// typically &lt;7 ms in practice. The interval is GUARANTEED to contain</span>
+<span class="c">// "now" — both clocks above earliest and below latest are physically wrong.</span></pre>
+        </div>
+
+        <h3 class="sub">Commit-wait: the trick that makes TrueTime useful</h3>
+        <div class="prose">
+          <p>A transaction picks a commit timestamp <em>s</em>. Before releasing locks, Spanner <strong>waits until TrueTime says <em>s</em> is definitely in the past</strong> (i.e., until <code>TT.now().earliest &gt; s</code>). The wait is ~7ms typically. <em>This guarantees that any later transaction's timestamp is greater than s, even on a different node.</em> External consistency emerges from this single discipline.</p>
+        </div>
+
+        <h3 class="sub">Why intervals, not instants</h3>
+        <div class="prose">
+          <p>Lying about the clock has a cost — a node thinking it's 100ms ahead would assign timestamps from the future, breaking ordering. By exposing uncertainty as an interval, Spanner forces all the algorithms to handle it explicitly. <strong>The clock isn't precise; the protocol acknowledges that.</strong></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="transactions">
+        <h2 class="section"><span class="num">03</span>Transactions across the <span class="ital">world</span>.</h2>
+
+        <h3 class="sub">Paxos for each tablet</h3>
+        <div class="prose">
+          <p>The data is partitioned into "tablets". Each tablet's replicas form a Paxos group — typically 5 replicas across regions. <strong>Within a tablet, writes are linearisable</strong>: Paxos ensures a consistent order. This is the local consistency story.</p>
+        </div>
+
+        <h3 class="sub">2PC across tablets</h3>
+        <div class="prose">
+          <p>A transaction that touches multiple tablets uses two-phase commit, coordinated by one of the participating Paxos groups. <strong>2PC is rehabilitated</strong>: the famous "blocking on coordinator failure" problem is mitigated because the coordinator is a Paxos group (it doesn't crash; the leader rolls over). The cost is latency — wide-area 2PC pays cross-region round-trips.</p>
+        </div>
+
+        <h3 class="sub">External consistency via timestamps</h3>
+        <div class="prose">
+          <p>Every transaction gets a timestamp from TrueTime. The commit-wait discipline guarantees that timestamps respect real-time ordering: <em>"if transaction T1 commits before T2 starts, then T1's timestamp is less than T2's"</em>. This is stronger than linearisability — it's <strong>external consistency</strong>, also called strict serialisability. The strongest consistency property in the distributed systems literature.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 320" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="spna" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · COMMIT-WAIT IN PROCESS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <text x="0" y="14" font-family="JetBrains Mono" font-size="10" fill="#1a1814">T1 (region A)</text>
+              <rect x="120" y="20" width="60"  height="22" fill="#1a1814"/>
+              <text x="150" y="34" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">prepare</text>
+              <rect x="180" y="20" width="60"  height="22" fill="#c2410c"/>
+              <text x="210" y="34" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">s=100</text>
+              <rect x="240" y="20" width="80"  height="22" fill="#1a1814" opacity="0.6"/>
+              <text x="280" y="34" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">wait 7ms</text>
+              <rect x="320" y="20" width="60"  height="22" fill="#c2410c"/>
+              <text x="350" y="34" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">release</text>
+
+              <text x="0" y="80" font-family="JetBrains Mono" font-size="10" fill="#1a1814">T2 (region B)</text>
+              <rect x="400" y="68" width="60"  height="22" fill="#1a1814"/>
+              <text x="430" y="82" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">prepare</text>
+              <rect x="460" y="68" width="60"  height="22" fill="#c2410c"/>
+              <text x="490" y="82" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">s≥101</text>
+
+              <text x="600" y="34" font-family="JetBrains Mono" font-size="10" fill="#c2410c">↑ T1 holds locks until "now" passes 100</text>
+              <text x="600" y="82" font-family="JetBrains Mono" font-size="10" fill="#c2410c">↑ T2 sees clock past 100, must pick higher</text>
+
+              <text x="0" y="160" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Time-ordering of transactions falls out of commit-wait + TrueTime.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>The ~7ms wait isn't latency overhead; it's the price of external consistency. Spanner pays it on every write.</span></div>
+        </div>
+      </section>
+
+      <section class="dd-section" id="cost">
+        <h2 class="section"><span class="num">04</span>What it <span class="ital">costs</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Hardware investment is real</div>
+          <p>GPS receivers, atomic clocks, the TrueTime daemon — Google built and operates physical hardware in every datacenter. <strong>This is not a software-only solution.</strong> Cloud variants (Cloud Spanner) handle it for you; on-prem implementations of similar designs (CockroachDB, YugabyteDB) use software-based clock-sync (hybrid logical clocks) at the cost of slightly looser guarantees.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Write latency includes commit-wait</div>
+          <p>Every write pays the ~7ms wait. <strong>Bursty workloads don't notice; high-throughput workloads do.</strong> Spanner trades absolute write throughput for global ordering correctness.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Cross-region writes hit physics</div>
+          <p>A transaction spanning North America and Europe pays the cross-region round-trip on its 2PC. ~150ms minimum. <em>Spanner doesn't change the speed of light</em>; it just makes "we have to pay it" the obvious choice when the consistency requirement demands it.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Most apps don't need it</div>
+          <p>Global linearisable transactions are valuable when you have them, but most applications can tolerate eventual consistency for most data. The Spanner team knew this; the paper was about proving it was possible, not arguing it was always necessary.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="legacy">
+        <h2 class="section"><span class="num">05</span>What it <span class="ital">influenced</span>.</h2>
+
+        <table class="matrix">
+          <thead>
+            <tr><th>System</th><th>What it took from Spanner</th></tr>
+          </thead>
+          <tbody>
+            <tr><th>CockroachDB</th><td>Global SQL, HLC instead of TrueTime, Paxos-style replication</td></tr>
+            <tr><th>YugabyteDB</th><td>Same lineage as Cockroach; Postgres + Cassandra wire compat</td></tr>
+            <tr><th>TiDB</th><td>Spanner-style architecture; MySQL wire compat; TSO timestamp oracle</td></tr>
+            <tr><th>Cosmos DB (strong)</th><td>Multi-region linearisable mode via clock-sync</td></tr>
+            <tr><th>Aurora DSQL</th><td>AWS's 2024 entrant — distributed SQL with strong consistency</td></tr>
+            <tr><th>FoundationDB</th><td>Different mechanism (transactional log), same property (strict serialisability)</td></tr>
+          </tbody>
+        </table>
+
+        <div class="prose">
+          <p>The category — "NewSQL" or "distributed SQL" — exists because the Spanner paper made strong consistency at scale plausible. <strong>Every product in the table above can be traced to it.</strong></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="today">
+        <h2 class="section"><span class="num">06</span>What still applies in <span class="ital">2026</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">External consistency is a real product feature</div>
+          <p>For workloads where audit-trail correctness matters — finance, healthcare, regulatory — the "happens-before" guarantee Spanner gives is the only thing that makes the system defensible. <em>Auditors want serialisable transactions; pay the milliseconds.</em></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Hybrid logical clocks where TrueTime is impractical</div>
+          <p>If you can't deploy atomic clocks (i.e., you're not Google), HLCs give you most of the benefit. <strong>CockroachDB and YugabyteDB both use HLCs.</strong> The guarantees are slightly weaker (causal consistency, not strict external) but acceptable for almost everything.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">2PC isn't dead</div>
+          <p>The "2PC is broken" critique of the 2010s assumed an unreliable coordinator. <strong>2PC on top of Paxos is fine</strong> because the coordinator is itself fault-tolerant. Modern distributed transactions still use this pattern.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Don't reach for Spanner-class for a one-region workload</div>
+          <p>If your workload is single-region, a regular SQL database is simpler, faster, and cheaper. <em>Spanner's design overhead is justified by the global-strong-consistency requirement; in-region, you don't need it.</em></p>
+        </div>
+
+        <div class="pull">"Spanner is the answer when you need every property the textbook said you couldn't have at once. It's the wrong answer when you don't."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="paper-dynamo.html">
+          <div class="label">Prev paper</div>
+          <div class="ttl">Amazon Dynamo</div>
+        </a>
+        <a class="next-fwd" href="paper-xfaas.html">
+          <div class="label">Next paper</div>
+          <div class="ttl">Meta XFaaS →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Paper · Google Spanner · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

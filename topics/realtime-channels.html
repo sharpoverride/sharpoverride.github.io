@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>WebSockets, SSE &amp; Long Polling · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">10 · Realtime Channels</span>
+    </div>
+    <nav>
+      <a href="saga-pattern.html">← Prev</a>
+      <a href="resilience-polly.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>10</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~14 min</b></span>
+        <span>Stack <b>SignalR · Redis · Azure SignalR Service · WebSocket</b></span>
+      </div>
+      <h1>The server <span class="ital">talks first</span>.</h1>
+      <p class="lede">HTTP is request/response. The browser asks; the server answers. Real-time inverts the conversation — the server pushes when something happens. WebSockets, Server-Sent Events, and long polling are three different ways to make TCP carry that shape.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>You can't ask the server "what just changed?" every 200ms and call yourself a real-time app. <em>It works. It also costs 200× your bandwidth bill.</em></p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>WebSockets for two-way (chat, collab), SSE for one-way (feeds, dashboards), long polling only when neither survives your network. Scaling any of them requires a backplane the moment you run more than one pod.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">SignalR</span>
+          <span class="pill on">Redis backplane</span>
+          <span class="pill on">Azure SignalR Service</span>
+          <span class="pill on">WebSocket</span>
+          <span class="pill">Pusher</span>
+          <span class="pill">Ably</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why polling loses</a></li>
+        <li><a href="#shapes">Three transports</a></li>
+        <li><a href="#scale">Scaling out the channel</a></li>
+        <li><a href="#dotnet">SignalR + Redis backplane</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why polling <span class="ital">loses</span>.</h2>
+        <div class="prose">
+          <p>The naive answer is "poll every two seconds." For a thousand users on a dashboard, that's 500 requests per second. Most of them return <code>304 Not Modified</code> or an empty payload. <strong>You've turned the absence of news into network traffic.</strong> Every request pays for the TCP handshake (in browsers without HTTP/2 reuse), the TLS overhead, the auth check, the database read, the response serialization. The DBA paging you about a hot SELECT loop is the one polling cost you can measure; the bandwidth bill is the one you can't avoid.</p>
+          <p>The push problem isn't that updates need to arrive fast. It's that the <em>absence of updates</em> should cost nothing. Polling makes silence expensive. Real-time transports invert that: <strong>idle is free, traffic is proportional to events</strong>. A chat room with no new messages costs the same as one with one user as one with a million users in the room (until somebody types).</p>
+        </div>
+
+        <div class="pull">"Polling is the architecture you ship when you can't ship the architecture you wanted. Sometimes that's the right call."</div>
+      </section>
+
+      <!-- 2 shapes -->
+      <section class="dd-section" id="shapes">
+        <h2 class="section"><span class="num">02</span>Three <span class="ital">transports</span>.</h2>
+
+        <div class="prose">
+          <p>WebSocket, Server-Sent Events, long polling. Same goal, three positions on the duplex-and-complexity spectrum.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 480" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="ra" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a1814"/></marker>
+              <marker id="rao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 07 · WHO SPEAKS, WHEN</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- WebSocket -->
+            <g transform="translate(20, 70)">
+              <text x="0" y="10" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">WebSocket</text>
+              <text x="0" y="28" font-family="JetBrains Mono" font-size="10" fill="#1a1814" opacity="0.7">full-duplex over a single TCP connection</text>
+
+              <rect x="0"   y="50" width="80" height="36" fill="#1a1814"/>
+              <text x="40"  y="73" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CLIENT</text>
+              <rect x="300" y="50" width="80" height="36" fill="#1a1814"/>
+              <text x="340" y="73" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">SERVER</text>
+
+              <line x1="80"  y1="60" x2="298" y2="60" stroke="#c2410c" stroke-width="2" marker-end="url(#rao)"/>
+              <line x1="298" y1="78" x2="82"  y2="78" stroke="#c2410c" stroke-width="2" marker-end="url(#rao)"/>
+              <text x="190" y="55" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#c2410c">"hi"</text>
+              <text x="190" y="92" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#c2410c">"hello back"</text>
+
+              <text x="410" y="58" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Upgrades from HTTP via <tspan font-family="JetBrains Mono" font-size="10" fill="#c2410c">101 Switching</tspan>.</text>
+              <text x="410" y="74" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Either side can send at any time.</text>
+              <text x="410" y="90" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Binary or text frames; very low overhead.</text>
+              <text x="410" y="106" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">→ chat, collab, presence, game state.</text>
+            </g>
+
+            <line x1="20" y1="190" x2="1180" y2="190" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+            <!-- SSE -->
+            <g transform="translate(20, 210)">
+              <text x="0" y="10" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">Server-Sent Events</text>
+              <text x="0" y="28" font-family="JetBrains Mono" font-size="10" fill="#1a1814" opacity="0.7">one HTTP response that never ends</text>
+
+              <rect x="0"   y="50" width="80" height="36" fill="#1a1814"/>
+              <text x="40"  y="73" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CLIENT</text>
+              <rect x="300" y="50" width="80" height="36" fill="#1a1814"/>
+              <text x="340" y="73" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">SERVER</text>
+
+              <line x1="80"  y1="62" x2="298" y2="62" stroke="#1a1814" stroke-width="2" marker-end="url(#ra)"/>
+              <text x="190" y="57" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">GET /stream</text>
+
+              <line x1="298" y1="78" x2="82"  y2="78" stroke="#c2410c" stroke-width="2" marker-end="url(#rao)"/>
+              <text x="190" y="93" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#c2410c">data: …\n\ndata: …\n\n…</text>
+
+              <text x="410" y="58" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Plain HTTP. Content-Type <tspan font-family="JetBrains Mono" font-size="10" fill="#c2410c">text/event-stream</tspan>.</text>
+              <text x="410" y="74" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Server pushes; client cannot reply on this channel.</text>
+              <text x="410" y="90" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Auto-reconnects. <tspan font-family="JetBrains Mono" font-size="10" fill="#c2410c">Last-Event-ID</tspan> resumes.</text>
+              <text x="410" y="106" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">→ price ticks, AI token streams, dashboards.</text>
+            </g>
+
+            <line x1="20" y1="330" x2="1180" y2="330" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+            <!-- Long Polling -->
+            <g transform="translate(20, 350)">
+              <text x="0" y="10" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">Long polling</text>
+              <text x="0" y="28" font-family="JetBrains Mono" font-size="10" fill="#1a1814" opacity="0.7">request hangs until the server has news, then re-request</text>
+
+              <rect x="0"   y="50" width="80" height="36" fill="#1a1814"/>
+              <text x="40"  y="73" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CLIENT</text>
+              <rect x="300" y="50" width="80" height="36" fill="#1a1814"/>
+              <text x="340" y="73" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">SERVER</text>
+
+              <line x1="80"  y1="58" x2="298" y2="58" stroke="#1a1814" stroke-width="2" marker-end="url(#ra)"/>
+              <text x="190" y="54" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">GET /poll  (held)</text>
+              <line x1="298" y1="74" x2="82"  y2="74" stroke="#c2410c" stroke-width="2" marker-end="url(#rao)"/>
+              <text x="190" y="91" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#c2410c">200 OK ⟵ then immediately re-request</text>
+
+              <text x="410" y="58" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Plain HTTP. No long-lived connection in the wire sense.</text>
+              <text x="410" y="74" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Survives every proxy &amp; corporate firewall.</text>
+              <text x="410" y="90" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Higher latency, higher CPU, more requests.</text>
+              <text x="410" y="106" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">→ fallback for hostile networks. Not a default.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 07</span><span>The three transports differ in how much TCP is held open and which direction the bytes flow. WebSocket and SSE win on idle cost; long polling wins on compatibility.</span></div>
+        </div>
+
+        <h3 class="sub">Pick by direction, not by hype</h3>
+        <div class="prose">
+          <p>If the client never has to send anything mid-session — token streams from an LLM, market prices, notification fan-out — <strong>SSE is the right answer</strong>. It's plain HTTP, every CDN handles it, every load balancer understands it, every browser supports <code>EventSource</code> natively, no framing protocol to learn. Don't reach for WebSocket because it sounds modern. SSE is half the operational surface for the same UX.</p>
+          <p>If the client needs to send messages on the same channel — chat, collaborative cursors, in-game inputs — <strong>WebSocket</strong>. The full-duplex frame protocol is what you actually need; you'd otherwise reinvent it on top of two HTTP connections and get it half-right.</p>
+          <p>If you cannot upgrade to either because a corporate proxy strips <code>Upgrade: websocket</code> or buffers SSE responses — and only then — <strong>long polling</strong>. SignalR's transport negotiator does this automatically; it's a fallback, not a target.</p>
+        </div>
+      </section>
+
+      <!-- 3 scale -->
+      <section class="dd-section" id="scale">
+        <h2 class="section"><span class="num">03</span>Scaling <span class="ital">out</span> the channel.</h2>
+        <div class="prose">
+          <p>Single pod, single connection: trivial. The connection state lives in the process. Now scale to three pods behind a load balancer. A client connected to pod A wants a message that pod B just received from another client. Pod A has no idea pod B exists. <strong>The connection state is partitioned across pods that don't share memory.</strong> You need a backplane — a pub/sub layer that every pod subscribes to — so that when pod B receives "broadcast to room-42", every pod hears it and fans out to its local sockets.</p>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 1100 260" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="ba" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="22" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. 08 · WHY THE BACKPLANE</text>
+            <line x1="20" y1="32" x2="1080" y2="32" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(20, 60)">
+              <rect x="0"    y="0"   width="60" height="24" fill="#1a1814"/>
+              <text x="30"   y="16"  font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">User A</text>
+              <rect x="0"    y="40"  width="60" height="24" fill="#1a1814"/>
+              <text x="30"   y="56"  font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">User B</text>
+              <rect x="0"    y="80"  width="60" height="24" fill="#1a1814"/>
+              <text x="30"   y="96"  font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">User C</text>
+
+              <rect x="200"  y="0"   width="100" height="24" fill="#c2410c"/>
+              <text x="250"  y="16"  font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">POD 1</text>
+              <rect x="200"  y="40"  width="100" height="24" fill="#c2410c"/>
+              <text x="250"  y="56"  font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">POD 2</text>
+              <rect x="200"  y="80"  width="100" height="24" fill="#c2410c"/>
+              <text x="250"  y="96"  font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">POD 3</text>
+
+              <line x1="60"  y1="12" x2="198" y2="12" stroke="#1a1814" stroke-width="1.5"/>
+              <line x1="60"  y1="52" x2="198" y2="52" stroke="#1a1814" stroke-width="1.5"/>
+              <line x1="60"  y1="92" x2="198" y2="92" stroke="#1a1814" stroke-width="1.5"/>
+
+              <rect x="450"  y="40"  width="140" height="40" fill="#1a1814"/>
+              <text x="520"  y="58"  font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">REDIS</text>
+              <text x="520"  y="72"  font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">PUB/SUB</text>
+
+              <line x1="300" y1="12" x2="450" y2="48" stroke="#c2410c" stroke-width="1.5" marker-end="url(#ba)"/>
+              <line x1="300" y1="52" x2="450" y2="60" stroke="#c2410c" stroke-width="1.5" marker-end="url(#ba)"/>
+              <line x1="300" y1="92" x2="450" y2="72" stroke="#c2410c" stroke-width="1.5" marker-end="url(#ba)"/>
+
+              <line x1="590" y1="48" x2="740" y2="12" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#ba)"/>
+              <line x1="590" y1="60" x2="740" y2="52" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#ba)"/>
+              <line x1="590" y1="72" x2="740" y2="92" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#ba)"/>
+
+              <text x="760" y="20" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Pod-1 publishes to Redis.</text>
+              <text x="760" y="36" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Every pod consumes &amp;</text>
+              <text x="760" y="52" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">fans out to its own sockets.</text>
+              <text x="760" y="80" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">Connection is sticky.</text>
+              <text x="760" y="96" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">Messages are not.</text>
+            </g>
+          </svg>
+          <div class="cap"><b>Sticky session for the connection, broadcast plane for the messages.</b> Most "scale-out is broken" incidents are one of these two mis-wired.</div>
+        </div>
+
+        <h3 class="sub">Sticky sessions, but only for the socket</h3>
+        <div class="prose">
+          <p>WebSocket and SSE are long-lived TCP connections. They must terminate on a specific pod and stay there. The load balancer needs <strong>sticky sessions</strong> — usually via a cookie set during the initial HTTP handshake. Without stickiness, a reconnect lands on a different pod, the new pod doesn't know about the connection's room subscriptions, and the user mysteriously stops receiving messages. Stickiness is a connection-layer concern. The <em>messages</em> still need to flow across pods via the backplane.</p>
+        </div>
+
+        <h3 class="sub">The backplane is where Redis earns its keep</h3>
+        <div class="prose">
+          <p>SignalR ships first-party support for a Redis backplane. Every pod subscribes to a small set of pub/sub channels; every "broadcast to group X" call publishes to Redis; every pod's SignalR engine consumes and forwards to its local connections. At ~10k connections per pod and ~1k messages/second per pod, a single Redis primary handles the broadcast traffic with headroom. Beyond that — say, Slack-scale fan-out — the path is sharded backplanes or a managed service like Azure SignalR Service that does the sharding for you.</p>
+        </div>
+
+        <h3 class="sub">Connection cost is real money</h3>
+        <div class="prose">
+          <p>An idle WebSocket isn't free. Each connection holds a file descriptor, a TLS context, a tiny per-connection memory footprint, and a place in the worker thread's event loop. Practical limits on a modern .NET pod: ~50k–100k concurrent connections with tuning, ~10k–20k without thinking about it. Azure SignalR Service charges roughly $50 per "unit" supporting 1,000 concurrent connections — so 100k users = $5k/mo just for the channel. Worth knowing before you ship "show online status of everyone you've ever DM'd."</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>SignalR + <span class="ital">Redis backplane</span>.</h2>
+
+        <div class="prose">
+          <p>A multi-replica chat hub. JWT auth, room-scoped groups, presence broadcast, Redis backplane so any pod can broadcast to any user. Drop in front of an ingress with sticky cookies enabled.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">ChatHub.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Microsoft.AspNetCore.SignalR.StackExchangeRedis</span>
+<span class="k">using</span> <span class="t">Microsoft.AspNetCore.Authorization</span>;
+<span class="k">using</span> <span class="t">Microsoft.AspNetCore.SignalR</span>;
+<span class="k">using</span> <span class="t">Microsoft.Extensions.Logging</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Realtime</span>;
+
+<span class="k">public sealed record</span> <span class="t">ChatMessage</span>(<span class="t">Guid</span> <span class="t">Id</span>, <span class="k">string</span> <span class="t">User</span>, <span class="k">string</span> <span class="t">Text</span>, <span class="t">DateTimeOffset</span> <span class="t">At</span>);
+
+[<span class="at">Authorize</span>]
+<span class="k">public sealed class</span> <span class="t">ChatHub</span> : <span class="t">Hub</span>
+{
+    <span class="k">private readonly</span> <span class="t">IPresenceTracker</span> _presence;
+    <span class="k">private readonly</span> <span class="t">ILogger</span>&lt;<span class="t">ChatHub</span>&gt; _log;
+
+    <span class="k">public</span> <span class="fn">ChatHub</span>(<span class="t">IPresenceTracker</span> presence, <span class="t">ILogger</span>&lt;<span class="t">ChatHub</span>&gt; log)
+    { _presence = presence; _log = log; }
+
+    <span class="k">public override async</span> <span class="t">Task</span> <span class="fn">OnConnectedAsync</span>()
+    {
+        <span class="k">var</span> userId = <span class="t">Context</span>.<span class="t">UserIdentifier</span>!;
+        <span class="k">await</span> _presence.<span class="fn">JoinAsync</span>(userId, <span class="t">Context</span>.<span class="t">ConnectionId</span>);
+        <span class="k">await</span> <span class="t">Clients</span>.<span class="t">All</span>.<span class="fn">SendAsync</span>(<span class="s">"PresenceChanged"</span>, userId, <span class="s">"online"</span>);
+        <span class="k">await base</span>.<span class="fn">OnConnectedAsync</span>();
+    }
+
+    <span class="k">public override async</span> <span class="t">Task</span> <span class="fn">OnDisconnectedAsync</span>(<span class="t">Exception</span>? ex)
+    {
+        <span class="k">var</span> userId = <span class="t">Context</span>.<span class="t">UserIdentifier</span>!;
+        <span class="k">var</span> stillOnline = <span class="k">await</span> _presence.<span class="fn">LeaveAsync</span>(userId, <span class="t">Context</span>.<span class="t">ConnectionId</span>);
+        <span class="k">if</span> (!stillOnline)
+            <span class="k">await</span> <span class="t">Clients</span>.<span class="t">All</span>.<span class="fn">SendAsync</span>(<span class="s">"PresenceChanged"</span>, userId, <span class="s">"offline"</span>);
+        <span class="k">await base</span>.<span class="fn">OnDisconnectedAsync</span>(ex);
+    }
+
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">JoinRoom</span>(<span class="k">string</span> roomId)
+        =&gt; <span class="k">await</span> <span class="t">Groups</span>.<span class="fn">AddToGroupAsync</span>(<span class="t">Context</span>.<span class="t">ConnectionId</span>, $<span class="s">"room:{roomId}"</span>);
+
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">LeaveRoom</span>(<span class="k">string</span> roomId)
+        =&gt; <span class="k">await</span> <span class="t">Groups</span>.<span class="fn">RemoveFromGroupAsync</span>(<span class="t">Context</span>.<span class="t">ConnectionId</span>, $<span class="s">"room:{roomId}"</span>);
+
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">Send</span>(<span class="k">string</span> roomId, <span class="k">string</span> text)
+    {
+        <span class="k">if</span> (<span class="k">string</span>.<span class="fn">IsNullOrWhiteSpace</span>(text) || text.<span class="t">Length</span> &gt; <span class="n">2000</span>)
+            <span class="k">throw new</span> <span class="t">HubException</span>(<span class="s">"message too long or empty"</span>);
+
+        <span class="k">var</span> msg = <span class="k">new</span> <span class="t">ChatMessage</span>(
+            <span class="t">Guid</span>.<span class="fn">NewGuid</span>(),
+            <span class="t">Context</span>.<span class="t">UserIdentifier</span>!,
+            text,
+            <span class="t">DateTimeOffset</span>.<span class="t">UtcNow</span>);
+
+        <span class="c">// Group send. Redis backplane broadcasts to every pod hosting members.</span>
+        <span class="k">await</span> <span class="t">Clients</span>.<span class="fn">Group</span>($<span class="s">"room:{roomId}"</span>).<span class="fn">SendAsync</span>(<span class="s">"Message"</span>, msg);
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Wire-up in <code>Program.cs</code>. The Redis backplane is one line; the rest is JWT bearer for the WebSocket handshake — which is the one auth quirk people miss, because browsers can't set <code>Authorization</code> headers on a WebSocket. The token goes in the query string and the bearer handler reads it.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">Program.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+builder.<span class="t">Services</span>.<span class="fn">AddSignalR</span>(o =&gt;
+    {
+        o.<span class="t">EnableDetailedErrors</span> = builder.<span class="t">Environment</span>.<span class="fn">IsDevelopment</span>();
+        o.<span class="t">KeepAliveInterval</span>     = <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">15</span>);
+        o.<span class="t">ClientTimeoutInterval</span> = <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">60</span>);
+    })
+    .<span class="fn">AddStackExchangeRedis</span>(
+        builder.<span class="t">Configuration</span>.<span class="fn">GetConnectionString</span>(<span class="s">"Redis"</span>)!,
+        opts =&gt; opts.<span class="t">Configuration</span>.<span class="t">ChannelPrefix</span> = <span class="t">RedisChannel</span>.<span class="fn">Literal</span>(<span class="s">"chat:"</span>));
+
+builder.<span class="t">Services</span>.<span class="fn">AddSingleton</span>&lt;<span class="t">IPresenceTracker</span>, <span class="t">RedisPresenceTracker</span>&gt;();
+
+builder.<span class="t">Services</span>.<span class="fn">AddAuthentication</span>(<span class="s">"Bearer"</span>).<span class="fn">AddJwtBearer</span>(o =&gt;
+{
+    o.<span class="t">Authority</span> = builder.<span class="t">Configuration</span>[<span class="s">"Auth:Authority"</span>];
+    o.<span class="t">Audience</span>  = builder.<span class="t">Configuration</span>[<span class="s">"Auth:Audience"</span>];
+    o.<span class="t">Events</span> = <span class="k">new</span> <span class="t">JwtBearerEvents</span>
+    {
+        <span class="c">// WebSocket handshake can't set Authorization header → query-string fallback</span>
+        <span class="t">OnMessageReceived</span> = ctx =&gt;
+        {
+            <span class="k">var</span> token = ctx.<span class="t">Request</span>.<span class="t">Query</span>[<span class="s">"access_token"</span>];
+            <span class="k">if</span> (!<span class="k">string</span>.<span class="fn">IsNullOrEmpty</span>(token) &amp;&amp;
+                ctx.<span class="t">HttpContext</span>.<span class="t">Request</span>.<span class="t">Path</span>.<span class="fn">StartsWithSegments</span>(<span class="s">"/hubs"</span>))
+                ctx.<span class="t">Token</span> = token;
+            <span class="k">return</span> <span class="t">Task</span>.<span class="t">CompletedTask</span>;
+        }
+    };
+});
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+app.<span class="fn">UseAuthentication</span>();
+app.<span class="fn">UseAuthorization</span>();
+app.<span class="fn">MapHub</span>&lt;<span class="t">ChatHub</span>&gt;(<span class="s">"/hubs/chat"</span>);
+app.<span class="fn">Run</span>();</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Sticky cookies on the ingress</div>
+          <p>For SignalR <em>without</em> the Redis backplane, sticky sessions are mandatory; with the backplane, they're still recommended because the initial negotiate handshake is a separate HTTP request from the WebSocket upgrade. On Azure Application Gateway: enable cookie-based affinity. On NGINX: <code>ip_hash</code> or a per-route cookie module. Get this wrong and SignalR will silently fall back to long polling and your CPU bill will tell you.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">KeepAliveInterval &lt; load-balancer idle timeout</div>
+          <p>Azure Load Balancer kills idle TCP at 4 minutes. AWS NLB at 350 seconds. If the SignalR keepalive ping is sparser than the LB's idle timeout, your connections die at exactly the timeout boundary. Default keepalive is 15 seconds — leave it. The bug shows up as "everyone disconnects at the four-minute mark on Mondays" and takes a week to diagnose.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Backpressure is yours to handle</div>
+          <p>If a client's downlink is slow, the server's send buffer fills up. SignalR will block the send, then start dropping in the worst case. For high-fan-out flows (game state, financial ticks), use <code>IAsyncEnumerable&lt;T&gt;</code> streaming with bounded channels and explicit drop-old policies. <em>Don't broadcast 10kB of state at 60Hz to a 3G client</em> — buffer, coalesce, drop intermediate frames.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Presence is harder than it looks</div>
+          <p>"Show online users" sounds trivial. A user with two tabs has two connections. A user on a flaky train reconnects every 30 seconds. "Online" must be reference-counted per user-id, not per connection-id, with a TTL'd Redis hash and a debounce of ~10 seconds on "offline" broadcasts. Otherwise the green dot will flicker on every metro tunnel.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">When to use Azure SignalR Service instead</div>
+          <p>Above ~10k concurrent connections per region, the math tips. Self-hosting means tuning kernel parameters, sizing the Redis backplane, and answering pages about idle WebSocket TIME_WAIT counts. <strong>Azure SignalR Service moves the channel out of your pod entirely</strong>: your app sends messages to the service, the service holds the WebSockets. Your pods become stateless again. Cost: ~$50/mo per 1k concurrent connection units. Worth it the moment a single pod can't hold the population.</p>
+        </div>
+
+        <div class="pull">"The cheapest real-time architecture is the one where idle costs nothing. Everything else is an optimisation around that."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Technology</th>
+              <th>Duplex</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>SignalR self-host + Redis<span class="sub">.NET</span></th>
+              <td>Full</td>
+              <td>First-party · backplane built in · transports auto-negotiate</td>
+              <td><strong>$30 – $400</strong> Redis + pods</td>
+              <td>You operate Redis and tune connection limits</td>
+              <td><span class="verdict good">Default up to ~10k concurrent</span></td>
+            </tr>
+            <tr>
+              <th>Azure SignalR Service<span class="sub">managed</span></th>
+              <td>Full</td>
+              <td>Stateless app pods · scales to 1M connections · same SDK</td>
+              <td><strong>$50</strong> per 1k unit · ~$5k for 100k conn</td>
+              <td>Zero connection ops on your side</td>
+              <td><span class="verdict good">Past 10k connections; the math wins</span></td>
+            </tr>
+            <tr>
+              <th>AWS API Gateway WebSocket<span class="sub">serverless</span></th>
+              <td>Full</td>
+              <td>Pay-per-message · zero infra · integrates with Lambda</td>
+              <td><strong>$1</strong> per M messages + connection-minute</td>
+              <td>Lambda cold start; 2-hour conn cap</td>
+              <td><span class="verdict warn">Fine for sparse, bursty workloads</span></td>
+            </tr>
+            <tr>
+              <th>Pusher / Ably / Pubnub<span class="sub">vendor</span></th>
+              <td>Full</td>
+              <td>Geo-distributed channels · client SDKs everywhere · presence built in</td>
+              <td><strong>$50 – $2k</strong> per peak conn tier</td>
+              <td>Vendor; outage risk you don't control</td>
+              <td><span class="verdict warn">When real-time is incidental to the product</span></td>
+            </tr>
+            <tr>
+              <th>Raw WebSocket<span class="sub">no framework</span></th>
+              <td>Full</td>
+              <td>Minimal overhead · full protocol control</td>
+              <td>$0 (just pods)</td>
+              <td>You rebuild reconnect, framing, auth, fallback</td>
+              <td><span class="verdict warn">Only when SignalR is genuinely in the way</span></td>
+            </tr>
+            <tr>
+              <th>SSE only<span class="sub">server-to-client</span></th>
+              <td>One-way</td>
+              <td>Plain HTTP · trivial to scale · auto-reconnect with Last-Event-ID</td>
+              <td><strong>$0</strong> + pods</td>
+              <td>Trivial; one HTTP route</td>
+              <td><span class="verdict good">For one-way streams; default for LLM tokens</span></td>
+            </tr>
+            <tr>
+              <th>Long polling<span class="sub">request-hold</span></th>
+              <td>Half</td>
+              <td>Works on every network on Earth</td>
+              <td>—</td>
+              <td>2× the CPU and bandwidth</td>
+              <td><span class="verdict bad">Fallback only. Never the target.</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Chat / collab app, &lt;10k concurrent</h5>
+            <p>SignalR self-hosted with Redis backplane and sticky sessions. JWT in the query string for the upgrade handshake. The default .NET answer.</p>
+          </div>
+          <div class="cell">
+            <h5>Chat / collab app, &gt;10k concurrent</h5>
+            <p>Azure SignalR Service. Pods stay stateless, connection scaling becomes a knob in the portal, the bill is ~$50/1k units.</p>
+          </div>
+          <div class="cell">
+            <h5>LLM token streams to the browser</h5>
+            <p>SSE. Stream <code>data: {...}\n\n</code> chunks; the browser reconnects on its own. No WebSocket plumbing needed for a one-way flow.</p>
+          </div>
+          <div class="cell">
+            <h5>Live dashboard / status board</h5>
+            <p>SSE again. Push deltas as events; if a tab goes idle, it auto-reconnects and resumes with <code>Last-Event-ID</code>. One HTTP route.</p>
+          </div>
+          <div class="cell">
+            <h5>Hostile network (corp firewalls / proxies)</h5>
+            <p>Let SignalR negotiate down to long polling. Don't ship long-polling as the design — ship the negotiation so it survives the next strict proxy.</p>
+          </div>
+          <div class="cell">
+            <h5>Game / 60Hz state sync</h5>
+            <p>Raw WebSocket with a custom binary framing protocol and explicit backpressure. SignalR is the wrong abstraction at that data rate.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — no sticky session.</strong> Three pods, one user reconnects to a new pod, the new pod has no knowledge of the user's groups, the messages stop arriving. Sticky session cookie at the LB. Always.</p>
+        <p><strong>Two — JWT in the Authorization header.</strong> Browsers can't set headers on a WebSocket upgrade. Token must go in the query string and be read by an <code>OnMessageReceived</code> event handler. Otherwise the handshake gets a 401 and the SDK silently retries.</p>
+        <p><strong>Three — broadcasting raw state, not deltas.</strong> Pushing the whole document on every change works for 10 users and melts at 10,000. Push deltas with a sequence number; let the client reconcile from a baseline snapshot on reconnect.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="saga-pattern.html">
+          <div class="label">Chapter 09</div>
+          <div class="ttl">Saga pattern</div>
+        </a>
+        <a class="next-fwd" href="resilience-polly.html">
+          <div class="label">Chapter 11</div>
+          <div class="ttl">Resilience &amp; circuit breakers →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 10 · WebSockets, SSE &amp; Long Polling · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

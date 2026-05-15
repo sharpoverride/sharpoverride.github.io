@@ -267,7 +267,7 @@
   <section class="featured-section" id="featured">
     <div class="feat-head">
       <h2>Featured <span class="ital">deep dives</span></h2>
-      <span class="meta">22 deep dives · 18 case studies · 18 fundamentals · 10 interviews · 8 AI · 3 white papers · 2026</span>
+      <span class="meta">22 deep dives · 18 case studies · 34 fundamentals · 12 interviews · 8 AI · 3 white papers · 2026</span>
     </div>
     <div class="feat-grid">
 
@@ -1439,6 +1439,265 @@
         <div class="feat-foot"><span>fundamentals of fundamentals</span><span class="arrow">↗</span></div>
       </a>
 
+      <a class="feat-card" href="topics/fundamental-actor-model.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="40" cy="45" r="14" fill="#c2410c"/><text x="40" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">A</text>
+            <g fill="#1a1814"><rect x="64" y="36" width="14" height="6"/><rect x="64" y="44" width="14" height="6"/><rect x="64" y="52" width="14" height="6"/></g>
+            <circle cx="100" cy="45" r="14" fill="#c2410c"/><text x="100" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">B</text>
+            <g fill="#1a1814"><rect x="124" y="36" width="14" height="6"/><rect x="124" y="44" width="14" height="6"/><rect x="124" y="52" width="14" height="6"/></g>
+            <circle cx="160" cy="45" r="14" fill="#c2410c"/><text x="160" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">C</text>
+          </svg>
+        </div>
+        <h3>Actor model</h3>
+        <p>One mailbox, one state, one thread of execution. Erlang/Akka/Orleans. Supervision, "let it crash," location transparency.</p>
+        <div class="feat-foot"><span>millions of actors / machine</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-concurrency-vs-parallelism.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <text x="50" y="32" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#1a1814">CONCURRENT</text>
+            <text x="50" y="74" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#c2410c">PARALLEL</text>
+            <g fill="#1a1814"><rect x="14" y="38" width="14" height="10"/><rect x="32" y="38" width="14" height="10"/><rect x="50" y="38" width="14" height="10"/><rect x="68" y="38" width="14" height="10"/></g>
+            <g fill="#c2410c"><rect x="120" y="38" width="60" height="10"/></g>
+            <g fill="#c2410c"><rect x="120" y="52" width="60" height="10"/></g>
+          </svg>
+        </div>
+        <h3>Concurrency vs parallelism</h3>
+        <p>Pike's distinction. Structure vs execution. Async/await vs goroutines vs threads vs GPU. Pick by which you have, not which you've heard of.</p>
+        <div class="feat-foot"><span>structure vs hardware</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-hinted-handoff.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <circle cx="40" cy="45" r="14" fill="#1a1814" opacity="0.3"/><text x="40" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#1a1814" opacity="0.5">A</text>
+            <circle cx="100" cy="45" r="14" fill="#c2410c"/><text x="100" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">D</text>
+            <circle cx="160" cy="45" r="14" fill="#1a1814"/><text x="160" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">B</text>
+            <line x1="86" y1="45" x2="54" y2="45" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3"/>
+            <text x="100" y="18" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#c2410c">hint for A</text>
+            <text x="40" y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#1a1814">recovers</text>
+          </svg>
+        </div>
+        <h3>Hinted handoff</h3>
+        <p>Dynamo's AP trick. Store the write on a stand-in; deliver when the intended node recovers. Sloppy quorum + anti-entropy.</p>
+        <div class="feat-foot"><span>writes always accept</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-micro-frontends.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="14" y="14" width="172" height="62" fill="none" stroke="#1a1814" stroke-width="2" stroke-dasharray="3 3"/>
+            <rect x="22" y="22" width="50" height="22" fill="#c2410c"/><text x="47" y="36" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">team A</text>
+            <rect x="78" y="22" width="50" height="22" fill="#1a1814"/><text x="103" y="36" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">team B</text>
+            <rect x="134" y="22" width="50" height="22" fill="#c2410c"/><text x="159" y="36" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">team C</text>
+            <rect x="22" y="50" width="162" height="22" fill="#1a1814"/><text x="103" y="64" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">SHELL · design system</text>
+          </svg>
+        </div>
+        <h3>Micro frontends</h3>
+        <p>Module Federation, single-spa, iframes. When it's right (rarely) and when a monorepo is better (usually).</p>
+        <div class="feat-foot"><span>org problem, not tech problem</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-redis-use-cases.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g fill="#c2410c"><rect x="14" y="14" width="40" height="22"/><rect x="60" y="14" width="40" height="22"/><rect x="106" y="14" width="40" height="22"/><rect x="152" y="14" width="40" height="22"/></g>
+            <g fill="#1a1814"><rect x="14" y="40" width="40" height="22"/><rect x="60" y="40" width="40" height="22"/><rect x="106" y="40" width="40" height="22"/><rect x="152" y="40" width="40" height="22"/></g>
+            <g fill="#c2410c"><rect x="14" y="66" width="40" height="14"/><rect x="60" y="66" width="40" height="14"/><rect x="106" y="66" width="40" height="14"/><rect x="152" y="66" width="40" height="14"/></g>
+            <text x="100" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="5" fill="#c2410c">a dozen patterns</text>
+          </svg>
+        </div>
+        <h3>Redis use cases</h3>
+        <p>Cache, queue, leaderboard, session, rate limit, lock, pub/sub, geo, HyperLogLog. The Swiss army knife.</p>
+        <div class="feat-foot"><span>data structures as API</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-http-headers.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <text x="14" y="22" font-family="JetBrains Mono" font-size="8" fill="#c2410c">Cache-Control:</text>
+            <text x="14" y="36" font-family="JetBrains Mono" font-size="8" fill="#1a1814">Authorization:</text>
+            <text x="14" y="50" font-family="JetBrains Mono" font-size="8" fill="#c2410c">Content-Type:</text>
+            <text x="14" y="64" font-family="JetBrains Mono" font-size="8" fill="#1a1814">X-Request-ID:</text>
+            <text x="14" y="78" font-family="JetBrains Mono" font-size="8" fill="#c2410c">Retry-After:</text>
+          </svg>
+        </div>
+        <h3>HTTP headers</h3>
+        <p>The two dozen that matter. Caching, content, auth, CORS, security, API metadata.</p>
+        <div class="feat-foot"><span>practical reference</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-password-storage.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="76" y="34" width="48" height="36" fill="#1a1814"/>
+            <rect x="68" y="22" width="64" height="22" fill="#c2410c"/>
+            <path d="M86 22 Q 86 8, 100 8 Q 114 8, 114 22" fill="none" stroke="#1a1814" stroke-width="3"/>
+            <text x="100" y="84" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#c2410c">argon2id</text>
+          </svg>
+        </div>
+        <h3>Password storage</h3>
+        <p>Never plain. Never fast hash. Always salt. argon2id default; bcrypt acceptable. The five rules.</p>
+        <div class="feat-foot"><span>~300ms per login</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-frugal-architecture.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <text x="100" y="36" text-anchor="middle" font-family="JetBrains Mono" font-size="16" font-weight="bold" fill="#c2410c">$ → $</text>
+            <text x="100" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#1a1814">cost is a feature</text>
+            <text x="100" y="78" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#1a1814">Werner Vogels · 7 laws</text>
+          </svg>
+        </div>
+        <h3>Frugal architecture</h3>
+        <p>Cost as a non-functional requirement. The seven laws. Patterns that compound — right-sizing, spot, tiering, scheduling.</p>
+        <div class="feat-foot"><span>cost-aware design</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-code-review.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="14" y="20" width="170" height="14" fill="#1a1814"/>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="7" fill="#c2410c">+ added line</text>
+            <rect x="14" y="36" width="170" height="14" fill="#c2410c"/>
+            <text x="20" y="46" font-family="JetBrains Mono" font-size="7" fill="#f1ece1">- removed</text>
+            <rect x="14" y="52" width="170" height="14" fill="#1a1814"/>
+            <text x="20" y="62" font-family="JetBrains Mono" font-size="7" fill="#c2410c">+ added</text>
+            <text x="100" y="82" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#1a1814">small PRs · fast review</text>
+          </svg>
+        </div>
+        <h3>Code review best practices</h3>
+        <p>PR size, review depth, tone, time-bound. The slowest part of engineering deserves its own discipline.</p>
+        <div class="feat-foot"><span>&lt;400 lines · 4h SLA</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-cloud-pitfalls.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <text x="100" y="32" text-anchor="middle" font-family="JetBrains Mono" font-size="22" font-weight="bold" fill="#c2410c">15</text>
+            <text x="100" y="52" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#1a1814">pitfalls</text>
+            <text x="100" y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="7" fill="#1a1814">cost · reliability · security · perf</text>
+          </svg>
+        </div>
+        <h3>15 cloud pitfalls</h3>
+        <p>Cross-AZ egress, NAT fees, single-AZ DB, untested failover, public S3, broad IAM, cold starts, default conn pools.</p>
+        <div class="feat-foot"><span>recurring mistakes</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-troubleshooting.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g font-family="JetBrains Mono" font-size="8" fill="#1a1814">
+              <text x="14" y="22">DNS</text>
+              <text x="14" y="34">TCP</text>
+              <text x="14" y="46">TLS</text>
+              <text x="14" y="58">HTTP</text>
+              <text x="14" y="70">APP</text>
+              <text x="14" y="82">DB</text>
+            </g>
+            <g fill="#c2410c"><rect x="50" y="14" width="140" height="10"/><rect x="50" y="26" width="140" height="10"/><rect x="50" y="38" width="140" height="10"/></g>
+            <g fill="#1a1814"><rect x="50" y="50" width="140" height="10"/><rect x="50" y="62" width="140" height="10"/><rect x="50" y="74" width="140" height="10"/></g>
+          </svg>
+        </div>
+        <h3>Troubleshooting</h3>
+        <p>The "site is down" playbook. Walk the request top-to-bottom; bisect; the first failure is the answer.</p>
+        <div class="feat-foot"><span>dig · curl · openssl</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-stacked-diffs.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g fill="#c2410c">
+              <rect x="14" y="14" width="172" height="12"/>
+              <rect x="14" y="30" width="172" height="12"/>
+              <rect x="14" y="46" width="172" height="12"/>
+              <rect x="14" y="62" width="172" height="12"/>
+            </g>
+            <text x="100" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#1a1814">small · dependent · merged in order</text>
+          </svg>
+        </div>
+        <h3>Stacked diffs</h3>
+        <p>Many small dependent PRs. Graphite / Sapling automate the rebase. The technique that makes "small PRs only" feasible.</p>
+        <div class="feat-foot"><span>ship the bottom while reviewing the top</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-cybersecurity-terms.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <polygon points="100,10 150,30 150,55 100,80 50,55 50,30" fill="#1a1814"/>
+            <text x="100" y="48" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">AUTHN</text>
+            <text x="100" y="60" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#c2410c">AUTHZ</text>
+          </svg>
+        </div>
+        <h3>Cybersecurity terms</h3>
+        <p>The vocabulary engineers must read in tickets, audits, and threat models. Identity, crypto, attacks, defences — twenty terms in four buckets.</p>
+        <div class="feat-foot"><span>OWASP · NIST · zero trust</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-timsort.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <g fill="#c2410c"><rect x="14" y="64" width="14" height="12"/><rect x="32" y="58" width="14" height="18"/><rect x="50" y="48" width="14" height="28"/><rect x="68" y="38" width="14" height="38"/></g>
+            <g fill="#1a1814"><rect x="100" y="28" width="14" height="48"/><rect x="118" y="20" width="14" height="56"/><rect x="136" y="14" width="14" height="62"/><rect x="154" y="10" width="14" height="66"/></g>
+            <text x="100" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#c2410c">find runs · merge · gallop</text>
+          </svg>
+        </div>
+        <h3>Timsort</h3>
+        <p>The sort behind Python, Java, V8, Android, Rust. Exploits real-world order. O(n) on sorted-ish input. Stable.</p>
+        <div class="feat-foot"><span>Tim Peters · 2002</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-mobile-architecture.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="70" y="8" width="60" height="74" fill="#1a1814" rx="6"/>
+            <rect x="76" y="14" width="48" height="14" fill="#c2410c"/><text x="100" y="24" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">UI</text>
+            <rect x="76" y="30" width="48" height="14" fill="#c2410c"/><text x="100" y="40" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">DOMAIN</text>
+            <rect x="76" y="46" width="48" height="14" fill="#c2410c"/><text x="100" y="56" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">DATA</text>
+            <rect x="76" y="62" width="48" height="14" fill="#c2410c"/><text x="100" y="72" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#f1ece1">SQLITE</text>
+          </svg>
+        </div>
+        <h3>Mobile architecture</h3>
+        <p>UI / domain / data layers. Local DB as truth. Optimistic mutations. State restoration across process death.</p>
+        <div class="feat-foot"><span>offline-first by default</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/fundamental-scale-microservices.html">
+        <div class="feat-num"><span>Fundamental</span><span class="badge">Deep dive</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="80" y="34" width="40" height="22" fill="#c2410c"/><text x="100" y="49" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#f1ece1">BFF</text>
+            <line x1="80" y1="40" x2="40" y2="14" stroke="#1a1814" stroke-width="1.2"/>
+            <line x1="80" y1="45" x2="30" y2="40" stroke="#1a1814" stroke-width="1.2"/>
+            <line x1="80" y1="50" x2="40" y2="76" stroke="#1a1814" stroke-width="1.2"/>
+            <line x1="120" y1="40" x2="160" y2="14" stroke="#1a1814" stroke-width="1.2"/>
+            <line x1="120" y1="45" x2="170" y2="40" stroke="#1a1814" stroke-width="1.2"/>
+            <line x1="120" y1="50" x2="160" y2="76" stroke="#1a1814" stroke-width="1.2"/>
+            <g fill="#1a1814"><rect x="14" y="6" width="22" height="14"/><rect x="6" y="34" width="22" height="14"/><rect x="14" y="70" width="22" height="14"/><rect x="164" y="6" width="22" height="14"/><rect x="172" y="34" width="22" height="14"/><rect x="164" y="70" width="22" height="14"/></g>
+          </svg>
+        </div>
+        <h3>Scaling microservices</h3>
+        <p>BFF + async aggregation + capability splitting. Latency = max, not sum. Conway's law isn't optional.</p>
+        <div class="feat-foot"><span>BFF · CQRS · per-capability</span><span class="arrow">↗</span></div>
+      </a>
+
     </div>
   </section>
 
@@ -1638,6 +1897,38 @@
         <h3>Design Twitter timeline (frontend)</h3>
         <p>Virtual list. Optimistic likes. SSE for real-time. Scroll-anchor on prepend. Backend's twin problem.</p>
         <div class="feat-foot"><span>60fps · LCP &lt; 2s</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/interview-failure-modes.html">
+        <div class="feat-num"><span>Playbook</span><span class="badge">Interview</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <text x="100" y="38" text-anchor="middle" font-family="JetBrains Mono" font-size="22" font-weight="bold" fill="#c2410c">7</text>
+            <text x="100" y="58" text-anchor="middle" font-family="JetBrains Mono" font-size="8" fill="#1a1814">ways to fail</text>
+            <text x="100" y="76" text-anchor="middle" font-family="JetBrains Mono" font-size="6" fill="#1a1814">spot before it's too late</text>
+          </svg>
+        </div>
+        <h3>7 ways to fail SD interview</h3>
+        <p>Skipped clarification. No estimation. One-box deep-dive. Buzzword soup. No tradeoff vocabulary. Frozen. Forgot failure.</p>
+        <div class="feat-foot"><span>recurring mistakes</span><span class="arrow">↗</span></div>
+      </a>
+
+      <a class="feat-card" href="topics/interview-cheat-sheet.html">
+        <div class="feat-num"><span>Reference</span><span class="badge">Interview</span></div>
+        <div class="feat-svg">
+          <svg viewBox="0 0 200 90" preserveAspectRatio="xMidYMid meet">
+            <rect x="40" y="10" width="120" height="72" fill="#f1ece1" stroke="#1a1814" stroke-width="2"/>
+            <line x1="50" y1="22" x2="150" y2="22" stroke="#c2410c" stroke-width="1"/>
+            <line x1="50" y1="32" x2="150" y2="32" stroke="#1a1814" stroke-width="0.5"/>
+            <line x1="50" y1="42" x2="150" y2="42" stroke="#1a1814" stroke-width="0.5"/>
+            <line x1="50" y1="52" x2="150" y2="52" stroke="#1a1814" stroke-width="0.5"/>
+            <line x1="50" y1="62" x2="150" y2="62" stroke="#1a1814" stroke-width="0.5"/>
+            <line x1="50" y1="72" x2="150" y2="72" stroke="#1a1814" stroke-width="0.5"/>
+          </svg>
+        </div>
+        <h3>Interview cheat sheet</h3>
+        <p>One page. Anchor numbers. Latency table. Pattern menu. Tradeoff vocabulary. Things to surface unprompted.</p>
+        <div class="feat-foot"><span>print &amp; fold</span><span class="arrow">↗</span></div>
       </a>
 
     </div>

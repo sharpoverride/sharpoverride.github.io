@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Idempotency Keys · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">08 · Idempotency Keys</span>
+    </div>
+    <nav>
+      <a href="database-sharding.html">← Prev</a>
+      <a href="saga-pattern.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>08</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~12 min</b></span>
+        <span>Stack <b>ASP.NET Core · Redis · EF Core · MassTransit</b></span>
+      </div>
+      <h1>Charge once. <span class="ital">Retry</span> safely.</h1>
+      <p class="lede">A network is allowed to retry. A double-click is allowed to fire. A queue is allowed to redeliver. <em>Your money endpoint is not allowed to charge twice.</em> The pattern Stripe shipped in 2015 and everyone copied since.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>"At-least-once" is the only thing the wire promises. <em>"Exactly-once" is something your application earns.</em></p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Idempotency is a property of the <em>request</em>, not the endpoint. A client-supplied key plus a server-side dedupe store turns every API into safe-to-retry. The store needs strong consistency or the trick breaks.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">ASP.NET Core</span>
+          <span class="pill on">Redis</span>
+          <span class="pill on">EF Core</span>
+          <span class="pill">MassTransit</span>
+          <span class="pill">Cosmos ETag</span>
+          <span class="pill">DynamoDB</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The retry problem</a></li>
+        <li><a href="#key">The key as contract</a></li>
+        <li><a href="#race">The concurrency wrinkle</a></li>
+        <li><a href="#dotnet">In ASP.NET Core</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The retry <span class="ital">problem</span>.</h2>
+        <div class="prose">
+          <p>Your mobile client sends a <code>POST /charges</code>. Two seconds later the request is still in flight. The user taps again. The phone gives up on the first request, retries. Your load balancer fails over mid-deploy and the original request lands on a new pod. Three POSTs hit your service. <em>Each one looks legitimate.</em> Each one finds a valid card. Each one writes a row.</p>
+          <p>Without a dedupe story, your customer is charged three times. Even with the best authentication, the best validation, the best logging — the wire is allowed to do that. <strong>HTTP semantics make POST non-idempotent on purpose</strong> precisely so the client can retry safely on transient failures: if the server doesn't say it succeeded, the client should assume it didn't. The cost of that liberty is duplicates, and the fix is a key.</p>
+        </div>
+
+        <div class="pull">"The network is allowed to retry your request. Your money endpoint is not allowed to apologise."</div>
+
+        <div class="prose">
+          <p>Stripe's 2015 blog post made the pattern famous: <strong>the client generates a UUID, puts it in <code>Idempotency-Key</code>, and the server promises that any future request with the same key returns the same response without re-executing the side effect.</strong> Shopify adopted it. Twilio adopted it. AWS calls it ClientRequestToken. Every modern payment API has a flavour of this header. The reason: it's the cheapest thing that works, and the bug it prevents is the most expensive bug a payment system can have.</p>
+        </div>
+      </section>
+
+      <!-- 2 key as contract -->
+      <section class="dd-section" id="key">
+        <h2 class="section"><span class="num">02</span>The key as <span class="ital">contract</span>.</h2>
+
+        <div class="prose">
+          <p>The lifecycle is straightforward — until it isn't. Three states, two storage rows, one decision per request.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 440" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="ia" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a1814"/></marker>
+              <marker id="iao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 03 · LIFECYCLE OF AN IDEMPOTENCY KEY</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- client -->
+            <g>
+              <rect x="40" y="80" width="170" height="60" fill="#1a1814"/>
+              <text x="125" y="106" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">CLIENT</text>
+              <text x="125" y="124" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">UUID = guid()</text>
+            </g>
+
+            <!-- key store -->
+            <g>
+              <rect x="350" y="60" width="220" height="100" fill="#c2410c"/>
+              <text x="460" y="92" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">KEY STORE (Redis)</text>
+              <text x="460" y="116" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">SETNX key:&lt;uuid&gt;</text>
+              <text x="460" y="132" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">EX 86400</text>
+            </g>
+
+            <!-- handler -->
+            <g>
+              <rect x="700" y="60" width="220" height="100" fill="#1a1814"/>
+              <text x="810" y="92" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">HANDLER</text>
+              <text x="810" y="116" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">charge → write Order</text>
+              <text x="810" y="132" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">return 201</text>
+            </g>
+
+            <!-- response cache -->
+            <g>
+              <rect x="1000" y="60" width="160" height="100" fill="#c2410c"/>
+              <text x="1080" y="92" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">CACHED RESPONSE</text>
+              <text x="1080" y="116" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">key → body+hash</text>
+              <text x="1080" y="132" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">EX 86400</text>
+            </g>
+
+            <line x1="210" y1="110" x2="348" y2="110" stroke="#1a1814" stroke-width="2" marker-end="url(#ia)"/>
+            <text x="240" y="100" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">①  POST with Idempotency-Key</text>
+
+            <line x1="570" y1="110" x2="698" y2="110" stroke="#c2410c" stroke-width="2" marker-end="url(#iao)"/>
+            <text x="600" y="100" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">②  first time (SETNX = 1)</text>
+
+            <line x1="920" y1="110" x2="998" y2="110" stroke="#1a1814" stroke-width="2" marker-end="url(#ia)"/>
+            <text x="930" y="100" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">③  store result</text>
+
+            <!-- replay path -->
+            <g transform="translate(0, 240)">
+              <rect x="40"  y="0"  width="170" height="60" fill="#1a1814"/>
+              <text x="125" y="34" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">RETRY (same UUID)</text>
+
+              <rect x="350" y="0"  width="220" height="60" fill="#c2410c"/>
+              <text x="460" y="26" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">KEY STORE</text>
+              <text x="460" y="44" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">SETNX = 0 → reused</text>
+
+              <rect x="1000" y="0"  width="160" height="60" fill="#1a1814"/>
+              <text x="1080" y="34" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">REPLAY 201</text>
+
+              <line x1="210" y1="30" x2="348" y2="30" stroke="#1a1814" stroke-width="2" marker-end="url(#ia)"/>
+              <line x1="570" y1="30" x2="998" y2="30" stroke="#c2410c" stroke-width="2" marker-end="url(#iao)"/>
+              <text x="650" y="22" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">handler is NOT called again</text>
+            </g>
+
+            <line x1="20" y1="370" x2="1180" y2="370" stroke="#1a1814" stroke-width="1" stroke-dasharray="3 3"/>
+            <text x="20" y="402" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">"The first request wins. Every subsequent request with the same key replays the answer."</text>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 03</span><span>First request reserves the key, executes, caches the response. Replays read the cache. The handler runs <em>once</em>.</span></div>
+        </div>
+
+        <h3 class="sub">What the key actually is</h3>
+        <div class="prose">
+          <p>A UUID generated by the client, sent as <code>Idempotency-Key</code> in the request header. <strong>The server never generates it.</strong> If the server generates it, every retry generates a different one, and the dedupe story collapses. The client is the one who knows that two requests are "the same logical operation." It must keep the same key across all retries of that operation and rotate to a fresh key for the next logical operation.</p>
+          <p>Stripe's recommendation is to <em>store the key alongside the local pending state</em>: the moment your client wants to charge, it generates the UUID, persists it next to the user's intent, and then sends the request. If the request fails, the local state still has the same UUID for the next retry. If the app crashes, the UUID survives.</p>
+        </div>
+
+        <h3 class="sub">What the server stores</h3>
+        <div class="prose">
+          <p>Two pieces of state, both keyed on the UUID: a <strong>reservation marker</strong> (atomically set on first sight) and the <strong>cached response</strong> (written after the handler completes). Typical TTL is 24 hours — long enough that mobile clients waking from a backgrounded retry can still replay, short enough that the store doesn't grow without bound. Stripe uses 24 hours. So should you.</p>
+          <p>The cached response should include the full response body, status code, and a hash of the request payload. The hash is the safety net: if a client reuses an Idempotency-Key with a different body, that's a bug, and you should reject with <code>409 Conflict</code> instead of silently returning the wrong cached response.</p>
+        </div>
+      </section>
+
+      <!-- 3 concurrency -->
+      <section class="dd-section" id="race">
+        <h2 class="section"><span class="num">03</span>The concurrency <span class="ital">wrinkle</span>.</h2>
+        <div class="prose">
+          <p>The hard case isn't the second request. The hard case is the second request arriving <strong>before the first request has finished</strong>. Two pods receive the same UUID within milliseconds. Both check the key store. Both see "no record." Both proceed. Both charge.</p>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 1100 240" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="ca" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="22" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. 04 · THE RACE</text>
+            <line x1="20" y1="32" x2="1080" y2="32" stroke="#1a1814" stroke-width="1"/>
+
+            <g font-family="JetBrains Mono" font-size="9" fill="#1a1814">
+              <text x="20" y="70">T0</text>
+              <text x="20" y="100">T1</text>
+              <text x="20" y="130">T2</text>
+              <text x="20" y="160">T3</text>
+            </g>
+
+            <g transform="translate(60, 50)">
+              <rect x="0"   y="0"   width="120" height="22" fill="#c2410c"/>
+              <text x="60"  y="15"  font-family="JetBrains Mono" font-size="9" fill="#f1ece1" text-anchor="middle">POD A: SETNX → ok</text>
+              <rect x="0"   y="30"  width="120" height="22" fill="#c2410c"/>
+              <text x="60"  y="45"  font-family="JetBrains Mono" font-size="9" fill="#f1ece1" text-anchor="middle">POD B: SETNX → blocked</text>
+              <rect x="0"   y="60"  width="120" height="22" fill="#1a1814"/>
+              <text x="60"  y="75"  font-family="JetBrains Mono" font-size="9" fill="#f1ece1" text-anchor="middle">POD A: charge ok</text>
+              <rect x="0"   y="90"  width="120" height="22" fill="#1a1814"/>
+              <text x="60"  y="105" font-family="JetBrains Mono" font-size="9" fill="#f1ece1" text-anchor="middle">POD A: cache result</text>
+            </g>
+
+            <g transform="translate(220, 50)">
+              <rect x="0"   y="30"  width="220" height="22" fill="#c2410c" opacity="0.6"/>
+              <text x="110" y="45"  font-family="JetBrains Mono" font-size="9" fill="#f1ece1" text-anchor="middle">POD B: poll for result (200ms)</text>
+              <rect x="0"   y="90"  width="220" height="22" fill="#1a1814"/>
+              <text x="110" y="105" font-family="JetBrains Mono" font-size="9" fill="#f1ece1" text-anchor="middle">POD B: read cached response</text>
+            </g>
+
+            <g transform="translate(470, 50)">
+              <text x="0" y="15"  font-family="IBM Plex Sans" font-size="11" fill="#1a1814">SETNX is the single source of truth.</text>
+              <text x="0" y="32"  font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Loser polls the cache key for the result.</text>
+              <text x="0" y="49"  font-family="IBM Plex Sans" font-size="11" fill="#1a1814">If the winner crashes before caching:</text>
+              <text x="0" y="66"  font-family="IBM Plex Sans" font-size="11" fill="#c2410c">→ TTL expires, retry safely allowed.</text>
+              <text x="0" y="100" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">"The lock is cheap. The state of <tspan font-style="italic">'in progress'</tspan> is the trick."</text>
+            </g>
+          </svg>
+          <div class="cap"><b>Three outcomes per request:</b> <em>first ever</em> (do work, cache), <em>in progress</em> (poll), <em>replay</em> (read cache and return).</div>
+        </div>
+
+        <h3 class="sub">SETNX is the lock</h3>
+        <div class="prose">
+          <p>Redis <code>SET key value NX EX ttl</code> returns "ok" if the key didn't exist, "nothing" if it did. That single atomic operation is your distributed lock. The pod that wins moves to execute. The pod that loses moves to poll. <strong>The trick is the in-flight state.</strong> The loser cannot just return the cached response — there isn't one yet. It also cannot proceed — that would defeat dedupe. It has to wait, briefly, polling the response cache with a backoff, until either the response shows up or the lock TTL expires.</p>
+          <p>If the winner crashes mid-charge, the lock TTL expires (typical: 60 seconds for the in-flight, 24 hours for the cached response). After that, a retry will win the SETNX and run again. <em>If the charge succeeded but the response wasn't cached, the retry will charge a second time.</em> That's why the actual money operation must itself be idempotent at the downstream level (Stripe's API, the payment processor, the bank), which they all are — typically via a second idempotency key passed through.</p>
+        </div>
+
+        <h3 class="sub">Belt and braces with a DB unique index</h3>
+        <div class="prose">
+          <p>Even with Redis as the primary, put a unique index on <code>(IdempotencyKey)</code> in your Orders / Charges table. EF Core enforces it on save. If the Redis path fails open and a duplicate slips through, the database rejects the second insert. The Redis path is the fast path; the database is the truth.</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">ASP.NET Core</span>.</h2>
+
+        <div class="prose">
+          <p>A middleware that intercepts requests with an <code>Idempotency-Key</code> header, reserves the key in Redis, captures the response, and replays on retry. Drop into the pipeline before your endpoints. No endpoint code changes.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">IdempotencyMiddleware.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package StackExchange.Redis</span>
+<span class="k">using</span> <span class="t">System.Security.Cryptography</span>;
+<span class="k">using</span> <span class="t">System.Text</span>;
+<span class="k">using</span> <span class="t">System.Text.Json</span>;
+<span class="k">using</span> <span class="t">Microsoft.AspNetCore.Http</span>;
+<span class="k">using</span> <span class="t">StackExchange.Redis</span>;
+<span class="k">using</span> <span class="t">Microsoft.Extensions.Logging</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Idempotency</span>;
+
+<span class="k">public sealed record</span> <span class="t">CachedResponse</span>(<span class="k">int</span> <span class="t">Status</span>, <span class="k">string</span> <span class="t">Body</span>, <span class="k">string</span> <span class="t">BodyHash</span>);
+
+<span class="k">public sealed class</span> <span class="t">IdempotencyMiddleware</span>
+{
+    <span class="k">private readonly</span> <span class="t">RequestDelegate</span> _next;
+    <span class="k">private readonly</span> <span class="t">IConnectionMultiplexer</span> _redis;
+    <span class="k">private readonly</span> <span class="t">ILogger</span>&lt;<span class="t">IdempotencyMiddleware</span>&gt; _log;
+    <span class="k">private static readonly</span> <span class="t">TimeSpan</span> <span class="t">InflightTtl</span> = <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">60</span>);
+    <span class="k">private static readonly</span> <span class="t">TimeSpan</span> <span class="t">CacheTtl</span>    = <span class="t">TimeSpan</span>.<span class="fn">FromHours</span>(<span class="n">24</span>);
+
+    <span class="k">public</span> <span class="fn">IdempotencyMiddleware</span>(<span class="t">RequestDelegate</span> next,
+        <span class="t">IConnectionMultiplexer</span> redis, <span class="t">ILogger</span>&lt;<span class="t">IdempotencyMiddleware</span>&gt; log)
+    {
+        _next = next; _redis = redis; _log = log;
+    }
+
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">InvokeAsync</span>(<span class="t">HttpContext</span> ctx)
+    {
+        <span class="c">// Only POST / PATCH / DELETE need this. Reads are naturally idempotent.</span>
+        <span class="k">if</span> (!<span class="t">HttpMethods</span>.<span class="fn">IsPost</span>(ctx.<span class="t">Request</span>.<span class="t">Method</span>)
+            &amp;&amp; !<span class="t">HttpMethods</span>.<span class="fn">IsPatch</span>(ctx.<span class="t">Request</span>.<span class="t">Method</span>))
+        { <span class="k">await</span> _next(ctx); <span class="k">return</span>; }
+
+        <span class="k">var</span> key = ctx.<span class="t">Request</span>.<span class="t">Headers</span>[<span class="s">"Idempotency-Key"</span>].<span class="fn">ToString</span>();
+        <span class="k">if</span> (<span class="k">string</span>.<span class="fn">IsNullOrWhiteSpace</span>(key))
+        { <span class="k">await</span> _next(ctx); <span class="k">return</span>; }   <span class="c">// caller opted out; their problem</span>
+
+        <span class="k">var</span> db        = _redis.<span class="fn">GetDatabase</span>();
+        <span class="k">var</span> lockKey   = $<span class="s">"idem:lock:{key}"</span>;
+        <span class="k">var</span> cacheKey  = $<span class="s">"idem:resp:{key}"</span>;
+
+        <span class="k">var</span> bodyHash  = <span class="k">await</span> <span class="fn">HashBodyAsync</span>(ctx.<span class="t">Request</span>);
+
+        <span class="c">// Path 1 — cached response exists. Validate request hash matches.</span>
+        <span class="k">var</span> cached = <span class="k">await</span> db.<span class="fn">StringGetAsync</span>(cacheKey);
+        <span class="k">if</span> (cached.<span class="t">HasValue</span>)
+        {
+            <span class="k">await</span> <span class="fn">ReplayAsync</span>(ctx, cached!, bodyHash); <span class="k">return</span>;
+        }
+
+        <span class="c">// Path 2 — try to acquire the in-flight lock atomically.</span>
+        <span class="k">var</span> acquired = <span class="k">await</span> db.<span class="fn">StringSetAsync</span>(
+            lockKey, bodyHash, <span class="t">InflightTtl</span>, when: <span class="t">When</span>.<span class="t">NotExists</span>);
+
+        <span class="k">if</span> (!acquired)
+        {
+            <span class="c">// Path 3 — another pod is processing. Poll cacheKey with backoff.</span>
+            <span class="k">for</span> (<span class="k">var</span> i = <span class="n">0</span>; i &lt; <span class="n">30</span>; i++)
+            {
+                <span class="k">await</span> <span class="t">Task</span>.<span class="fn">Delay</span>(<span class="n">100</span> * (i + <span class="n">1</span>));
+                cached = <span class="k">await</span> db.<span class="fn">StringGetAsync</span>(cacheKey);
+                <span class="k">if</span> (cached.<span class="t">HasValue</span>)
+                { <span class="k">await</span> <span class="fn">ReplayAsync</span>(ctx, cached!, bodyHash); <span class="k">return</span>; }
+            }
+            ctx.<span class="t">Response</span>.<span class="t">StatusCode</span> = <span class="t">StatusCodes</span>.<span class="t">Status409Conflict</span>;
+            <span class="k">await</span> ctx.<span class="t">Response</span>.<span class="fn">WriteAsync</span>(<span class="s">"Idempotency lock held; retry."</span>);
+            <span class="k">return</span>;
+        }
+
+        <span class="c">// Path 4 — we own the lock. Execute and capture.</span>
+        <span class="k">var</span> origBody = ctx.<span class="t">Response</span>.<span class="t">Body</span>;
+        <span class="k">await using var</span> capture = <span class="k">new</span> <span class="t">MemoryStream</span>();
+        ctx.<span class="t">Response</span>.<span class="t">Body</span> = capture;
+
+        <span class="k">try</span>
+        {
+            <span class="k">await</span> _next(ctx);
+
+            capture.<span class="t">Position</span> = <span class="n">0</span>;
+            <span class="k">var</span> respBytes = capture.<span class="fn">ToArray</span>();
+            <span class="k">var</span> entry = <span class="k">new</span> <span class="t">CachedResponse</span>(ctx.<span class="t">Response</span>.<span class="t">StatusCode</span>,
+                <span class="t">Convert</span>.<span class="fn">ToBase64String</span>(respBytes), bodyHash);
+
+            <span class="c">// Only cache 2xx responses; client errors should be retryable.</span>
+            <span class="k">if</span> (ctx.<span class="t">Response</span>.<span class="t">StatusCode</span> &gt;= <span class="n">200</span> &amp;&amp; ctx.<span class="t">Response</span>.<span class="t">StatusCode</span> &lt; <span class="n">300</span>)
+                <span class="k">await</span> db.<span class="fn">StringSetAsync</span>(cacheKey,
+                    <span class="t">JsonSerializer</span>.<span class="fn">Serialize</span>(entry), <span class="t">CacheTtl</span>);
+
+            <span class="k">await</span> capture.<span class="fn">CopyToAsync</span>(origBody);
+        }
+        <span class="k">finally</span>
+        {
+            ctx.<span class="t">Response</span>.<span class="t">Body</span> = origBody;
+            <span class="k">await</span> db.<span class="fn">KeyDeleteAsync</span>(lockKey);
+        }
+    }
+
+    <span class="k">private static async</span> <span class="t">Task</span>&lt;<span class="k">string</span>&gt; <span class="fn">HashBodyAsync</span>(<span class="t">HttpRequest</span> req)
+    {
+        req.<span class="fn">EnableBuffering</span>();
+        <span class="k">using var</span> sha = <span class="t">SHA256</span>.<span class="fn">Create</span>();
+        <span class="k">var</span> hash = <span class="k">await</span> sha.<span class="fn">ComputeHashAsync</span>(req.<span class="t">Body</span>);
+        req.<span class="t">Body</span>.<span class="t">Position</span> = <span class="n">0</span>;
+        <span class="k">return</span> <span class="t">Convert</span>.<span class="fn">ToHexString</span>(hash);
+    }
+
+    <span class="k">private static async</span> <span class="t">Task</span> <span class="fn">ReplayAsync</span>(<span class="t">HttpContext</span> ctx, <span class="k">string</span> json, <span class="k">string</span> bodyHash)
+    {
+        <span class="k">var</span> entry = <span class="t">JsonSerializer</span>.<span class="fn">Deserialize</span>&lt;<span class="t">CachedResponse</span>&gt;(json)!;
+        <span class="k">if</span> (!<span class="k">string</span>.<span class="fn">Equals</span>(entry.<span class="t">BodyHash</span>, bodyHash, <span class="t">StringComparison</span>.<span class="t">Ordinal</span>))
+        {
+            ctx.<span class="t">Response</span>.<span class="t">StatusCode</span> = <span class="t">StatusCodes</span>.<span class="t">Status409Conflict</span>;
+            <span class="k">await</span> ctx.<span class="t">Response</span>.<span class="fn">WriteAsync</span>(<span class="s">"Idempotency-Key reused with different body."</span>);
+            <span class="k">return</span>;
+        }
+        ctx.<span class="t">Response</span>.<span class="t">StatusCode</span> = entry.<span class="t">Status</span>;
+        ctx.<span class="t">Response</span>.<span class="t">Headers</span>[<span class="s">"Idempotency-Replayed"</span>] = <span class="s">"true"</span>;
+        <span class="k">await</span> ctx.<span class="t">Response</span>.<span class="t">Body</span>.<span class="fn">WriteAsync</span>(<span class="t">Convert</span>.<span class="fn">FromBase64String</span>(entry.<span class="t">Body</span>));
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Wire it up in <code>Program.cs</code> — one line. The redis multiplexer is registered as singleton, the middleware as scoped. Place it after auth and before your endpoint routing:</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">Program.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+builder.<span class="t">Services</span>.<span class="fn">AddSingleton</span>&lt;<span class="t">IConnectionMultiplexer</span>&gt;(
+    <span class="t">ConnectionMultiplexer</span>.<span class="fn">Connect</span>(builder.<span class="t">Configuration</span>.<span class="fn">GetConnectionString</span>(<span class="s">"Redis"</span>)!));
+
+builder.<span class="t">Services</span>.<span class="fn">AddDbContext</span>&lt;<span class="t">PaymentsDbContext</span>&gt;(o =&gt;
+    o.<span class="fn">UseSqlServer</span>(builder.<span class="t">Configuration</span>.<span class="fn">GetConnectionString</span>(<span class="s">"Payments"</span>)));
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+
+app.<span class="fn">UseAuthentication</span>();
+app.<span class="fn">UseMiddleware</span>&lt;<span class="t">IdempotencyMiddleware</span>&gt;();   <span class="c">// after auth, before endpoints</span>
+
+app.<span class="fn">MapPost</span>(<span class="s">"/v1/charges"</span>, <span class="k">async</span> (
+    <span class="t">ChargeRequest</span> req, <span class="t">PaymentsDbContext</span> db, <span class="t">CancellationToken</span> ct) =&gt;
+{
+    <span class="k">var</span> charge = <span class="k">new</span> <span class="t">Charge</span> { <span class="t">Id</span> = <span class="t">Guid</span>.<span class="fn">NewGuid</span>(),
+        <span class="t">Amount</span> = req.<span class="t">Amount</span>, <span class="t">Currency</span> = req.<span class="t">Currency</span> };
+    db.<span class="t">Charges</span>.<span class="fn">Add</span>(charge);
+    <span class="k">try</span> { <span class="k">await</span> db.<span class="fn">SaveChangesAsync</span>(ct); }
+    <span class="k">catch</span> (<span class="t">DbUpdateException</span>) <span class="k">when</span> (<span class="fn">IsUniqueViolation</span>(<span class="k">ex</span>))
+    {
+        <span class="c">// Belt-and-braces: DB unique index on (IdempotencyKey) rejects dupe.</span>
+        <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Conflict</span>(<span class="k">new</span> { error = <span class="s">"duplicate_charge"</span> });
+    }
+    <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Created</span>($<span class="s">"/v1/charges/{charge.Id}"</span>, charge);
+});
+
+app.<span class="fn">Run</span>();</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Hash the body, compare on replay</div>
+          <p>If a client reuses the same key with a different request body, that's a programmer bug — almost always a UUID generated once and then reused for a different operation. Returning the cached response would be silent corruption. <strong>Reject with <code>409</code> instead.</strong> The hash check costs a few microseconds and saves a Sev-1.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Only cache 2xx responses</div>
+          <p>If the first attempt returned <code>400 Bad Request</code> because the body was malformed, the second attempt with the same key but a corrected body should be allowed to succeed. Caching a 4xx response makes the key permanently poisoned. Caching a 5xx response is even worse — it freezes a transient failure. Cache 200, 201, 202, 204. Let everything else retry.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">The TTL split that matters</div>
+          <p>Two TTLs, not one: <strong>in-flight lock</strong> = 60 seconds (long enough to outlast a slow handler, short enough that a crashed pod doesn't block forever), <strong>cached response</strong> = 24 hours (long enough for mobile-app retries; aligned with what Stripe does). The lock TTL is the one that bites you in production — set it shorter than your max request timeout and you'll see double-execution on slow paths.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Add a unique index. Even with Redis.</div>
+          <p>The Redis path can fail open under partition. The database is the truth. <code>builder.HasIndex(x =&gt; x.IdempotencyKey).IsUnique();</code> in your EF configuration costs you nothing and saves you the day Redis is unreachable for 30 seconds.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">MassTransit consumers want the same pattern</div>
+          <p>Inside a message handler, the equivalent is <code>UseInMemoryOutbox</code> or the MassTransit dedupe filter keyed on <code>MessageId</code>. Brokers redeliver — that's an at-least-once promise — so consumers need the same idempotency guarantee that POST endpoints do. Same primitives, same Redis store typically does double duty.</p>
+        </div>
+
+        <div class="pull">"Idempotency is the only feature where the absence of bugs is the entire user experience. Nobody thanks you for it. Everybody curses its absence."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Storage</th>
+              <th>Atomicity</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Redis SETNX<span class="sub">in-memory K/V</span></th>
+              <td>Atomic SETNX EX</td>
+              <td>0.5 ms p99 · TTLs free · most teams already run it</td>
+              <td><strong>$25 – $1.2k</strong> Azure Cache for Redis</td>
+              <td>Standard; backup is the gotcha</td>
+              <td><span class="verdict good">Default for POST dedupe</span></td>
+            </tr>
+            <tr>
+              <th>Postgres unique index<span class="sub">DB-only</span></th>
+              <td>Constraint check</td>
+              <td>Already in your transaction · zero new infra</td>
+              <td><strong>included</strong></td>
+              <td>None; it's a schema</td>
+              <td><span class="verdict good">Always do this. Treat Redis as the cache, the index as truth.</span></td>
+            </tr>
+            <tr>
+              <th>Cosmos DB ETag<span class="sub">optimistic concurrency</span></th>
+              <td>If-Match header</td>
+              <td>Conditional writes · no extra store</td>
+              <td><strong>$24+</strong> per 400 RU/s</td>
+              <td>Vendor-managed</td>
+              <td><span class="verdict warn">Works if you're already on Cosmos; awkward as a side store</span></td>
+            </tr>
+            <tr>
+              <th>DynamoDB conditional write<span class="sub">attribute_not_exists</span></th>
+              <td>Conditional Put</td>
+              <td>Strong primary key · TTL built-in · serverless</td>
+              <td><strong>$0.25 – $250</strong> per M writes</td>
+              <td>Minimal</td>
+              <td><span class="verdict good">AWS default; pairs with API Gateway nicely</span></td>
+            </tr>
+            <tr>
+              <th>MassTransit dedupe filter<span class="sub">consumer-side</span></th>
+              <td>Outbox + MessageId</td>
+              <td>Built for message handlers · transactional with EF Core</td>
+              <td><strong>$0</strong> (lib)</td>
+              <td>Library; uses existing DB</td>
+              <td><span class="verdict good">For brokered messages; not for HTTP endpoints</span></td>
+            </tr>
+            <tr>
+              <th>In-memory dictionary<span class="sub">single-pod only</span></th>
+              <td>lock</td>
+              <td>Zero infra</td>
+              <td>$0</td>
+              <td>Useless beyond 1 replica</td>
+              <td><span class="verdict bad">Don't. The first deploy will give you duplicates.</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Public payments / money API</h5>
+            <p>Require <code>Idempotency-Key</code>. Reject POST without it with <code>400</code>. Redis lock + DB unique index. 24 h cache TTL.</p>
+          </div>
+          <div class="cell">
+            <h5>Internal microservices over HTTP</h5>
+            <p>Middleware optional, default off. Producers that retry should send the header; everyone else can skip. Don't make idempotency a tax.</p>
+          </div>
+          <div class="cell">
+            <h5>Mobile client → backend</h5>
+            <p>Mandatory. Mobile networks retry aggressively. Generate the UUID locally, persist alongside the user intent before the first send.</p>
+          </div>
+          <div class="cell">
+            <h5>Message consumer (Kafka / RabbitMQ / SB)</h5>
+            <p>MassTransit dedupe filter or your own check keyed on <code>MessageId</code>. Brokers are at-least-once. Consumers must be idempotent.</p>
+          </div>
+          <div class="cell">
+            <h5>Greenfield .NET, no Redis yet</h5>
+            <p>Just use the DB. Unique index on (key, tenant). Add Redis later for the low-latency replay if the DB lookup is your hot path.</p>
+          </div>
+          <div class="cell">
+            <h5>Already serverless on AWS</h5>
+            <p>DynamoDB conditional Put + API Gateway. The header pattern is the same; the store changes.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — caching the 500.</strong> A handler throws, the middleware caches the error response, every retry replays it. Cache <em>only</em> 2xx, and surface the lock so the next attempt can try fresh.</p>
+        <p><strong>Two — generating the key server-side.</strong> "We'll just use a request ID from the gateway." Every retry generates a new request ID, so dedupe is impossible. The client owns the key. Always.</p>
+        <p><strong>Three — assuming Redis is the truth.</strong> Redis fails over, AOF lags, a flush happens. Put the unique index in the database. Belt and braces. Always.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="database-sharding.html">
+          <div class="label">Chapter 07</div>
+          <div class="ttl">Database sharding</div>
+        </a>
+        <a class="next-fwd" href="saga-pattern.html">
+          <div class="label">Chapter 09</div>
+          <div class="ttl">Saga pattern →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 08 · Idempotency Keys · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

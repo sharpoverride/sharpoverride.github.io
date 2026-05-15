@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Discord — Trillion-message database · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#cases">Case Studies</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Discord</span>
+    </div>
+    <nav>
+      <a href="../system-design.html">← Index</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Years <b>2015 → 2023</b></span>
+        <span>Scale <b>1 trillion msgs</b></span>
+        <span>Stack <b>MongoDB → Cassandra → ScyllaDB</b></span>
+      </div>
+      <h1>One trillion messages, <span class="ital">two</span> migrations.</h1>
+      <p class="lede">Discord rewrote its message database twice. MongoDB cracked at 100M messages in 2015. Cassandra cracked at one trillion messages in 2022. ScyllaDB — the C++ rewrite of Cassandra — is what they're on now. The lessons are not about the databases.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>What broke each time</h5>
+        <p>MongoDB: working set exceeded RAM at 100M messages. Cassandra: GC pauses, hot partitions, "Cassandra was always the problem we were managing, not the problem we were using."</p>
+      </div>
+      <div>
+        <h5>What it cost</h5>
+        <p>Migration 1: 6 months, small team. Migration 2: a year, dedicated team. <strong>Avoided by waiting</strong>: years of operational pain that would have come either way.</p>
+      </div>
+      <div>
+        <h5>Pull-quote</h5>
+        <p><em>"We didn't pick the database. We picked the next database we could survive."</em> — paraphrased from Discord's engineering blog.</p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The trillion-message problem</a></li>
+        <li><a href="#before">Architecture before</a></li>
+        <li><a href="#break">The breaking points</a></li>
+        <li><a href="#after">Architecture after</a></li>
+        <li><a href="#numbers">The numbers</a></li>
+        <li><a href="#lessons">Lessons</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The trillion-message <span class="ital">problem</span>.</h2>
+        <div class="prose">
+          <p>Discord stores every message ever sent: chat, DMs, server channels, voice text. The access pattern is unusual. Most messages are <em>read once, within seconds</em>, by users who happen to be online. A small fraction are read repeatedly — pinned messages, channel scrollback, search hits. A vanishing fraction are read after a year. <strong>The working set is the last ~hour of activity across the planet</strong>; the rest is cold storage that occasionally gets paged in.</p>
+          <p>The number that matters: by 2017, Discord was inserting <strong>1 billion messages per month</strong>. By 2022, it was <strong>4 billion per day</strong> — a trillion messages cumulative. Storage costs scale linearly with that. Read latency does not — a 1 ms p99 in 2015 has to remain a 1 ms p99 in 2025, on a corpus 10,000× bigger.</p>
+        </div>
+
+        <div class="pull">"The hard part of the database isn't the writes. It's that the writes don't stop and the reads never get easier."</div>
+      </section>
+
+      <section class="dd-section" id="before">
+        <h2 class="section"><span class="num">02</span>Architecture <span class="ital">before</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 320" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="dca" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · 2015 — ONE MONGO REPLICA SET</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(60, 80)">
+              <rect x="0"   y="0"  width="160" height="50" fill="#1a1814"/>
+              <text x="80"  y="30" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">CHAT API</text>
+
+              <rect x="240" y="0"  width="220" height="50" fill="#c2410c"/>
+              <text x="350" y="30" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">MONGODB PRIMARY</text>
+
+              <rect x="240" y="80" width="220" height="50" fill="#1a1814"/>
+              <text x="350" y="110" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">MONGO SECONDARY</text>
+
+              <rect x="240" y="160" width="220" height="50" fill="#1a1814"/>
+              <text x="350" y="190" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">MONGO SECONDARY</text>
+
+              <line x1="160" y1="25" x2="238" y2="25" stroke="#c2410c" stroke-width="2" marker-end="url(#dca)"/>
+              <line x1="460" y1="25" x2="460" y2="80" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3"/>
+              <line x1="460" y1="105" x2="460" y2="160" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3"/>
+
+              <text x="540" y="22" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Single replica set.</text>
+              <text x="540" y="40" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">All writes to primary.</text>
+              <text x="540" y="58" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Reads scaled by hitting secondaries.</text>
+              <text x="540" y="82" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Worked until 100M messages.</text>
+              <text x="540" y="100" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Then the index stopped fitting in RAM.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>The 2015 architecture was textbook: one replica set, document model. Discord ran it for two years before scale forced a redesign.</span></div>
+        </div>
+
+        <div class="prose">
+          <p>The 2015 design was a single MongoDB replica set. One document per message, indexed on <code>{channel_id, _id}</code> for the typical query "give me the last N messages in this channel before timestamp T". Reads scaled by load-balancing across secondaries; writes funneled to the primary. The schema was straightforward; the team was small; the architecture diagram fit on a napkin.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="break">
+        <h2 class="section"><span class="num">03</span>The breaking <span class="ital">points</span>.</h2>
+
+        <h3 class="sub">2015 — MongoDB's working set</h3>
+        <div class="prose">
+          <p>At ~100M messages, the message index — the B-tree that maps <code>(channel_id, _id)</code> to document location — stopped fitting in RAM. Each query that wasn't perfectly hot triggered disk reads to walk the index. The p99 read latency climbed from 5ms to 300ms. <strong>It wasn't a query problem; it was a memory-shape problem.</strong> The fix in MongoDB land would have been sharding, but the access pattern (channel-scoped, time-ordered) didn't fit MongoDB's sharding model cleanly.</p>
+        </div>
+
+        <h3 class="sub">2017–2022 — Cassandra's hot partitions</h3>
+        <div class="prose">
+          <p>Cassandra solved 2015's problem. Partition by <code>(channel_id, time_bucket)</code>; each large channel's history lives on a specific node's disk; reads are sequential within a partition. <em>This is the textbook good design for chat at scale.</em></p>
+          <p>The breaking point was hot partitions. A viral channel — a Twitch streamer's Discord, a major-game release, a leak — would suddenly receive 10,000× the normal write rate. <strong>One node hits CPU saturation; queries to it time out; replicas behind that node lag; the cluster's tail latency degrades for everyone.</strong> Java GC pauses compounded the problem: a 200ms GC pause during a hot-partition burst caused cascading queue buildups.</p>
+        </div>
+
+        <h3 class="sub">The compaction backlog</h3>
+        <div class="prose">
+          <p>Cassandra periodically merges SSTables to reclaim space and improve read performance. Discord's write rate was high enough that compaction couldn't keep up on the hot nodes. Pending compactions backed up; disk usage ballooned; reads slowed because they had to consult more SSTables. <strong>Compaction tuning became a team responsibility.</strong> A team that didn't want to be Cassandra DBAs was becoming Cassandra DBAs.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">The off-by-one cost</div>
+          <p>"It works, but it requires a team" is a real cost the architecture review doesn't price. Discord's published number: roughly <strong>4 engineers full-time</strong> on Cassandra tuning at the peak. A managed equivalent (DataStax Astra) would have cost roughly the same in license fees; the self-host saved cash and spent headcount.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="after">
+        <h2 class="section"><span class="num">04</span>Architecture <span class="ital">after</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 380" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="dcb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. B · 2023 — DATA SERVICES + SCYLLA</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0"   y="0"  width="160" height="50" fill="#1a1814"/>
+              <text x="80"  y="30" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">CHAT API</text>
+
+              <rect x="240" y="0"  width="220" height="50" fill="#c2410c"/>
+              <text x="350" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">DATA SERVICES (Rust)</text>
+              <text x="350" y="40" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">request coalescing · cache</text>
+
+              <rect x="500" y="0"   width="200" height="50" fill="#c2410c"/>
+              <text x="600" y="30" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">SCYLLA CLUSTER</text>
+
+              <rect x="740" y="0"   width="160" height="50" fill="#1a1814"/>
+              <text x="820" y="22" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">NVMe per node</text>
+              <text x="820" y="40" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">shard-per-core</text>
+
+              <line x1="160" y1="25" x2="238" y2="25" stroke="#c2410c" stroke-width="2" marker-end="url(#dcb)"/>
+              <line x1="460" y1="25" x2="498" y2="25" stroke="#c2410c" stroke-width="2" marker-end="url(#dcb)"/>
+              <line x1="700" y1="25" x2="738" y2="25" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3"/>
+            </g>
+
+            <g transform="translate(40, 180)">
+              <text x="0"  y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Two architectural moves, not one.</text>
+
+              <text x="0"  y="46" font-family="JetBrains Mono" font-size="11" fill="#c2410c">Data Services</text>
+              <text x="180" y="46" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Rust service that fronts every DB read.</text>
+              <text x="180" y="64" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Coalesces duplicate concurrent reads.</text>
+              <text x="180" y="82" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Same hot key requested 1k times = 1 backend read.</text>
+
+              <text x="0"  y="114" font-family="JetBrains Mono" font-size="11" fill="#c2410c">ScyllaDB</text>
+              <text x="180" y="114" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Cassandra API · C++ shard-per-core architecture.</text>
+              <text x="180" y="132" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">No JVM GC pauses · 1/3 the nodes for the same load.</text>
+              <text x="180" y="150" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Compaction throughput keeps up with write rate.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. B</span><span>Two layers: a Rust request-coalescing service in front, a shard-per-core C++ database underneath. Discord rebuilt both.</span></div>
+        </div>
+
+        <h3 class="sub">Data Services: the coalescing layer</h3>
+        <div class="prose">
+          <p>Discord noticed that hot partitions were largely an artefact of duplicate concurrent reads. When a viral message goes out, 10,000 clients fetch the same channel within milliseconds. The database serves 10,000 reads, identical, against a hot partition. <strong>Data Services is a Rust service that deduplicates these</strong>: incoming reads for the same key within a small window are coalesced into one backend read; everyone gets the same response. The hot partition stops being hot.</p>
+        </div>
+
+        <h3 class="sub">ScyllaDB: same API, different engine</h3>
+        <div class="prose">
+          <p>ScyllaDB speaks the Cassandra wire protocol; the migration was query-compatible. The engine underneath is different: C++, shard-per-core, lock-free, no JVM. <strong>Discord runs ScyllaDB on ~177 nodes today, replacing ~900 Cassandra nodes</strong> at the migration boundary. The reduction is engine efficiency, not architectural change.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">numbers</span>.</h2>
+
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>2015 (Mongo)</th>
+              <th>2022 (Cassandra)</th>
+              <th>2024 (Scylla + DS)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Messages stored<span class="sub">cumulative</span></th>
+              <td>~100M</td>
+              <td>~1 trillion</td>
+              <td>&gt;2 trillion</td>
+            </tr>
+            <tr>
+              <th>Writes / second<span class="sub">peak</span></th>
+              <td>~1k</td>
+              <td>~1M</td>
+              <td>&gt;1M</td>
+            </tr>
+            <tr>
+              <th>Nodes</th>
+              <td>3 (replica set)</td>
+              <td>177 Cassandra</td>
+              <td>72 Scylla</td>
+            </tr>
+            <tr>
+              <th>p99 read latency</th>
+              <td>~300ms (degraded)</td>
+              <td>~40-125ms (hot)</td>
+              <td>~5-15ms</td>
+            </tr>
+            <tr>
+              <th>GC pauses</th>
+              <td>—</td>
+              <td>Common</td>
+              <td>None (C++)</td>
+            </tr>
+            <tr>
+              <th>Dedicated DBAs</th>
+              <td>0.5 FTE</td>
+              <td>~4 FTE</td>
+              <td>~1 FTE</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="prose">
+          <p>The 177 → 72 node reduction is the headline. The latency improvement is the user-facing result. The "1 FTE instead of 4" is the cost line nobody quotes but the CFO notices.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">06</span>The <span class="ital">lessons</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Coalesce reads before you shard writes</div>
+          <p>Discord's biggest single win wasn't the database swap — it was the Data Services layer that deduplicates concurrent reads. <strong>A hot key with 10,000 concurrent readers can be served by one backend read</strong>; the fan-out happens in the proxy. Apply this everywhere: it's a few hundred lines of code that defers a database migration by years.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Migrating an API-compatible engine is a different beast</div>
+          <p>Mongo → Cassandra was a rewrite. Cassandra → Scylla was a configuration change. <em>API-compatible replacements are a different class of migration</em>; if the new engine speaks your old protocol, you're moving capacity, not redesigning.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">JVM is a tax for stateful infrastructure</div>
+          <p>Cassandra, Elasticsearch, Kafka, ZooKeeper — all JVM, all share the GC-pause problem at the tail. Discord's move to a non-JVM engine reclaimed predictability they couldn't tune Cassandra into. <strong>If you're choosing stateful infra today and your tail latency matters</strong>, the C++ / Rust / Go alternatives deserve more weight than they did five years ago: Scylla (vs Cassandra), Redpanda (vs Kafka), QuestDB (vs InfluxDB).</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Headcount is a cost; ignore it at your peril</div>
+          <p>The "free open-source database" running on your team's nights and weekends costs you a small team's salary. The managed equivalent (DataStax, Confluent Cloud, AWS MSK) costs you a similar number in vendor invoices. <strong>The choice is whether you pay it in headcount or in invoice line items</strong>; both are real money. Discord chose to engineer the headcount cost down by simplifying the engine.</p>
+        </div>
+
+        <div class="pull">"The database that scales is the one your team can operate. Everything else is choice paralysis."</div>
+
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="../system-design.html">
+          <div class="label">Back to index</div>
+          <div class="ttl">More case studies</div>
+        </a>
+        <a class="next-fwd" href="case-figma-postgres.html">
+          <div class="label">Next case</div>
+          <div class="ttl">Figma scaled Postgres →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Case Study · Discord · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

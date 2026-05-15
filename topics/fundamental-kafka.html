@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Kafka — Deep Dive · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#fundamentals">Fundamentals</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Kafka</span>
+    </div>
+    <nav>
+      <a href="fundamental-dns.html">← Prev</a>
+      <a href="fundamental-deployment.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~14 min</b></span>
+        <span>Stack <b>Apache Kafka · partitions · ISR · KRaft</b></span>
+      </div>
+      <h1>A log, partitioned, <span class="ital">replicated</span>.</h1>
+      <p class="lede">Kafka isn't a queue. It's an append-only log that pretends to be a queue when consumers want it to. Once you accept that — and understand partitions, offsets, ISR, and consumer groups — everything else falls out of the same primitives.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>What Kafka is</h5>
+        <p>Distributed, replicated, append-only commit log. Topics are logs. Partitions are shards. Consumer groups are sets of consumers that share a topic's partitions.</p>
+      </div>
+      <div>
+        <h5>What it is not</h5>
+        <p>A queue (messages aren't deleted on consume — they age out by retention). A database (no query language, no random access). RabbitMQ.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Topics + partitions</span>
+          <span class="pill on">Replication / ISR</span>
+          <span class="pill on">Consumer groups</span>
+          <span class="pill on">KRaft (no ZooKeeper)</span>
+          <span class="pill">Confluent</span>
+          <span class="pill">Redpanda</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why an append-only log</a></li>
+        <li><a href="#core">Partitions and offsets</a></li>
+        <li><a href="#replication">Replication and ISR</a></li>
+        <li><a href="#consumer">Consumer groups</a></li>
+        <li><a href="#dotnet">In .NET</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why an <span class="ital">append-only</span> log.</h2>
+        <div class="prose">
+          <p>Traditional message brokers (RabbitMQ, ActiveMQ) treat messages as items in a queue: a producer puts one in, a consumer takes it out, it's gone. <strong>Kafka treats messages as entries in a log</strong>: a producer appends, every consumer reads forward through the log at their own pace, and messages remain on disk until they expire by retention policy (often 7 days, sometimes forever).</p>
+          <p>This sounds backwards until you list what it buys you. <em>Multiple independent consumer groups</em> can read the same stream — analytics, billing, search-indexing, each at their own offset. <em>Replay</em> is built-in: rewind a consumer to a previous offset to reprocess. <em>Backpressure</em> is asymmetric: producers don't wait for consumers; the log absorbs the gap. The disk is the queue.</p>
+        </div>
+
+        <div class="pull">"Kafka took the database's idea of a transaction log and made it the user-facing API."</div>
+      </section>
+
+      <section class="dd-section" id="core">
+        <h2 class="section"><span class="num">02</span>Partitions and <span class="ital">offsets</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 320" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 26 · A TOPIC WITH 3 PARTITIONS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 70)">
+              <text x="0" y="14" font-family="JetBrains Mono" font-size="11" fill="#1a1814">Topic: orders</text>
+
+              <g transform="translate(0, 30)">
+                <text x="-10" y="14" font-family="JetBrains Mono" font-size="9" text-anchor="end" fill="#c2410c">P0</text>
+                <g fill="#c2410c">
+                  <rect x="0"   y="0" width="60" height="22"/>
+                  <rect x="64"  y="0" width="60" height="22"/>
+                  <rect x="128" y="0" width="60" height="22"/>
+                  <rect x="192" y="0" width="60" height="22"/>
+                  <rect x="256" y="0" width="60" height="22"/>
+                  <rect x="320" y="0" width="60" height="22"/>
+                  <rect x="384" y="0" width="60" height="22"/>
+                  <rect x="448" y="0" width="60" height="22"/>
+                </g>
+                <g font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">
+                  <text x="30"  y="14">0</text><text x="94"  y="14">1</text>
+                  <text x="158" y="14">2</text><text x="222" y="14">3</text>
+                  <text x="286" y="14">4</text><text x="350" y="14">5</text>
+                  <text x="414" y="14">6</text><text x="478" y="14">7</text>
+                </g>
+              </g>
+
+              <g transform="translate(0, 80)">
+                <text x="-10" y="14" font-family="JetBrains Mono" font-size="9" text-anchor="end" fill="#c2410c">P1</text>
+                <g fill="#c2410c">
+                  <rect x="0"   y="0" width="60" height="22"/>
+                  <rect x="64"  y="0" width="60" height="22"/>
+                  <rect x="128" y="0" width="60" height="22"/>
+                  <rect x="192" y="0" width="60" height="22"/>
+                  <rect x="256" y="0" width="60" height="22"/>
+                </g>
+                <g font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">
+                  <text x="30"  y="14">0</text><text x="94"  y="14">1</text>
+                  <text x="158" y="14">2</text><text x="222" y="14">3</text>
+                  <text x="286" y="14">4</text>
+                </g>
+              </g>
+
+              <g transform="translate(0, 130)">
+                <text x="-10" y="14" font-family="JetBrains Mono" font-size="9" text-anchor="end" fill="#c2410c">P2</text>
+                <g fill="#c2410c">
+                  <rect x="0"   y="0" width="60" height="22"/>
+                  <rect x="64"  y="0" width="60" height="22"/>
+                  <rect x="128" y="0" width="60" height="22"/>
+                  <rect x="192" y="0" width="60" height="22"/>
+                  <rect x="256" y="0" width="60" height="22"/>
+                  <rect x="320" y="0" width="60" height="22"/>
+                  <rect x="384" y="0" width="60" height="22"/>
+                </g>
+                <g font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">
+                  <text x="30"  y="14">0</text><text x="94"  y="14">1</text>
+                  <text x="158" y="14">2</text><text x="222" y="14">3</text>
+                  <text x="286" y="14">4</text><text x="350" y="14">5</text>
+                  <text x="414" y="14">6</text>
+                </g>
+              </g>
+
+              <text x="600" y="50"  font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Each partition is a separate ordered log.</text>
+              <text x="600" y="68"  font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Producer picks partition (key hash, default).</text>
+              <text x="600" y="86"  font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Same key → same partition → preserved order.</text>
+              <text x="600" y="114" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Ordering is per-partition, not topic-wide.</text>
+              <text x="600" y="132" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Throughput scales with partition count.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 26</span><span>A topic is N partitions. Each partition is its own log with monotonically increasing offsets. Partition count is the unit of parallelism.</span></div>
+        </div>
+
+        <h3 class="sub">Offsets are the bookmark</h3>
+        <div class="prose">
+          <p>Every record in a partition has an offset — a 64-bit integer that monotonically increases. Consumers track <em>which offset they've processed</em>. To resume after a crash, the consumer asks Kafka "where was I?" and continues from the stored offset. <strong>Offsets are stored in a special internal topic <code>__consumer_offsets</code></strong>, committed by consumers as they make progress.</p>
+        </div>
+
+        <h3 class="sub">Partitioning is the throughput knob</h3>
+        <div class="prose">
+          <p>One partition = one consumer maximum. <strong>If you need 10 parallel consumers, you need 10 partitions.</strong> Partition count is set at topic creation and is hard to change later (adding partitions changes the hash distribution and breaks per-key ordering). Pick generously: a topic with 24 partitions can support up to 24 parallel consumers; a topic with 1 partition can never go faster than one consumer.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="replication">
+        <h2 class="section"><span class="num">03</span>Replication and <span class="ital">ISR</span>.</h2>
+        <div class="prose">
+          <p>Each partition is replicated across N brokers (typical: 3). One replica is the <strong>leader</strong>; the others are <strong>followers</strong>. Producers and consumers always talk to the leader. Followers fetch from the leader and stay in sync. <em>An "in-sync replica" (ISR) is a follower that's caught up within a tolerable lag</em>; if a follower falls too far behind, it drops out of the ISR.</p>
+        </div>
+
+        <h3 class="sub">Acks: the producer's safety vs. speed knob</h3>
+        <div class="prose">
+          <p>Producer config <code>acks</code> controls when the leader acknowledges a write. <strong>acks=0</strong>: fire-and-forget, no durability. <strong>acks=1</strong>: leader has the record; if leader dies before replicating, data is lost. <strong>acks=all</strong>: every ISR has the record; durable across N-1 broker losses (for replication factor N). The standard production default is <code>acks=all</code> with <code>min.insync.replicas=2</code> on a replication-factor-3 topic.</p>
+        </div>
+
+        <h3 class="sub">When the leader dies</h3>
+        <div class="prose">
+          <p>The controller (in KRaft mode: one of the controller-quorum brokers) detects the leader failure via heartbeats. It promotes an ISR follower to leader. <strong>Failover happens in ~10 seconds in practice</strong>. The new leader has at least as much data as the old one (because ISR-only promotion). Producers retry against the new leader; consumers transparently switch.</p>
+        </div>
+
+        <h3 class="sub">KRaft — Kafka without ZooKeeper</h3>
+        <div class="prose">
+          <p>Until 2022, Kafka required ZooKeeper for metadata. Operating ZooKeeper alongside Kafka was famously painful — two distributed systems to keep healthy. <strong>KRaft mode replaces ZK with a Raft consensus protocol inside Kafka itself</strong>; the controller quorum lives in the Kafka brokers. Modern Kafka (3.3+) defaults to KRaft. Plan to be on it; ZooKeeper-based clusters are being deprecated.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="consumer">
+        <h2 class="section"><span class="num">04</span>Consumer <span class="ital">groups</span>.</h2>
+
+        <div class="prose">
+          <p>A consumer group is a set of consumers that share a topic's partitions. Kafka assigns each partition to exactly one consumer in the group. <strong>If you have 10 partitions and 4 consumers, each consumer gets ~2.5 partitions.</strong> If you add a 5th consumer, Kafka rebalances; one consumer drops to 2 partitions. If you scale to 11 consumers, one sits idle (a partition can't be shared).</p>
+          <p>Multiple consumer groups can read the same topic independently — they each have their own offsets. This is how you do <em>fan-out</em>: <code>orders</code> topic feeds the <code>billing-group</code>, the <code>analytics-group</code>, and the <code>search-index-group</code>; each is at a different offset; each consumes the full stream.</p>
+        </div>
+
+        <h3 class="sub">Rebalancing — the operational gotcha</h3>
+        <div class="prose">
+          <p>When a consumer joins or leaves the group, Kafka rebalances partition assignments. <strong>During the rebalance, consumption pauses for the whole group.</strong> A flaky consumer that connects-disconnects-reconnects can cause "rebalance storms" that bring throughput to a crawl. Modern Kafka has <em>cooperative rebalancing</em> (incremental, less disruptive); enable it.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">05</span>In <span class="ital">.NET</span>.</h2>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">OrderConsumer.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Confluent.Kafka</span>
+<span class="k">using</span> <span class="t">Confluent.Kafka</span>;
+
+<span class="k">public sealed class</span> <span class="t">OrderConsumer</span> : <span class="t">BackgroundService</span>
+{
+    <span class="k">private readonly</span> <span class="t">IServiceProvider</span> _sp;
+    <span class="k">private readonly</span> <span class="t">ConsumerConfig</span> _config = <span class="k">new</span>()
+    {
+        <span class="t">BootstrapServers</span>   = <span class="s">"kafka-1:9092,kafka-2:9092,kafka-3:9092"</span>,
+        <span class="t">GroupId</span>            = <span class="s">"order-consumer"</span>,
+        <span class="t">EnableAutoCommit</span>   = <span class="k">false</span>,                       <span class="c">// commit on success only</span>
+        <span class="t">AutoOffsetReset</span>    = <span class="t">AutoOffsetReset</span>.<span class="t">Earliest</span>,
+        <span class="t">PartitionAssignmentStrategy</span> =
+            <span class="t">PartitionAssignmentStrategy</span>.<span class="t">CooperativeSticky</span>,    <span class="c">// less rebalance pain</span>
+        <span class="t">IsolationLevel</span>     = <span class="t">IsolationLevel</span>.<span class="t">ReadCommitted</span>,    <span class="c">// for txn writes</span>
+    };
+
+    <span class="k">public</span> <span class="fn">OrderConsumer</span>(<span class="t">IServiceProvider</span> sp) =&gt; _sp = sp;
+
+    <span class="k">protected override async</span> <span class="t">Task</span> <span class="fn">ExecuteAsync</span>(<span class="t">CancellationToken</span> stop)
+    {
+        <span class="k">using var</span> consumer = <span class="k">new</span> <span class="t">ConsumerBuilder</span>&lt;<span class="k">string</span>, <span class="k">string</span>&gt;(_config).<span class="fn">Build</span>();
+        consumer.<span class="fn">Subscribe</span>(<span class="s">"orders"</span>);
+
+        <span class="k">while</span> (!stop.<span class="t">IsCancellationRequested</span>)
+        {
+            <span class="k">try</span>
+            {
+                <span class="k">var</span> cr = consumer.<span class="fn">Consume</span>(stop);
+                <span class="k">if</span> (cr.<span class="t">IsPartitionEOF</span>) <span class="k">continue</span>;
+
+                <span class="k">using var</span> scope = _sp.<span class="fn">CreateScope</span>();
+                <span class="k">var</span> handler = scope.<span class="t">ServiceProvider</span>.<span class="fn">GetRequiredService</span>&lt;<span class="t">IOrderHandler</span>&gt;();
+
+                <span class="c">// Process. If this throws, we don't commit — Kafka redelivers.</span>
+                <span class="k">await</span> handler.<span class="fn">HandleAsync</span>(cr.<span class="t">Message</span>.<span class="t">Key</span>, cr.<span class="t">Message</span>.<span class="t">Value</span>, stop);
+
+                consumer.<span class="fn">Commit</span>(cr);                            <span class="c">// at-least-once delivery</span>
+            }
+            <span class="k">catch</span> (<span class="t">OperationCanceledException</span>) { <span class="k">break</span>; }
+            <span class="k">catch</span> (<span class="t">ConsumeException</span> ex)
+            {
+                <span class="c">// Bad message format — push to DLQ; don't block the partition.</span>
+                <span class="k">await</span> <span class="fn">SendToDeadLetterAsync</span>(ex.<span class="t">ConsumerRecord</span>, ex.<span class="t">Error</span>);
+            }
+        }
+        consumer.<span class="fn">Close</span>();
+    }
+}</pre>
+        </div>
+      </section>
+
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">06</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Commit offsets after successful processing</div>
+          <p>Default auto-commit (every 5s) breaks at-least-once delivery — you'll commit offsets for messages your handler hasn't actually processed. Disable auto-commit; commit explicitly after the handler succeeds. <strong>The handler must be idempotent</strong> because the same message can be redelivered on crash.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Pick partition count generously</div>
+          <p>Partitions are cheap; resizing isn't. A topic with 6 partitions can support 6 parallel consumers maximum. A topic with 24 partitions can support 24. Start with 12–24 unless you have a strong reason for fewer. The cost is metadata overhead, not disk or CPU.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Compact vs delete retention</div>
+          <p>Default retention is "delete after 7 days." <strong>Compacted topics</strong> retain the latest value per key forever — useful for state snapshots (current price per product, latest config per user). Pick compact for state-shaped topics; delete for event-shaped.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Exactly-once is real but constrained</div>
+          <p>Kafka transactions + idempotent producer + read-committed consumer = exactly-once within Kafka. <em>It doesn't extend to your database</em> unless you use the Kafka-Connect or Outbox pattern (see <a href="change-data-capture.html">CDC chapter</a>). "Exactly-once" in mixed-system pipelines requires more discipline than the flag.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Confluent / Redpanda are real alternatives</div>
+          <p>Confluent Cloud is managed Kafka with the Confluent ecosystem (Schema Registry, ksqlDB, Connect). Redpanda is a Kafka-API-compatible C++ rewrite with no JVM, smaller cluster, easier ops — same wire protocol, same clients. For new deployments, Redpanda is worth a serious look (it's the Scylla of the Kafka world).</p>
+        </div>
+
+        <div class="pull">"Kafka isn't fast because of clever code. It's fast because the disk is sequential and the consumer is patient."</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Event log for microservices</h5>
+            <p>Self-host or Confluent Cloud / MSK / Event Hubs. Replication 3, acks=all, min ISR 2. 24+ partitions.</p>
+          </div>
+          <div class="cell">
+            <h5>You want Kafka API but easier ops</h5>
+            <p>Redpanda. Same protocol, no JVM, fewer nodes. Or Confluent Cloud if you want hosted.</p>
+          </div>
+          <div class="cell">
+            <h5>Stream of state changes (CDC)</h5>
+            <p>Kafka + Debezium. Compacted topic per source table. <a href="change-data-capture.html">See CDC chapter.</a></p>
+          </div>
+          <div class="cell">
+            <h5>Simple work queue</h5>
+            <p>Maybe not Kafka. Redis Streams, Service Bus, RabbitMQ might be a better fit for "task per message" semantics.</p>
+          </div>
+          <div class="cell">
+            <h5>Low ops budget</h5>
+            <p>Confluent Cloud or Azure Event Hubs (Kafka-compatible). The hosted offerings are worth the cost vs running a Kafka cluster yourself.</p>
+          </div>
+          <div class="cell">
+            <h5>Sub-millisecond latency</h5>
+            <p>Reconsider. Kafka's p99 is 5–50ms typically. For HFT or in-memory cache invalidation, a Redis pub/sub or NATS may be closer to what you want.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-dns.html">
+          <div class="label">Prev fundamental</div>
+          <div class="ttl">DNS</div>
+        </a>
+        <a class="next-fwd" href="fundamental-deployment.html">
+          <div class="label">Next fundamental</div>
+          <div class="ttl">Deployment patterns →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Fundamental · Kafka · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

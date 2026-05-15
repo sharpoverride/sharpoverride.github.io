@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Frontend System Design · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Frontend system design</span>
+    </div>
+    <nav><a href="fundamental-nginx.html">← Prev</a><a href="fundamental-stock-exchange.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~12 min</b></span>
+        <span>Stack <b>SSR · CSR · hydration · Core Web Vitals</b></span>
+      </div>
+      <h1>The frontend has <span class="ital">system design</span> too.</h1>
+      <p class="lede">"Frontend system design" used to be an oxymoron. In 2026, it's the discipline that decides Web Vitals scores, mobile abandonment rate, and how many engineers can ship in parallel on the same UI. The architectural decisions are different from the backend's; the rigour required is the same.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The questions</h5><p>Render on server or client? How to split the bundle? How to manage state? How to ship a UI library across teams? How to keep p95 LCP under 2.5s on mobile?</p></div>
+      <div><h5>The new vocabulary</h5><p>SSR, CSR, RSC, hydration, islands, partial pre-rendering, route-based code splitting, micro-frontends.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">What changed</a></li>
+      <li><a href="#rendering">The rendering modes</a></li>
+      <li><a href="#perf">Performance budgets</a></li>
+      <li><a href="#state">State management</a></li>
+      <li><a href="#org">Cross-team frontend</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>What <span class="ital">changed</span>.</h2>
+        <div class="prose">
+          <p>Once: a page was server-rendered HTML, plus some jQuery. Then SPAs took over: the server returns a near-empty HTML, JS bootstraps everything. SPAs felt fast after the initial load but were brutal on first paint, SEO, and mobile. <strong>The current era is the synthesis</strong>: server-render the first paint, hydrate or progressively enhance, ship only the JS the route needs.</p>
+        </div>
+        <div class="pull">"The pendulum hasn't stopped swinging. It just got finer-grained."</div>
+      </section>
+
+      <section class="dd-section" id="rendering">
+        <h2 class="section"><span class="num">02</span>The rendering <span class="ital">modes</span>.</h2>
+        <table class="matrix"><thead><tr><th>Mode</th><th>What it does</th><th>Strength</th><th>Weakness</th></tr></thead><tbody>
+          <tr><th>SSR</th><td>Server renders HTML per request</td><td>SEO, fast FCP, accessible without JS</td><td>Server cost, latency on cold caches</td></tr>
+          <tr><th>SSG</th><td>Static HTML at build time</td><td>Fastest possible, CDN-served</td><td>Stale until rebuild</td></tr>
+          <tr><th>ISR</th><td>Static, regenerated on demand</td><td>Static speed + freshness</td><td>Complex revalidation</td></tr>
+          <tr><th>CSR</th><td>JS bundles render in browser</td><td>App-like interactivity, simple deploy</td><td>Slow FCP, JS-blind SEO, mobile cost</td></tr>
+          <tr><th>RSC (server components)</th><td>Component-level "render on server, ship as data"</td><td>Smaller JS, server-side data fetch in components</td><td>New mental model</td></tr>
+          <tr><th>Islands</th><td>Mostly-static page with hydrated interactive islands</td><td>Minimal JS, static-fast</td><td>Limits app-like interactions</td></tr>
+        </tbody></table>
+        <div class="prose">
+          <p><strong>Most production apps mix modes.</strong> Marketing pages SSG. Product pages SSR or ISR. App shell hydrated. Per-component islands for interactive bits. The framework (Next, Remix, Astro, Nuxt, SvelteKit) is the mode-orchestrator.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="perf">
+        <h2 class="section"><span class="num">03</span>Performance <span class="ital">budgets</span>.</h2>
+        <table class="matrix"><thead><tr><th>Web Vital</th><th>Good</th><th>Needs improvement</th><th>Poor</th></tr></thead><tbody>
+          <tr><th>LCP (Largest Contentful Paint)</th><td>&lt;2.5s</td><td>2.5–4s</td><td>&gt;4s</td></tr>
+          <tr><th>INP (Interaction to Next Paint)</th><td>&lt;200ms</td><td>200–500ms</td><td>&gt;500ms</td></tr>
+          <tr><th>CLS (Cumulative Layout Shift)</th><td>&lt;0.1</td><td>0.1–0.25</td><td>&gt;0.25</td></tr>
+        </tbody></table>
+
+        <h3 class="sub">Bundle-size budgets</h3>
+        <div class="prose">
+          <p>Initial JS bundle (uncached): <strong>&lt;200 KB gzipped for a good FCP on mid-tier mobile.</strong> Aim for &lt;100 KB if you can. Code-split by route; don't ship the dashboard's JS to the landing page.</p>
+        </div>
+
+        <h3 class="sub">Image performance</h3>
+        <div class="prose">
+          <p>Modern formats (AVIF, WebP). Responsive <code>srcset</code>. <code>loading="lazy"</code> below the fold. <strong>Image weight dominates page weight</strong>; one un-optimised hero image can blow your LCP budget single-handedly.</p>
+        </div>
+
+        <h3 class="sub">Critical CSS inlined</h3>
+        <div class="prose">
+          <p>The CSS for above-the-fold content goes in the HTML. The rest async-loaded. Tools (critical, criticalCSS) extract automatically. <em>The single biggest LCP win on most sites is this.</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="state">
+        <h2 class="section"><span class="num">04</span>State <span class="ital">management</span>.</h2>
+
+        <h3 class="sub">The three layers</h3>
+        <div class="prose">
+          <p><strong>Server state</strong>: data fetched from APIs. Use React Query / SWR / TanStack Query. Handles caching, refetch, optimistic updates. <strong>UI state</strong>: form inputs, toggles, modal open/close. <code>useState</code> in component, lift up as needed. <strong>Global UI state</strong>: theme, current user, cart contents. Zustand, Jotai, Redux. <em>Keep global state minimal</em>; most things are server state in disguise.</p>
+        </div>
+
+        <h3 class="sub">URL is state</h3>
+        <div class="prose">
+          <p>Filter selections, sort order, pagination, modal-open — encode in the URL. <strong>The URL is the user's bookmark, their shareable link, their back-button history.</strong> Pattern: state hooks that wrap URLSearchParams.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="org">
+        <h2 class="section"><span class="num">05</span>Cross-team <span class="ital">frontend</span>.</h2>
+
+        <h3 class="sub">Design system</h3>
+        <div class="prose">
+          <p>Shared component library (Button, Input, Card, Modal). Tokens (colors, spacing, typography). Single source of truth across product surfaces. <strong>Versioned like an API</strong>; breaking changes affect every consumer.</p>
+        </div>
+
+        <h3 class="sub">Micro-frontends — sometimes</h3>
+        <div class="prose">
+          <p>Each team owns a UI slice; runtime composes them. Module Federation, Single SPA. <strong>Useful when teams ship at different cadences against one shell.</strong> Cost: shared dependency duplication, harder UX consistency, complex deploy story. Most teams should not start here.</p>
+        </div>
+
+        <h3 class="sub">Monorepo with packages</h3>
+        <div class="prose">
+          <p>Less ambitious, more common. UI components in <code>@org/ui</code>; SDK in <code>@org/api-client</code>; apps depend on both. Nx, Turborepo, Bun workspaces. <em>This is the structure most modern frontend orgs end up at.</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">06</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Marketing site</h5><p>SSG / Astro / Next.js with SSG mode. Static, CDN-served, fastest possible.</p></div>
+          <div class="cell"><h5>Content with personalisation</h5><p>SSR or ISR. Next.js, Remix, Nuxt. Server-side per-user rendering with cache.</p></div>
+          <div class="cell"><h5>App-like (dashboard, design tool)</h5><p>SPA or SSR-with-hydration. Vite + React, Next.js app router. Heavy client state, real-time updates.</p></div>
+          <div class="cell"><h5>SEO-critical</h5><p>SSR or SSG. Never CSR for content that must be indexed. Google's JS rendering is real but unreliable.</p></div>
+          <div class="cell"><h5>Cross-team UI</h5><p>Design system in a shared package. Tokens. Storybook for visibility. Micro-frontends only if you have a clear org-shaped reason.</p></div>
+          <div class="cell"><h5>Performance trouble</h5><p>Measure with real-device telemetry (RUM). Don't optimise what you don't measure. The bug is almost always image weight or third-party scripts.</p></div>
+        </div>
+        <div class="pull">"Frontend system design isn't about rendering. It's about deciding which user pays which cost."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-nginx.html"><div class="label">Prev</div><div class="ttl">NGINX</div></a>
+        <a class="next-fwd" href="fundamental-stock-exchange.html"><div class="label">Next</div><div class="ttl">Stock exchange →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Frontend SD · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

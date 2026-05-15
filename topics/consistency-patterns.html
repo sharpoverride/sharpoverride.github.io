@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Consistency Patterns · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">04 · Consistency Patterns</span>
+    </div>
+    <nav>
+      <a href="message-queues.html">← Prev</a>
+      <a href="api-gateway.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>04</b></span>
+        <span>Difficulty <b>★★★★★</b></span>
+        <span>Read <b>~17 min</b></span>
+        <span>Stack <b>EF Core · Cosmos DB · SQL Server · Postgres</b></span>
+      </div>
+      <h1>Consistency <span class="ital">patterns</span>.</h1>
+      <p class="lede">CAP is a starting point, not an answer. The real menu has <em>five levels</em>, each with a specific cost — and a specific bug you'll ship if you pick the wrong one.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem</h5>
+        <p>Replication makes data fast and durable. It also means two reads of the same key can return different answers. Every consistency model is a contract about <em>how different</em>.</p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>You don't pick consistency once. You pick it per <em>operation</em>. The login page can be eventually consistent. The account balance cannot.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Cosmos DB</span>
+          <span class="pill on">EF Core</span>
+          <span class="pill on">RowVersion</span>
+          <span class="pill">Postgres</span>
+          <span class="pill">SQL Server</span>
+          <span class="pill">Spanner</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#cap">CAP, honestly</a></li>
+        <li><a href="#spectrum">The five levels</a></li>
+        <li><a href="#cosmos">Cosmos DB levels</a></li>
+        <li><a href="#ef-iso">EF Core isolation</a></li>
+        <li><a href="#concurrency">Optimistic concurrency</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 CAP -->
+      <section class="dd-section" id="cap">
+        <h2 class="section"><span class="num">01</span>CAP, <span class="ital">honestly</span>.</h2>
+        <div class="prose">
+          <p>The CAP theorem is widely cited and widely misunderstood. The accurate version: <strong>during a network partition</strong>, a distributed system must choose between <em>consistency</em> (every read sees the latest write) and <em>availability</em> (every request gets a non-error response). That's it. Outside of a partition, you can have both.</p>
+          <p>Which is why <strong>PACELC</strong> is the more useful framing in 2026: in case of <em>P</em>artition, choose <em>A</em> or <em>C</em>; <em>E</em>lse (normal operation), choose <em>L</em>atency or <em>C</em>onsistency. Cosmos DB session consistency is PA/EL — fast and available, with bounded weirdness. Spanner is PC/EC — globally consistent, and you pay for it in latency.</p>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 800 220" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. 06 · PACELC · A USEFUL EXPANSION OF CAP</text>
+
+            <!-- triangle -->
+            <g transform="translate(20, 60)">
+              <polygon points="100,0 200,140 0,140" fill="none" stroke="#1a1814" stroke-width="2"/>
+              <text x="100" y="-6" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#1a1814" letter-spacing="0.14em">CONSISTENCY</text>
+              <text x="-12" y="156" font-family="JetBrains Mono" font-size="11" text-anchor="end" fill="#1a1814" letter-spacing="0.14em">AVAILABILITY</text>
+              <text x="212" y="156" font-family="JetBrains Mono" font-size="11" fill="#1a1814" letter-spacing="0.14em">PARTITION TOLERANCE</text>
+
+              <text x="100" y="90" font-family="Instrument Serif" font-size="20" font-style="italic" text-anchor="middle" fill="#c2410c">pick two</text>
+            </g>
+
+            <!-- examples table -->
+            <g transform="translate(280, 60)" font-family="JetBrains Mono" font-size="11">
+              <text x="0" y="0" letter-spacing="0.12em" fill="#8a8478">SYSTEM</text>
+              <text x="220" y="0" letter-spacing="0.12em" fill="#8a8478">PARTITION</text>
+              <text x="380" y="0" letter-spacing="0.12em" fill="#8a8478">NORMAL OPS</text>
+
+              <text x="0" y="32" font-family="Instrument Serif" font-size="18" fill="#1a1814">Google Spanner</text>
+              <text x="220" y="32" font-family="Instrument Serif" font-size="18" fill="#c2410c">C</text>
+              <text x="380" y="32" font-family="Instrument Serif" font-size="18" fill="#c2410c">C</text>
+              <text x="430" y="32" font-family="Instrument Serif" font-size="14" fill="#8a8478" font-style="italic">pay in latency</text>
+
+              <text x="0" y="60" font-family="Instrument Serif" font-size="18" fill="#1a1814">Cosmos · Session</text>
+              <text x="220" y="60" font-family="Instrument Serif" font-size="18" fill="#c2410c">A</text>
+              <text x="380" y="60" font-family="Instrument Serif" font-size="18" fill="#c2410c">L</text>
+              <text x="430" y="60" font-family="Instrument Serif" font-size="14" fill="#8a8478" font-style="italic">bounded weirdness</text>
+
+              <text x="0" y="88" font-family="Instrument Serif" font-size="18" fill="#1a1814">DynamoDB</text>
+              <text x="220" y="88" font-family="Instrument Serif" font-size="18" fill="#c2410c">A</text>
+              <text x="380" y="88" font-family="Instrument Serif" font-size="18" fill="#c2410c">L</text>
+              <text x="430" y="88" font-family="Instrument Serif" font-size="14" fill="#8a8478" font-style="italic">read-your-writes only by default</text>
+
+              <text x="0" y="116" font-family="Instrument Serif" font-size="18" fill="#1a1814">Postgres primary</text>
+              <text x="220" y="116" font-family="Instrument Serif" font-size="18" fill="#c2410c">C</text>
+              <text x="380" y="116" font-family="Instrument Serif" font-size="18" fill="#c2410c">C</text>
+              <text x="430" y="116" font-family="Instrument Serif" font-size="14" fill="#8a8478" font-style="italic">single node, no partition</text>
+
+              <text x="0" y="144" font-family="Instrument Serif" font-size="18" fill="#1a1814">Cassandra</text>
+              <text x="220" y="144" font-family="Instrument Serif" font-size="18" fill="#c2410c">A</text>
+              <text x="380" y="144" font-family="Instrument Serif" font-size="18" fill="#c2410c">L</text>
+              <text x="430" y="144" font-family="Instrument Serif" font-size="14" fill="#8a8478" font-style="italic">tunable per query</text>
+            </g>
+          </svg>
+          <div class="cap"><span>Fig. 06 · CAP for the partition; PACELC for the rest of the time</span></div>
+        </div>
+
+        <div class="prose">
+          <div class="pull">"In the absence of network failures both consistency and availability can be satisfied. The CAP theorem is fundamentally about what happens when something already went wrong."</div>
+        </div>
+      </section>
+
+      <!-- 2 spectrum -->
+      <section class="dd-section" id="spectrum">
+        <h2 class="section"><span class="num">02</span>The five <span class="ital">levels</span>.</h2>
+        <div class="prose">
+          <p>Forget "consistent vs eventually consistent." Real systems live on a spectrum. From strongest to weakest, with the specific guarantee each gives you:</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 320" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 07 · CONSISTENCY SPECTRUM · STRONGER → WEAKER</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- gradient bar -->
+            <defs>
+              <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%"  stop-color="#1a1814"/>
+                <stop offset="100%" stop-color="#c2410c"/>
+              </linearGradient>
+            </defs>
+            <rect x="20" y="68" width="1160" height="14" fill="url(#grad)"/>
+            <text x="20"   y="64" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#1a1814">STRONGER</text>
+            <text x="1180" y="64" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" text-anchor="end" fill="#1a1814">FASTER</text>
+
+            <!-- 5 ticks + labels -->
+            <g font-family="Instrument Serif" font-size="22" fill="#1a1814">
+              <line x1="80"   y1="80" x2="80"   y2="98" stroke="#1a1814"/>
+              <text x="80"   y="120" text-anchor="middle">Linearizable</text>
+              <text x="80"   y="138" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#8a8478" letter-spacing="0.1em">STRONG</text>
+
+              <line x1="310"  y1="80" x2="310"  y2="98" stroke="#1a1814"/>
+              <text x="310"  y="120" text-anchor="middle">Bounded staleness</text>
+              <text x="310"  y="138" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#8a8478" letter-spacing="0.1em">"BEHIND BY ≤ N s"</text>
+
+              <line x1="600"  y1="80" x2="600"  y2="98" stroke="#1a1814"/>
+              <text x="600"  y="120" text-anchor="middle">Session (RYW + monotonic)</text>
+              <text x="600"  y="138" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#8a8478" letter-spacing="0.1em">★ DEFAULT</text>
+
+              <line x1="890"  y1="80" x2="890"  y2="98" stroke="#1a1814"/>
+              <text x="890"  y="120" text-anchor="middle">Consistent prefix</text>
+              <text x="890"  y="138" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#8a8478" letter-spacing="0.1em">NO TIME TRAVEL</text>
+
+              <line x1="1120" y1="80" x2="1120" y2="98" stroke="#1a1814"/>
+              <text x="1120" y="120" text-anchor="middle">Eventual</text>
+              <text x="1120" y="138" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#8a8478" letter-spacing="0.1em">WEAKEST</text>
+            </g>
+
+            <!-- example boxes -->
+            <g transform="translate(20, 170)">
+              <rect x="0"   y="0" width="220" height="120" fill="#1a1814"/>
+              <text x="14" y="22" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#c2410c">LINEARIZABLE</text>
+              <text x="14" y="44" font-family="Instrument Serif" font-size="16" fill="#f1ece1">Every read sees the most</text>
+              <text x="14" y="62" font-family="Instrument Serif" font-size="16" fill="#f1ece1">recent committed write.</text>
+              <text x="14" y="92" font-family="IBM Plex Sans" font-size="13" fill="#f1ece1" opacity="0.8">SQL primary read</text>
+              <text x="14" y="108" font-family="IBM Plex Sans" font-size="13" fill="#f1ece1" opacity="0.8">Spanner · Cosmos Strong</text>
+            </g>
+            <g transform="translate(250, 170)">
+              <rect x="0"   y="0" width="220" height="120" fill="#1a1814"/>
+              <text x="14" y="22" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#c2410c">BOUNDED</text>
+              <text x="14" y="44" font-family="Instrument Serif" font-size="16" fill="#f1ece1">Lag ≤ N ops or N seconds.</text>
+              <text x="14" y="62" font-family="Instrument Serif" font-size="16" fill="#f1ece1">You set the budget.</text>
+              <text x="14" y="92" font-family="IBM Plex Sans" font-size="13" fill="#f1ece1" opacity="0.8">Cosmos Bounded</text>
+              <text x="14" y="108" font-family="IBM Plex Sans" font-size="13" fill="#f1ece1" opacity="0.8">Postgres replica + lag SLO</text>
+            </g>
+            <g transform="translate(480, 170)">
+              <rect x="0" y="0" width="220" height="120" fill="#c2410c"/>
+              <text x="14" y="22" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#f1ece1">SESSION ★</text>
+              <text x="14" y="44" font-family="Instrument Serif" font-size="16" fill="#f1ece1">Per-session monotonic +</text>
+              <text x="14" y="62" font-family="Instrument Serif" font-size="16" fill="#f1ece1">read-your-writes.</text>
+              <text x="14" y="92" font-family="IBM Plex Sans" font-size="13" fill="#f1ece1" opacity="0.9">Cosmos default</text>
+              <text x="14" y="108" font-family="IBM Plex Sans" font-size="13" fill="#f1ece1" opacity="0.9">DynamoDB w/ strongly cons.</text>
+            </g>
+            <g transform="translate(710, 170)">
+              <rect x="0"   y="0" width="220" height="120" fill="#1a1814"/>
+              <text x="14" y="22" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#c2410c">PREFIX</text>
+              <text x="14" y="44" font-family="Instrument Serif" font-size="16" fill="#f1ece1">Reads see writes in</text>
+              <text x="14" y="62" font-family="Instrument Serif" font-size="16" fill="#f1ece1">the order they happened.</text>
+              <text x="14" y="92" font-family="IBM Plex Sans" font-size="13" fill="#f1ece1" opacity="0.8">No time-travel surprises.</text>
+              <text x="14" y="108" font-family="IBM Plex Sans" font-size="13" fill="#f1ece1" opacity="0.8">Cosmos Prefix</text>
+            </g>
+            <g transform="translate(940, 170)">
+              <rect x="0"   y="0" width="220" height="120" fill="#1a1814"/>
+              <text x="14" y="22" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#c2410c">EVENTUAL</text>
+              <text x="14" y="44" font-family="Instrument Serif" font-size="16" fill="#f1ece1">Will converge,</text>
+              <text x="14" y="62" font-family="Instrument Serif" font-size="16" fill="#f1ece1">eventually. No promises.</text>
+              <text x="14" y="92" font-family="IBM Plex Sans" font-size="13" fill="#f1ece1" opacity="0.8">DNS · CDN · most caches</text>
+              <text x="14" y="108" font-family="IBM Plex Sans" font-size="13" fill="#f1ece1" opacity="0.8">Cosmos Eventual</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 07</span><span>Stronger left, faster right. Most apps live in the middle.</span></div>
+        </div>
+
+        <div class="prose">
+          <p><strong>Linearizable</strong> is the simplest mental model — the system behaves as if every operation happens at a single point on a global timeline. Easy to reason about, expensive to implement, requires consensus (Raft/Paxos) and round-trips. Pay for it for money movement and inventory; don't pay for it for product reviews.</p>
+          <p><strong>Session consistency</strong> is the sweet spot for user-facing systems and it deserves its own paragraph. It gives every <em>session</em> two guarantees: <em>read-your-writes</em> (you'll always see your own last write) and <em>monotonic reads</em> (time never goes backward for you). Other users may see slightly older data, but <strong>you</strong> never see a contradiction with yourself. This is what humans actually want from "consistency" 95% of the time.</p>
+          <div class="callout">
+            <div class="ctag">Why not always pick "Strong"?</div>
+            <p>In Cosmos DB, switching from Session to Strong roughly doubles your RU cost and adds 2–10× latency for multi-region reads. SQL Server reading from the primary versus a readable secondary changes your read p99 by 5–50 ms. <strong>Strong consistency is a globally rationed resource;</strong> spend it where it matters.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3 cosmos -->
+      <section class="dd-section" id="cosmos">
+        <h2 class="section"><span class="num">03</span>Cosmos DB, <span class="ital">five levels</span>.</h2>
+        <div class="prose">
+          <p>Cosmos DB is one of the few production databases that lets you pick any of the five levels per operation. Pricing and latency change with the choice, which makes it a perfect teaching example.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">CosmosClientFactory.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Microsoft.Azure.Cosmos</span>
+<span class="k">using</span> <span class="t">Microsoft.Azure.Cosmos</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Consistency</span>;
+
+<span class="k">public sealed class</span> <span class="t">CosmosClientFactory</span>(<span class="t">IConfiguration</span> cfg)
+{
+    <span class="c">// Account-level default. Per-request overrides allowed only DOWN the spectrum.
+    // e.g. account = Session → may request Eventual; cannot request Strong.</span>
+    <span class="k">public</span> <span class="t">CosmosClient</span> <span class="fn">CreateForAccount</span>(<span class="t">ConsistencyLevel</span> accountDefault) =&gt;
+        <span class="k">new</span>(
+            cfg[<span class="s">"Cosmos:ConnectionString"</span>]!,
+            <span class="k">new</span> <span class="t">CosmosClientOptions</span>
+            {
+                <span class="t">ConsistencyLevel</span>          = accountDefault,
+                <span class="t">ApplicationPreferredRegions</span> = [<span class="s">"West Europe"</span>, <span class="s">"North Europe"</span>],
+                <span class="t">SerializerOptions</span>         = <span class="k">new</span>() { <span class="t">PropertyNamingPolicy</span> = <span class="t">CosmosPropertyNamingPolicy</span>.<span class="t">CamelCase</span> },
+            });
+}
+
+<span class="c">// Two services, two needs, two configurations. Don't make the whole app pay
+// for the strictness one endpoint requires.</span>
+<span class="k">public sealed class</span> <span class="t">BillingService</span>(<span class="t">CosmosClientFactory</span> factory)
+{
+    <span class="c">// Money movement. Strong by default. ~2x RU, multi-region writes serialised.</span>
+    <span class="k">private readonly</span> <span class="t">Container</span> _ledger =
+        factory.<span class="fn">CreateForAccount</span>(<span class="t">ConsistencyLevel</span>.<span class="t">Strong</span>)
+               .<span class="fn">GetContainer</span>(<span class="s">"finance"</span>, <span class="s">"ledger"</span>);
+
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">LedgerEntry</span>&gt; <span class="fn">PostAsync</span>(<span class="t">LedgerEntry</span> e, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="c">// Defaults to Strong from the client; no override needed.</span>
+        <span class="k">var</span> r = <span class="k">await</span> _ledger.<span class="fn">CreateItemAsync</span>(e, <span class="k">new</span> <span class="t">PartitionKey</span>(e.<span class="t">AccountId</span>), <span class="k">null</span>, ct);
+        <span class="k">return</span> r.<span class="t">Resource</span>;
+    }
+}
+
+<span class="k">public sealed class</span> <span class="t">CatalogService</span>(<span class="t">CosmosClientFactory</span> factory)
+{
+    <span class="c">// Product reads. Session is fine; price changes settle in seconds.</span>
+    <span class="k">private readonly</span> <span class="t">Container</span> _products =
+        factory.<span class="fn">CreateForAccount</span>(<span class="t">ConsistencyLevel</span>.<span class="t">Session</span>)
+               .<span class="fn">GetContainer</span>(<span class="s">"shop"</span>, <span class="s">"products"</span>);
+
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">Product</span>?&gt; <span class="fn">GetAsync</span>(<span class="t">Guid</span> id, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="c">// Lower than session for non-critical reads — saves RU.</span>
+        <span class="k">try</span>
+        {
+            <span class="k">var</span> r = <span class="k">await</span> _products.<span class="fn">ReadItemAsync</span>&lt;<span class="t">Product</span>&gt;(
+                id.<span class="fn">ToString</span>(),
+                <span class="k">new</span> <span class="t">PartitionKey</span>(id.<span class="fn">ToString</span>()),
+                <span class="k">new</span> <span class="t">ItemRequestOptions</span> { <span class="t">ConsistencyLevel</span> = <span class="t">ConsistencyLevel</span>.<span class="t">Eventual</span> },
+                ct);
+            <span class="k">return</span> r.<span class="t">Resource</span>;
+        }
+        <span class="k">catch</span> (<span class="t">CosmosException</span> ex) <span class="k">when</span> (ex.<span class="t">StatusCode</span> == <span class="t">HttpStatusCode</span>.<span class="t">NotFound</span>)
+        {
+            <span class="k">return null</span>;
+        }
+    }
+
+    <span class="c">// The interesting case: the user just edited the price and reads it back.
+    // We need read-your-writes — session token carries that promise across reads.</span>
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">Product</span>&gt; <span class="fn">UpdateAndReadAsync</span>(<span class="t">Product</span> p, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">var</span> write = <span class="k">await</span> _products.<span class="fn">UpsertItemAsync</span>(p, <span class="k">new</span> <span class="t">PartitionKey</span>(p.<span class="t">Id</span>.<span class="fn">ToString</span>()), <span class="k">null</span>, ct);
+
+        <span class="c">// Pass the session token from the write into the read.
+        // Without this, you might read an older replica and not see your own change.</span>
+        <span class="k">var</span> read  = <span class="k">await</span> _products.<span class="fn">ReadItemAsync</span>&lt;<span class="t">Product</span>&gt;(
+            p.<span class="t">Id</span>.<span class="fn">ToString</span>(),
+            <span class="k">new</span> <span class="t">PartitionKey</span>(p.<span class="t">Id</span>.<span class="fn">ToString</span>()),
+            <span class="k">new</span> <span class="t">ItemRequestOptions</span> { <span class="t">SessionToken</span> = write.<span class="t">Headers</span>.<span class="t">Session</span> },
+            ct);
+        <span class="k">return</span> read.<span class="t">Resource</span>;
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Two ideas this snippet quietly demonstrates:</p>
+          <ul>
+            <li><strong>Account default is the ceiling.</strong> You can request anything <em>weaker</em> at request time; you cannot request stronger than the account allows. So pick the account default to be the strictest level you need anywhere, and downgrade elsewhere.</li>
+            <li><strong>The session token is read-your-writes made explicit.</strong> Pass it from the write response into the read request and Cosmos guarantees the read sees the write — even from a different replica.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 4 EF Core isolation -->
+      <section class="dd-section" id="ef-iso">
+        <h2 class="section"><span class="num">04</span>EF Core <span class="ital">isolation</span>.</h2>
+        <div class="prose">
+          <p>Consistency at the distributed-database level has a cousin at the single-database level: <strong>transaction isolation</strong>. Same animal — different vocabulary. The four ANSI levels prevent specific anomalies; the cost is locking, MVCC versions, or retries.</p>
+        </div>
+
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th style="width:20%;">Isolation level</th>
+              <th>Prevents</th>
+              <th>Doesn't prevent</th>
+              <th>Cost</th>
+              <th>Use for</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Read Uncommitted</th>
+              <td>—</td>
+              <td><strong>Dirty reads</strong>, non-repeatable reads, phantoms</td>
+              <td>Almost zero</td>
+              <td>Never. Seriously.</td>
+            </tr>
+            <tr>
+              <th>Read Committed<span class="sub">SQL Server default</span></th>
+              <td>Dirty reads</td>
+              <td>Non-repeatable reads, phantoms</td>
+              <td>Low · row-level locks</td>
+              <td>Most read paths</td>
+            </tr>
+            <tr>
+              <th>Repeatable Read<span class="sub">Postgres "Repeatable Read"</span></th>
+              <td>Dirty + non-repeatable reads</td>
+              <td>Phantoms (SQL Server) · serialisation anomalies (Postgres)</td>
+              <td>Mid · range locks or snapshot</td>
+              <td>Reports needing a stable snapshot</td>
+            </tr>
+            <tr>
+              <th>Snapshot / MVCC<span class="sub">Postgres default, SQL Server opt-in</span></th>
+              <td>Dirty + non-repeatable + phantoms (reads see a snapshot)</td>
+              <td>Write skew (specific to snapshot)</td>
+              <td>Mid · version tombstones</td>
+              <td>Default for most apps</td>
+            </tr>
+            <tr>
+              <th>Serializable</th>
+              <td>All anomalies — behaves as if transactions ran one at a time</td>
+              <td>—</td>
+              <td>High · retries on conflict</td>
+              <td>Money movement, inventory reservations</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">TransferService.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// Money transfer between two accounts. Must be serializable; debits and credits
+// must agree even under concurrent transfers on the same account.</span>
+<span class="k">public sealed class</span> <span class="t">TransferService</span>(<span class="t">BankDbContext</span> db, <span class="t">ILogger</span>&lt;<span class="t">TransferService</span>&gt; log)
+{
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">TransferResult</span>&gt; <span class="fn">TransferAsync</span>(
+        <span class="t">Guid</span> fromId, <span class="t">Guid</span> toId, <span class="k">decimal</span> amount, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">const int</span> <span class="t">MaxAttempts</span> = <span class="n">3</span>;
+        <span class="k">for</span> (<span class="k">var</span> attempt = <span class="n">1</span>; ; attempt++)
+        {
+            <span class="k">await using var</span> tx = <span class="k">await</span> db.<span class="t">Database</span>.<span class="fn">BeginTransactionAsync</span>(
+                <span class="t">System</span>.<span class="t">Data</span>.<span class="t">IsolationLevel</span>.<span class="t">Serializable</span>, ct);
+            <span class="k">try</span>
+            {
+                <span class="k">var</span> from = <span class="k">await</span> db.<span class="t">Accounts</span>.<span class="fn">FirstAsync</span>(a =&gt; a.<span class="t">Id</span> == fromId, ct);
+                <span class="k">var</span> to   = <span class="k">await</span> db.<span class="t">Accounts</span>.<span class="fn">FirstAsync</span>(a =&gt; a.<span class="t">Id</span> == toId,   ct);
+
+                <span class="k">if</span> (from.<span class="t">Balance</span> &lt; amount)
+                    <span class="k">return</span> <span class="t">TransferResult</span>.<span class="t">InsufficientFunds</span>;
+
+                from.<span class="t">Balance</span> -= amount;
+                to.<span class="t">Balance</span>   += amount;
+
+                <span class="k">await</span> db.<span class="fn">SaveChangesAsync</span>(ct);
+                <span class="k">await</span> tx.<span class="fn">CommitAsync</span>(ct);
+                <span class="k">return</span> <span class="t">TransferResult</span>.<span class="t">Ok</span>;
+            }
+            <span class="k">catch</span> (<span class="t">DbUpdateException</span> ex) <span class="k">when</span> (<span class="fn">IsSerializationFailure</span>(ex) &amp;&amp; attempt &lt; <span class="t">MaxAttempts</span>)
+            {
+                <span class="c">// Postgres SQLSTATE 40001 / SQL Server 1205 — retry with jitter.</span>
+                log.<span class="fn">LogInformation</span>(<span class="s">"serialization retry {Attempt}"</span>, attempt);
+                <span class="k">await</span> <span class="t">Task</span>.<span class="fn">Delay</span>(<span class="t">Random</span>.<span class="t">Shared</span>.<span class="fn">Next</span>(<span class="n">10</span>, <span class="n">100</span>), ct);
+            }
+        }
+    }
+
+    <span class="k">static bool</span> <span class="fn">IsSerializationFailure</span>(<span class="t">DbUpdateException</span> ex) =&gt;
+        ex.<span class="t">InnerException</span> <span class="k">is</span> <span class="t">PostgresException</span> { <span class="t">SqlState</span>: <span class="s">"40001"</span> } ||
+        ex.<span class="t">InnerException</span>?.<span class="t">Message</span>.<span class="fn">Contains</span>(<span class="s">"deadlock"</span>) == <span class="k">true</span>;
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Serializable on Postgres is implemented with <em>Serializable Snapshot Isolation</em> (SSI) — it doesn't lock, it watches for conflicts and aborts losers. So <strong>your code must retry</strong>. Skipping the retry loop is the most common Postgres-serializable bug.</p>
+        </div>
+      </section>
+
+      <!-- 5 optimistic concurrency -->
+      <section class="dd-section" id="concurrency">
+        <h2 class="section"><span class="num">05</span>Optimistic <span class="ital">concurrency</span>.</h2>
+        <div class="prose">
+          <p>The pattern that bridges the single-DB and distributed-DB worlds: <strong>optimistic concurrency control</strong>. Add a version column. Reads include it. Writes condition on it. Two concurrent writers find out at commit time; one wins, the other retries.</p>
+          <p>This is the same idea as Cosmos DB's <code>ETag</code>, DynamoDB's <code>ConditionExpression</code>, and HTTP's <code>If-Match</code> header. Same pattern, different names.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">Product.cs · EF mapping</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">public sealed class</span> <span class="t">Product</span>
+{
+    <span class="k">public</span> <span class="t">Guid</span>    <span class="t">Id</span>    { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="k">string</span>  <span class="t">Name</span>  { <span class="k">get</span>; <span class="k">set</span>; } = <span class="k">default</span>!;
+    <span class="k">public</span> <span class="k">decimal</span> <span class="t">Price</span> { <span class="k">get</span>; <span class="k">set</span>; }
+
+    <span class="at">[Timestamp]</span>                       <span class="c">// SQL Server rowversion</span>
+    <span class="k">public</span> <span class="k">byte</span>[] <span class="t">RowVersion</span> { <span class="k">get</span>; <span class="k">set</span>; } = [];
+
+    <span class="c">// — or, for Postgres, a uint xmin column —
+    // public uint XMin { get; set; }    [ConcurrencyCheck], [Column("xmin")]</span>
+}
+
+<span class="c">// Mapping. SQL Server "rowversion" auto-increments on every UPDATE.</span>
+<span class="k">public sealed class</span> <span class="t">ShopDbContext</span>(<span class="t">DbContextOptions</span>&lt;<span class="t">ShopDbContext</span>&gt; opts) : <span class="t">DbContext</span>(opts)
+{
+    <span class="k">protected override void</span> <span class="fn">OnModelCreating</span>(<span class="t">ModelBuilder</span> b)
+    {
+        b.<span class="fn">Entity</span>&lt;<span class="t">Product</span>&gt;()
+            .<span class="t">Property</span>(p =&gt; p.<span class="t">RowVersion</span>)
+            .<span class="fn">IsRowVersion</span>();
+    }
+}
+
+<span class="k">public sealed class</span> <span class="t">ProductService</span>(<span class="t">ShopDbContext</span> db, <span class="t">ILogger</span>&lt;<span class="t">ProductService</span>&gt; log)
+{
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">UpdateResult</span>&gt; <span class="fn">UpdatePriceAsync</span>(
+        <span class="t">Guid</span> id, <span class="k">decimal</span> newPrice, <span class="k">byte</span>[] expectedVersion, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">var</span> product = <span class="k">await</span> db.<span class="t">Products</span>.<span class="fn">FirstAsync</span>(p =&gt; p.<span class="t">Id</span> == id, ct);
+        product.<span class="t">RowVersion</span> = expectedVersion;          <span class="c">// the version the client read</span>
+        product.<span class="t">Price</span>      = newPrice;
+
+        <span class="k">try</span>
+        {
+            <span class="k">await</span> db.<span class="fn">SaveChangesAsync</span>(ct);
+            <span class="k">return new</span> <span class="t">UpdateResult</span>.<span class="t">Ok</span>(product.<span class="t">RowVersion</span>);
+        }
+        <span class="k">catch</span> (<span class="t">DbUpdateConcurrencyException</span>)
+        {
+            <span class="c">// Someone else wrote between this client's read and write.
+            // Re-read, present the conflict to the caller (HTTP 409).</span>
+            <span class="k">var</span> current = <span class="k">await</span> db.<span class="t">Products</span>
+                .<span class="fn">AsNoTracking</span>().<span class="fn">FirstAsync</span>(p =&gt; p.<span class="t">Id</span> == id, ct);
+            <span class="k">return new</span> <span class="t">UpdateResult</span>.<span class="t">Conflict</span>(current);
+        }
+    }
+}
+
+<span class="c">// HTTP boundary — surface the conflict as ETag / If-Match (RFC 9110).</span>
+app.<span class="fn">MapPatch</span>(<span class="s">"/products/{id}/price"</span>, <span class="k">async</span> (
+    <span class="t">Guid</span> id, <span class="t">PriceUpdate</span> body, <span class="t">HttpRequest</span> req,
+    <span class="t">ProductService</span> svc, <span class="t">CancellationToken</span> ct) =&gt;
+{
+    <span class="k">if</span> (!req.<span class="t">Headers</span>.<span class="fn">TryGetValue</span>(<span class="s">"If-Match"</span>, <span class="k">out</span> <span class="k">var</span> etag))
+        <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Problem</span>(<span class="s">"If-Match required"</span>, statusCode: <span class="n">428</span>);
+
+    <span class="k">var</span> result = <span class="k">await</span> svc.<span class="fn">UpdatePriceAsync</span>(id, body.<span class="t">Price</span>,
+        <span class="t">Convert</span>.<span class="fn">FromBase64String</span>(etag.<span class="fn">ToString</span>()), ct);
+
+    <span class="k">return</span> result <span class="k">switch</span>
+    {
+        <span class="t">UpdateResult</span>.<span class="t">Ok</span> ok        =&gt; <span class="t">Results</span>.<span class="fn">Ok</span>(<span class="k">new</span> { etag = <span class="t">Convert</span>.<span class="fn">ToBase64String</span>(ok.<span class="t">NewVersion</span>) }),
+        <span class="t">UpdateResult</span>.<span class="t">Conflict</span> c   =&gt; <span class="t">Results</span>.<span class="fn">Conflict</span>(<span class="k">new</span> { current = c.<span class="t">Current</span> }),
+        _                              =&gt; <span class="t">Results</span>.<span class="fn">Problem</span>(<span class="s">"unknown"</span>),
+    };
+});</pre>
+        </div>
+
+        <div class="prose">
+          <p>The HTTP layer matters. <code>If-Match</code> + <code>ETag</code> turn optimistic concurrency into a contract your API consumers can program against. A client that gets a 409 knows exactly what to do: re-fetch, resolve, retry. A client that gets a "last write wins" silently overwriting their colleague's edit has no clue and no recourse.</p>
+        </div>
+      </section>
+
+      <!-- 6 tradeoff matrix -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th style="width:18%;">Database</th>
+              <th>Default consistency</th>
+              <th>Stronger options</th>
+              <th>Multi-region writes</th>
+              <th>Cost / mo (mid-scale)</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Postgres single-primary<span class="sub">RDS / Flexible Server</span></th>
+              <td>Read Committed (linearizable from primary)</td>
+              <td>Up to Serializable</td>
+              <td>No (replicas are read-only)</td>
+              <td><strong>$60 → $1.2k</strong> small → mid HA</td>
+              <td><span class="verdict good">Default; predictable</span></td>
+            </tr>
+            <tr>
+              <th>Postgres + Citus / Aurora multi-master<span class="sub">distributed</span></th>
+              <td>Read Committed</td>
+              <td>Repeatable Read (limited)</td>
+              <td>Yes (Aurora Global)</td>
+              <td><strong>$700+</strong></td>
+              <td><span class="verdict warn">Watch for sharded txn limits</span></td>
+            </tr>
+            <tr>
+              <th>SQL Server<span class="sub">Azure SQL DB / Managed Instance</span></th>
+              <td>Read Committed (RCSI)</td>
+              <td>Snapshot · Serializable</td>
+              <td>Limited (auto-failover groups)</td>
+              <td><strong>$200 → $2k</strong> Gen5</td>
+              <td><span class="verdict good">Strong tooling, predictable</span></td>
+            </tr>
+            <tr>
+              <th>Cosmos DB<span class="sub">multi-model</span></th>
+              <td>Session</td>
+              <td>Bounded · Strong</td>
+              <td>Yes (any level)</td>
+              <td><strong>$25 → $5k+</strong> RU-based</td>
+              <td><span class="verdict good">Global SaaS workloads</span></td>
+            </tr>
+            <tr>
+              <th>DynamoDB<span class="sub">key-value · AWS</span></th>
+              <td>Eventually consistent reads</td>
+              <td>Strongly consistent reads (2× RCU)</td>
+              <td>Yes (Global Tables, eventual)</td>
+              <td><strong>Pay-per-request</strong>; can be $thousands</td>
+              <td><span class="verdict good">Fits the model or doesn't</span></td>
+            </tr>
+            <tr>
+              <th>Spanner / AlloyDB<span class="sub">strongly consistent global</span></th>
+              <td>Linearizable, globally</td>
+              <td>Already the strongest</td>
+              <td>Yes (multi-region paxos)</td>
+              <td><strong>$1k → $25k+</strong></td>
+              <td><span class="verdict warn">Powerful · expensive</span></td>
+            </tr>
+            <tr>
+              <th>Cassandra / ScyllaDB<span class="sub">tunable</span></th>
+              <td>Eventual (CL=ONE)</td>
+              <td>QUORUM / ALL</td>
+              <td>Yes (multi-DC)</td>
+              <td><strong>$0 self-host → $thousands</strong> Astra</td>
+              <td><span class="verdict warn">Hard ops; right for big time-series</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="prose">
+          <p>The dimension nobody talks about is <strong>blast radius of a wrong choice</strong>. Postgres at Read Committed will surprise you with lost updates if you don't add a version column. Cosmos at Eventual will surprise you with a list-then-detail page where the detail doesn't exist yet. DynamoDB at default consistency will surprise you when a user can't see their own post for 200 ms. <em>None</em> of these are bugs in the database; they are mismatches between the data model and the operation.</p>
+        </div>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Money movement, inventory hold</h5>
+            <p>Serializable txn against a single-primary RDBMS. Retry on conflict. Don't go distributed for this until you have to.</p>
+          </div>
+          <div class="cell">
+            <h5>User profile, settings, preferences</h5>
+            <p>Session consistency (Cosmos default; or single Postgres). Read-your-writes is what users emotionally expect.</p>
+          </div>
+          <div class="cell">
+            <h5>Product catalogue, public content</h5>
+            <p>Eventual is fine — 95% of reads. Cache with TTL; staleness measured in seconds is invisible.</p>
+          </div>
+          <div class="cell">
+            <h5>Analytics, reporting</h5>
+            <p>Read from a replica with bounded staleness. Hours-old data is acceptable. Don't cost the primary.</p>
+          </div>
+          <div class="cell">
+            <h5>Multi-tenant collaboration (Figma, Notion)</h5>
+            <p>Strong per-document (CRDT/OT inside the doc), eventual across documents. Scope the strict region.</p>
+          </div>
+          <div class="cell">
+            <h5>"Just put it in Cosmos at Strong"</h5>
+            <p>You've doubled your RU bill and added cross-region latency for an SLA the business probably doesn't need. Pick per-op.</p>
+          </div>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">The questions to ask before picking a level</div>
+          <p>① <strong>What's the user-visible failure if a read is stale?</strong> Wrong product price (cheap to recover). Wrong account balance (expensive). Wrong "did my post send?" (lost trust).</p>
+          <p>② <strong>How often do reads and writes overlap on the same key?</strong> If a row is written once and read a million times, eventual is free money. If reads and writes interleave, you need stronger guarantees.</p>
+          <p>③ <strong>Is the "consistency" the user wants the same as the textbook definition?</strong> Often what users want is <em>read-your-writes</em>, which session-level gives you cheaply — not full linearizability.</p>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="message-queues.html">
+          <div class="label">Chapter 03</div>
+          <div class="ttl">Message queues</div>
+        </a>
+        <a class="next-fwd" href="api-gateway.html">
+          <div class="label">Chapter 05</div>
+          <div class="ttl">API gateway →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 04 of 06 · Consistency Patterns · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

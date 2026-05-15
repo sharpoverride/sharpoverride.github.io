@@ -1,0 +1,707 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Rate Limiting · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">01 · Rate Limiting</span>
+    </div>
+    <nav>
+      <a href="caching-patterns.html">Next: Caching →</a>
+    </nav>
+  </header>
+
+  <!-- ── HERO ─────────────────────────────────────────────────────── -->
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>01</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~14 min</b></span>
+        <span>Stack <b>ASP.NET Core · Redis · EF Core</b></span>
+      </div>
+      <h1>Rate <span class="ital">limiting</span>.</h1>
+      <p class="lede">Five algorithms, one distributed reality, and the <em>Redis Lua script</em> that lets a single API handle a billion daily requests without melting downstream.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem</h5>
+        <p>Your API has a noisy neighbour. A free-tier user runs a tight retry loop. A scraper hits the search endpoint at 50 RPS. Without a limiter, one client takes down the whole platform.</p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Cap requests per key, per window. Push state to a place every replica can see. Reject early — at the edge — and emit headers that <em>teach</em> good clients to back off.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Redis Lua</span>
+          <span class="pill on">ASP.NET 7 RL</span>
+          <span class="pill">Polly</span>
+          <span class="pill">Azure APIM</span>
+          <span class="pill">NGINX</span>
+          <span class="pill">Cloudflare</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <!-- ── BODY (TOC + content) ─────────────────────────────────────── -->
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why limit at all</a></li>
+        <li><a href="#algorithms">Five algorithms</a></li>
+        <li><a href="#distributed">Going distributed</a></li>
+        <li><a href="#aspnet">In ASP.NET Core</a></li>
+        <li><a href="#redis-lua">Redis Lua, line by line</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- ───── 1. Problem ───── -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why <span class="ital">limit</span> at all.</h2>
+        <div class="prose">
+          <p>A rate limiter answers one question, asked once per request: <strong>has this client used more than its share?</strong> The answer must be cheap, correct under concurrency, and survive a process restart. That is harder than it sounds.</p>
+          <p>Three forces push for it. <strong>Cost</strong> — every unauthenticated request you serve costs CPU, bandwidth, and downstream calls you pay for. <strong>Fairness</strong> — one greedy tenant should not starve the others. <strong>Stability</strong> — when your DB starts to wobble, the limiter is the bulkhead that keeps the wobble from becoming a fall.</p>
+          <div class="pull">"A rate limiter is not a security feature. It is a fairness feature with security side-effects."</div>
+          <p>The keys you limit on matter at least as much as the algorithm. Limit on <code>IP</code> and you punish coffee shops; limit on <code>api_key</code> and you punish the customer; limit on <code>(api_key, endpoint, action)</code> and you can be surgical. Stripe famously runs <strong>four independent limiters</strong> per request: total request rate, concurrent request count, expensive-endpoint rate, and burst protection.</p>
+        </div>
+      </section>
+
+      <!-- ───── 2. Algorithms ───── -->
+      <section class="dd-section" id="algorithms">
+        <h2 class="section"><span class="num">02</span>Five <span class="ital">algorithms</span>.</h2>
+        <div class="prose">
+          <p>Every limiter is a bookkeeping problem: <em>how do you remember how many requests have passed?</em> The five canonical answers below trade memory, smoothness, and burst behaviour against each other.</p>
+        </div>
+
+        <!-- Diagram: 5 algorithms side by side -->
+        <div class="diagram">
+          <svg viewBox="0 0 1200 420" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <!-- baseline grid -->
+            <defs>
+              <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="#1a1814"/>
+              </marker>
+            </defs>
+
+            <!-- Title bar -->
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 01 · ALGORITHMS COMPARED · LIMIT = 5/SECOND</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- ── 1. Fixed window ── -->
+            <g transform="translate(20, 70)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="22" fill="#1a1814">Fixed window</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">CHEAP · BURSTY AT EDGES</text>
+              <!-- time axis -->
+              <line x1="0" y1="100" x2="220" y2="100" stroke="#1a1814" stroke-width="1.5"/>
+              <line x1="0" y1="40" x2="220" y2="40" stroke="#1a1814" stroke-dasharray="3 3"/>
+              <!-- window separators -->
+              <line x1="73"  y1="32" x2="73"  y2="108" stroke="#c2410c" stroke-dasharray="3 3"/>
+              <line x1="147" y1="32" x2="147" y2="108" stroke="#c2410c" stroke-dasharray="3 3"/>
+              <!-- bars window 1 (5 reqs - ok) -->
+              <rect x="6"  y="76" width="10" height="24" fill="#1a1814"/>
+              <rect x="20" y="68" width="10" height="32" fill="#1a1814"/>
+              <rect x="34" y="60" width="10" height="40" fill="#1a1814"/>
+              <rect x="48" y="68" width="10" height="32" fill="#1a1814"/>
+              <rect x="62" y="76" width="10" height="24" fill="#1a1814"/>
+              <!-- bars window 2 (burst 5 at start, 5 at end of window 1 = 10 in 0.5s) -->
+              <rect x="80"  y="52" width="10" height="48" fill="#c2410c"/>
+              <rect x="94"  y="52" width="10" height="48" fill="#c2410c"/>
+              <rect x="108" y="60" width="10" height="40" fill="#c2410c"/>
+              <rect x="122" y="68" width="10" height="32" fill="#1a1814"/>
+              <rect x="136" y="76" width="10" height="24" fill="#1a1814"/>
+              <text x="40"  y="120" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#8a8478">window 1</text>
+              <text x="110" y="120" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#c2410c">10 in 1s ⚠</text>
+              <text x="183" y="120" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#8a8478">window 3</text>
+            </g>
+
+            <!-- ── 2. Sliding window log ── -->
+            <g transform="translate(260, 70)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="22" fill="#1a1814">Sliding log</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">EXACT · O(N) MEMORY</text>
+              <line x1="0" y1="100" x2="220" y2="100" stroke="#1a1814" stroke-width="1.5"/>
+              <line x1="0" y1="40" x2="220" y2="40" stroke="#1a1814" stroke-dasharray="3 3"/>
+              <!-- sliding window -->
+              <rect x="60" y="32" width="100" height="76" fill="none" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="4 3"/>
+              <text x="110" y="28" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#c2410c">moving 1s window</text>
+              <!-- timestamps as dots -->
+              <circle cx="8"   cy="100" r="3" fill="#8a8478"/>
+              <circle cx="22"  cy="100" r="3" fill="#8a8478"/>
+              <circle cx="48"  cy="100" r="3" fill="#8a8478"/>
+              <circle cx="64"  cy="100" r="3" fill="#1a1814"/>
+              <circle cx="82"  cy="100" r="3" fill="#1a1814"/>
+              <circle cx="100" cy="100" r="3" fill="#1a1814"/>
+              <circle cx="120" cy="100" r="3" fill="#1a1814"/>
+              <circle cx="146" cy="100" r="3" fill="#1a1814"/>
+              <circle cx="170" cy="100" r="4" fill="#c2410c"/>
+              <text x="170" y="92" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#c2410c">denied</text>
+              <text x="110" y="125" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#8a8478">all timestamps stored</text>
+            </g>
+
+            <!-- ── 3. Sliding window counter ── -->
+            <g transform="translate(500, 70)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="22" fill="#1a1814">Sliding counter</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">APPROX · O(1) MEMORY</text>
+              <line x1="0" y1="100" x2="220" y2="100" stroke="#1a1814" stroke-width="1.5"/>
+              <!-- two counters w + prev w -->
+              <rect x="10" y="60" width="90" height="40" fill="#1a1814"/>
+              <text x="55" y="84" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">prev: 8</text>
+              <rect x="110" y="60" width="90" height="40" fill="#c2410c"/>
+              <text x="155" y="84" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">curr: 3</text>
+              <text x="110" y="125" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#8a8478">est = prev × overlap% + curr</text>
+            </g>
+
+            <!-- ── 4. Token bucket ── -->
+            <g transform="translate(740, 70)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="22" fill="#1a1814">Token bucket</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">ALLOWS BURSTS · POPULAR</text>
+              <!-- the bucket -->
+              <path d="M30 35 L30 105 Q30 115 40 115 L100 115 Q110 115 110 105 L110 35"
+                    fill="none" stroke="#1a1814" stroke-width="2"/>
+              <!-- tokens inside -->
+              <circle cx="50" cy="100" r="6" fill="#c2410c"/>
+              <circle cx="70" cy="100" r="6" fill="#c2410c"/>
+              <circle cx="90" cy="100" r="6" fill="#c2410c"/>
+              <circle cx="50" cy="85"  r="6" fill="#c2410c"/>
+              <circle cx="70" cy="85"  r="6" fill="#c2410c"/>
+              <circle cx="90" cy="85"  r="6" fill="#1a1814"/>
+              <!-- refill arrow -->
+              <line x1="70" y1="18" x2="70" y2="32" stroke="#1a1814" stroke-width="2" marker-end="url(#arr)"/>
+              <text x="120" y="28" font-family="JetBrains Mono" font-size="9" fill="#8a8478">+1 / 200ms</text>
+              <!-- consume arrow -->
+              <line x1="120" y1="90" x2="160" y2="90" stroke="#c2410c" stroke-width="2" marker-end="url(#arr)"/>
+              <text x="140" y="83" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#c2410c">req</text>
+              <text x="180" y="93" font-family="Instrument Serif" font-size="16" fill="#1a1814">→ go</text>
+            </g>
+
+            <!-- ── 5. Leaky bucket ── -->
+            <g transform="translate(980, 70)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="22" fill="#1a1814">Leaky bucket</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">SMOOTH · FIFO QUEUE</text>
+              <!-- input -->
+              <text x="0" y="50" font-family="JetBrains Mono" font-size="9" fill="#8a8478">in (bursty)</text>
+              <line x1="55" y1="48" x2="80" y2="48" stroke="#1a1814" stroke-width="1.5" marker-end="url(#arr)"/>
+              <!-- the bucket -->
+              <path d="M85 35 L85 95 Q85 105 95 105 L155 105 Q165 105 165 95 L165 35"
+                    fill="none" stroke="#1a1814" stroke-width="2"/>
+              <rect x="91" y="48" width="68" height="10" fill="#c2410c"/>
+              <rect x="91" y="62" width="68" height="10" fill="#c2410c"/>
+              <rect x="91" y="76" width="68" height="10" fill="#c2410c"/>
+              <rect x="91" y="90" width="68" height="10" fill="#c2410c"/>
+              <!-- output drip -->
+              <circle cx="125" cy="118" r="3" fill="#c2410c"/>
+              <text x="170" y="125" font-family="JetBrains Mono" font-size="9" fill="#8a8478">out (steady)</text>
+            </g>
+
+            <!-- ── verdict row ── -->
+            <line x1="20" y1="220" x2="1180" y2="220" stroke="#1a1814" stroke-width="1"/>
+
+            <g font-family="JetBrains Mono" font-size="11" fill="#1a1814">
+              <text x="20" y="245" letter-spacing="0.14em" fill="#c2410c">FIG. 01 (cont.) · TRADEOFFS</text>
+            </g>
+
+            <g transform="translate(20, 270)">
+              <text x="0" y="0" font-family="JetBrains Mono" font-size="10" letter-spacing="0.1em" fill="#8a8478">MEMORY</text>
+              <rect x="0"   y="10" width="20" height="14" fill="#c2410c"/>     <text x="80"  y="22" font-family="JetBrains Mono" font-size="10" fill="#1a1814">O(1)</text>
+              <rect x="240" y="10" width="20" height="14" fill="#1a1814"/>     <text x="320" y="22" font-family="JetBrains Mono" font-size="10" fill="#1a1814">O(N) per key</text>
+              <rect x="480" y="10" width="20" height="14" fill="#c2410c"/>     <text x="560" y="22" font-family="JetBrains Mono" font-size="10" fill="#1a1814">O(1)</text>
+              <rect x="720" y="10" width="20" height="14" fill="#c2410c"/>     <text x="800" y="22" font-family="JetBrains Mono" font-size="10" fill="#1a1814">O(1)</text>
+              <rect x="960" y="10" width="20" height="14" fill="#1a1814"/>     <text x="1040" y="22" font-family="JetBrains Mono" font-size="10" fill="#1a1814">O(size)</text>
+
+              <text x="0" y="48" font-family="JetBrains Mono" font-size="10" letter-spacing="0.1em" fill="#8a8478">PRECISION</text>
+              <text x="80"  y="48" font-family="Instrument Serif" font-size="14" fill="#1a1814">loose</text>
+              <text x="320" y="48" font-family="Instrument Serif" font-size="14" fill="#1a1814">exact</text>
+              <text x="560" y="48" font-family="Instrument Serif" font-size="14" fill="#1a1814">near-exact</text>
+              <text x="800" y="48" font-family="Instrument Serif" font-size="14" fill="#1a1814">near-exact</text>
+              <text x="1040" y="48" font-family="Instrument Serif" font-size="14" fill="#1a1814">exact</text>
+
+              <text x="0" y="78" font-family="JetBrains Mono" font-size="10" letter-spacing="0.1em" fill="#8a8478">BURSTS</text>
+              <text x="80"  y="78" font-family="Instrument Serif" font-size="14" fill="#c2410c" font-style="italic">2× at edge</text>
+              <text x="320" y="78" font-family="Instrument Serif" font-size="14" fill="#1a1814">blocked</text>
+              <text x="560" y="78" font-family="Instrument Serif" font-size="14" fill="#1a1814">smoothed</text>
+              <text x="800" y="78" font-family="Instrument Serif" font-size="14" fill="#1a1814">allowed up to bucket</text>
+              <text x="1040" y="78" font-family="Instrument Serif" font-size="14" fill="#1a1814">absorbed</text>
+
+              <text x="0" y="108" font-family="JetBrains Mono" font-size="10" letter-spacing="0.1em" fill="#8a8478">USE FOR</text>
+              <text x="80"  y="108" font-family="Instrument Serif" font-size="14" fill="#1a1814">internal · ok</text>
+              <text x="320" y="108" font-family="Instrument Serif" font-size="14" fill="#1a1814">billing · audit</text>
+              <text x="560" y="108" font-family="Instrument Serif" font-size="14" fill="#1a1814">public APIs ★</text>
+              <text x="800" y="108" font-family="Instrument Serif" font-size="14" fill="#1a1814">public APIs ★</text>
+              <text x="1040" y="108" font-family="Instrument Serif" font-size="14" fill="#1a1814">message queues</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 01</span><span>Five algorithms · limit = 5 req/s · burst &amp; memory profile</span></div>
+        </div>
+
+        <div class="prose">
+          <p>The right pick is rarely the most accurate one. For a public API, <strong>sliding-window counter</strong> and <strong>token bucket</strong> win — they're O(1) per key, allow modest bursts that match how real clients actually call you, and play well with horizontal scaling. AWS API Gateway, Stripe, GitHub, and Cloudflare all ship variants of these two.</p>
+          <ul>
+            <li><strong>Fixed window</strong> — one counter per (key, window). Cheap, but at the boundary a client can fire 2× the limit by hitting the last 500 ms of window <em>N</em> and the first 500 ms of window <em>N+1</em>.</li>
+            <li><strong>Sliding log</strong> — store every request timestamp in a sorted set. Exact, but memory scales with traffic. Use for billing-grade accuracy.</li>
+            <li><strong>Sliding counter</strong> — store two integers (current window + previous), weight by overlap. <em>The sweet spot.</em></li>
+            <li><strong>Token bucket</strong> — refill at rate <em>r</em>, capacity <em>b</em>. Allows bursts up to <em>b</em>, then enforces <em>r</em>. The textbook public-API limiter.</li>
+            <li><strong>Leaky bucket</strong> — FIFO queue draining at rate <em>r</em>. Smooths traffic. Use upstream of brittle services that can't tolerate spikes.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ───── 3. Distributed ───── -->
+      <section class="dd-section" id="distributed">
+        <h2 class="section"><span class="num">03</span>Going <span class="ital">distributed</span>.</h2>
+        <div class="prose">
+          <p>A single in-process limiter is trivial: one <code>ConcurrentDictionary&lt;string, Counter&gt;</code> and you're done. The moment you have <strong>two replicas</strong>, you have a problem.</p>
+          <p>If each replica enforces 100 req/s, ten replicas allow 1,000 req/s — ten times the contract. So state must move out of the process. You have three options:</p>
+        </div>
+
+        <div class="compare-3">
+          <div class="col">
+            <div class="meta">Option A</div>
+            <h4>Sticky routing</h4>
+            <ul>
+              <li>Hash the API key to a specific pod</li>
+              <li>That pod owns the counter, in-memory</li>
+              <li>Zero shared state, lowest latency</li>
+              <li><strong>But:</strong> deploys = counter loss, hot keys = hot pods, K8s rolls hurt</li>
+            </ul>
+          </div>
+          <div class="col">
+            <div class="meta">Option B · ★</div>
+            <h4>Central store (Redis)</h4>
+            <ul>
+              <li>One Redis cluster sees every increment</li>
+              <li>Lua script makes check-and-increment atomic</li>
+              <li>~0.5 ms p99 for limit decision</li>
+              <li><strong>Trade:</strong> +1 hop per request, Redis is now critical-path</li>
+            </ul>
+          </div>
+          <div class="col">
+            <div class="meta">Option C</div>
+            <h4>Local quota + gossip</h4>
+            <ul>
+              <li>Each pod gets a slice of the global budget</li>
+              <li>Pods exchange usage via gossip every N ms</li>
+              <li>No critical-path Redis</li>
+              <li><strong>But:</strong> drift between pods, hard to reason about, niche</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="prose">
+          <p>Option B wins for 95% of teams. Redis is mature, the round-trip is fast, and your ops team probably already runs it for caching. The remaining 5% are operating at a scale where Redis itself becomes the bottleneck — at which point you typically <em>also</em> shard the limiter by key prefix and run a second tier of approximate limiting at the edge (Cloudflare, Envoy, NGINX).</p>
+          <div class="callout">
+            <div class="ctag">Production note</div>
+            <p><strong>Fail open, not closed.</strong> If Redis returns an error or times out, allow the request and emit a metric. A broken limiter that refuses every request looks identical to a global outage. Stripe's playbook is explicit on this — the limiter is a guardrail, not a gate.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───── 4. In ASP.NET Core ───── -->
+      <section class="dd-section" id="aspnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">ASP.NET Core</span>.</h2>
+        <div class="prose">
+          <p>Two paths. Pick the one that matches your scale and your team's appetite for owning Redis.</p>
+        </div>
+
+        <div class="tabs">
+          <button class="tab active">A · Built-in (single node)</button>
+          <button class="tab">B · Redis + Lua (distributed)</button>
+        </div>
+
+        <div class="tab-panel active">
+          <div class="prose">
+            <p>ASP.NET Core 7 shipped <code>Microsoft.AspNetCore.RateLimiting</code>. It's solid for single-instance services, internal admin tools, and dev environments. <strong>It does not coordinate across replicas.</strong></p>
+          </div>
+          <div class="code">
+            <div class="head">
+              <span><span class="lang">C#</span> &nbsp; <span class="file">Program.cs</span></span>
+              <div class="dots"><span></span><span></span><span></span></div>
+            </div>
+<pre><span class="c">// Built-in: Microsoft.AspNetCore.RateLimiting (single-node only)</span>
+<span class="k">using</span> <span class="t">System.Threading.RateLimiting</span>;
+
+<span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+builder.<span class="t">Services</span>.<span class="fn">AddRateLimiter</span>(o =&gt;
+{
+    o.<span class="t">RejectionStatusCode</span> = <span class="t">StatusCodes</span>.<span class="t">Status429TooManyRequests</span>;
+
+    <span class="c">// Free tier — token bucket, 60 req/min, burst 20</span>
+    o.<span class="fn">AddTokenBucketLimiter</span>(<span class="s">"free"</span>, opt =&gt;
+    {
+        opt.<span class="t">TokenLimit</span>          = <span class="n">20</span>;        <span class="c">// bucket capacity</span>
+        opt.<span class="t">TokensPerPeriod</span>     = <span class="n">60</span>;        <span class="c">// refill</span>
+        opt.<span class="t">ReplenishmentPeriod</span> = <span class="t">TimeSpan</span>.<span class="fn">FromMinutes</span>(<span class="n">1</span>);
+        opt.<span class="t">QueueLimit</span>          = <span class="n">0</span>;         <span class="c">// reject instead of queue</span>
+        opt.<span class="t">AutoReplenishment</span>   = <span class="k">true</span>;
+    });
+
+    <span class="c">// Pro tier — sliding window, 600 req/min</span>
+    o.<span class="fn">AddSlidingWindowLimiter</span>(<span class="s">"pro"</span>, opt =&gt;
+    {
+        opt.<span class="t">PermitLimit</span>        = <span class="n">600</span>;
+        opt.<span class="t">Window</span>             = <span class="t">TimeSpan</span>.<span class="fn">FromMinutes</span>(<span class="n">1</span>);
+        opt.<span class="t">SegmentsPerWindow</span>  = <span class="n">6</span>;          <span class="c">// 10-sec sub-windows</span>
+    });
+
+    <span class="c">// Partition each tier by API key from header</span>
+    o.<span class="t">GlobalLimiter</span> = <span class="t">PartitionedRateLimiter</span>.<span class="fn">Create</span>&lt;<span class="t">HttpContext</span>, <span class="t">string</span>&gt;(ctx =&gt;
+    {
+        <span class="k">var</span> apiKey = ctx.<span class="t">Request</span>.<span class="t">Headers</span>[<span class="s">"X-Api-Key"</span>].<span class="fn">ToString</span>();
+        <span class="k">var</span> tier   = ctx.<span class="t">User</span>.<span class="fn">FindFirst</span>(<span class="s">"tier"</span>)?.<span class="t">Value</span> ?? <span class="s">"free"</span>;
+        <span class="k">return</span> <span class="t">RateLimitPartition</span>.<span class="fn">GetSlidingWindowLimiter</span>(
+            partitionKey: $<span class="s">"{tier}:{apiKey}"</span>,
+            factory: _ =&gt; <span class="k">new</span> <span class="t">SlidingWindowRateLimiterOptions</span>
+            {
+                <span class="t">PermitLimit</span>       = tier == <span class="s">"pro"</span> ? <span class="n">600</span> : <span class="n">60</span>,
+                <span class="t">Window</span>            = <span class="t">TimeSpan</span>.<span class="fn">FromMinutes</span>(<span class="n">1</span>),
+                <span class="t">SegmentsPerWindow</span> = <span class="n">6</span>,
+            });
+    });
+
+    o.<span class="t">OnRejected</span> = <span class="k">async</span> (ctx, ct) =&gt;
+    {
+        ctx.<span class="t">HttpContext</span>.<span class="t">Response</span>.<span class="t">Headers</span>[<span class="s">"Retry-After"</span>] = <span class="s">"60"</span>;
+        <span class="k">await</span> ctx.<span class="t">HttpContext</span>.<span class="t">Response</span>.<span class="fn">WriteAsJsonAsync</span>(
+            <span class="k">new</span> { error = <span class="s">"rate_limited"</span>, retry_after_s = <span class="n">60</span> }, ct);
+    };
+});
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+app.<span class="fn">UseRateLimiter</span>();
+app.<span class="fn">MapGet</span>(<span class="s">"/v1/charges"</span>, () =&gt; <span class="t">Results</span>.<span class="fn">Ok</span>(<span class="k">new</span> { ok = <span class="k">true</span> }))
+   .<span class="fn">RequireRateLimiting</span>(<span class="s">"pro"</span>);
+app.<span class="fn">Run</span>();</pre>
+          </div>
+          <div class="prose">
+            <p><strong>When this is enough:</strong> single-pod service, dev environment, internal tool. <strong>When it isn't:</strong> any service running &gt;1 replica behind a load balancer. Three replicas = 3× the contracted limit.</p>
+          </div>
+        </div>
+
+        <div class="tab-panel">
+          <div class="prose">
+            <p>For multi-replica production, push state to Redis. The script below is a complete sliding-window counter with token-bucket refill semantics — drop-in, ASP.NET Core middleware, emits the four headers good clients expect, fails open.</p>
+          </div>
+          <div class="code">
+            <div class="head">
+              <span><span class="lang">C#</span> &nbsp; <span class="file">RedisRateLimiter.cs</span></span>
+              <div class="dots"><span></span><span></span><span></span></div>
+            </div>
+<pre><span class="c">// dotnet add package StackExchange.Redis</span>
+<span class="k">using</span> <span class="t">StackExchange.Redis</span>;
+<span class="k">using</span> <span class="t">Microsoft.Extensions.Logging</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.RateLimiting</span>;
+
+<span class="k">public sealed record</span> <span class="t">RateLimitDecision</span>(
+    <span class="k">bool</span> <span class="t">Allowed</span>,
+    <span class="k">long</span> <span class="t">Limit</span>,
+    <span class="k">long</span> <span class="t">Remaining</span>,
+    <span class="t">TimeSpan</span> <span class="t">RetryAfter</span>);
+
+<span class="k">public sealed class</span> <span class="t">RedisRateLimiter</span>(
+    <span class="t">IConnectionMultiplexer</span> redis,
+    <span class="t">ILogger</span>&lt;<span class="t">RedisRateLimiter</span>&gt; log)
+{
+    <span class="c">// Sliding window counter with token-bucket-like refill.
+    // KEYS[1] : per-tenant bucket key
+    // ARGV    : limit | window_ms | now_ms | cost
+    // Returns : { allowed, remaining, retry_after_ms }</span>
+    <span class="k">private const string</span> <span class="t">Script</span> = <span class="s">@"
+        local key      = KEYS[1]
+        local limit    = tonumber(ARGV[1])
+        local window   = tonumber(ARGV[2])
+        local now      = tonumber(ARGV[3])
+        local cost     = tonumber(ARGV[4])
+        local cutoff   = now - window
+
+        redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff)
+        local count = redis.call('ZCARD', key)
+        if count + cost &gt; limit then
+            local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+            local retry  = window - (now - tonumber(oldest[2] or now))
+            return { 0, limit - count, retry }
+        end
+        for i = 1, cost do
+            redis.call('ZADD', key, now, now .. ':' .. i)
+        end
+        redis.call('PEXPIRE', key, window)
+        return { 1, limit - count - cost, 0 }
+    "</span>;
+
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">RateLimitDecision</span>&gt; <span class="fn">CheckAsync</span>(
+        <span class="k">string</span> key, <span class="k">long</span> limit, <span class="t">TimeSpan</span> window, <span class="k">int</span> cost = <span class="n">1</span>)
+    {
+        <span class="k">try</span>
+        {
+            <span class="k">var</span> db = redis.<span class="fn">GetDatabase</span>();
+            <span class="k">var</span> now = <span class="t">DateTimeOffset</span>.<span class="t">UtcNow</span>.<span class="t">ToUnixTimeMilliseconds</span>();
+            <span class="k">var</span> result = (<span class="t">RedisValue</span>[]?)<span class="k">await</span> db.<span class="fn">ScriptEvaluateAsync</span>(
+                <span class="t">Script</span>,
+                <span class="k">new</span> <span class="t">RedisKey</span>[] { $<span class="s">"rl:{key}"</span> },
+                <span class="k">new</span> <span class="t">RedisValue</span>[] { limit, (<span class="k">long</span>)window.<span class="t">TotalMilliseconds</span>, now, cost });
+
+            <span class="k">if</span> (result <span class="k">is null</span> || result.<span class="t">Length</span> &lt; <span class="n">3</span>)
+                <span class="k">return new</span> <span class="t">RateLimitDecision</span>(<span class="k">true</span>, limit, limit, <span class="t">TimeSpan</span>.<span class="t">Zero</span>);
+
+            <span class="k">var</span> allowed   = (<span class="k">long</span>)result[<span class="n">0</span>] == <span class="n">1</span>;
+            <span class="k">var</span> remaining = <span class="t">Math</span>.<span class="fn">Max</span>(<span class="n">0</span>, (<span class="k">long</span>)result[<span class="n">1</span>]);
+            <span class="k">var</span> retryMs   = (<span class="k">long</span>)result[<span class="n">2</span>];
+
+            <span class="k">return new</span> <span class="t">RateLimitDecision</span>(
+                allowed, limit, remaining, <span class="t">TimeSpan</span>.<span class="fn">FromMilliseconds</span>(retryMs));
+        }
+        <span class="k">catch</span> (<span class="t">RedisException</span> ex)
+        {
+            <span class="c">// FAIL OPEN — never let a broken limiter break the API.</span>
+            log.<span class="fn">LogWarning</span>(ex, <span class="s">"rate limiter unavailable; allowing {key}"</span>, key);
+            <span class="k">return new</span> <span class="t">RateLimitDecision</span>(<span class="k">true</span>, limit, limit, <span class="t">TimeSpan</span>.<span class="t">Zero</span>);
+        }
+    }
+}</pre>
+          </div>
+
+          <div class="code">
+            <div class="head">
+              <span><span class="lang">C#</span> &nbsp; <span class="file">RateLimitMiddleware.cs</span></span>
+              <div class="dots"><span></span><span></span><span></span></div>
+            </div>
+<pre><span class="k">public sealed class</span> <span class="t">RateLimitMiddleware</span>(
+    <span class="t">RequestDelegate</span> next,
+    <span class="t">RedisRateLimiter</span> limiter,
+    <span class="t">IOptionsMonitor</span>&lt;<span class="t">RateLimitOptions</span>&gt; opts)
+{
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">InvokeAsync</span>(<span class="t">HttpContext</span> ctx)
+    {
+        <span class="c">// Build a key per (tenant, endpoint, tier). Don't limit by IP alone.</span>
+        <span class="k">var</span> apiKey = ctx.<span class="t">Request</span>.<span class="t">Headers</span>[<span class="s">"X-Api-Key"</span>].<span class="fn">ToString</span>();
+        <span class="k">if</span> (<span class="k">string</span>.<span class="fn">IsNullOrEmpty</span>(apiKey)) { <span class="k">await</span> next(ctx); <span class="k">return</span>; }
+
+        <span class="k">var</span> policy = opts.<span class="t">CurrentValue</span>.<span class="fn">PolicyFor</span>(ctx.<span class="t">Request</span>.<span class="t">Path</span>, apiKey);
+        <span class="k">var</span> key    = $<span class="s">"{policy.Name}:{apiKey}"</span>;
+
+        <span class="k">var</span> r = <span class="k">await</span> limiter.<span class="fn">CheckAsync</span>(key, policy.<span class="t">Limit</span>, policy.<span class="t">Window</span>);
+
+        ctx.<span class="t">Response</span>.<span class="t">Headers</span>[<span class="s">"X-RateLimit-Limit"</span>]     = r.<span class="t">Limit</span>.<span class="fn">ToString</span>();
+        ctx.<span class="t">Response</span>.<span class="t">Headers</span>[<span class="s">"X-RateLimit-Remaining"</span>] = r.<span class="t">Remaining</span>.<span class="fn">ToString</span>();
+        ctx.<span class="t">Response</span>.<span class="t">Headers</span>[<span class="s">"X-RateLimit-Reset"</span>]     =
+            <span class="t">DateTimeOffset</span>.<span class="t">UtcNow</span>.<span class="fn">Add</span>(r.<span class="t">RetryAfter</span>).<span class="t">ToUnixTimeSeconds</span>().<span class="fn">ToString</span>();
+
+        <span class="k">if</span> (!r.<span class="t">Allowed</span>)
+        {
+            ctx.<span class="t">Response</span>.<span class="t">StatusCode</span> = <span class="t">StatusCodes</span>.<span class="t">Status429TooManyRequests</span>;
+            ctx.<span class="t">Response</span>.<span class="t">Headers</span>[<span class="s">"Retry-After"</span>] =
+                ((<span class="k">int</span>)<span class="t">Math</span>.<span class="fn">Ceiling</span>(r.<span class="t">RetryAfter</span>.<span class="t">TotalSeconds</span>)).<span class="fn">ToString</span>();
+            <span class="k">await</span> ctx.<span class="t">Response</span>.<span class="fn">WriteAsJsonAsync</span>(<span class="k">new</span> {
+                error = <span class="s">"rate_limited"</span>,
+                limit = r.<span class="t">Limit</span>,
+                retry_after_seconds = (<span class="k">int</span>)<span class="t">Math</span>.<span class="fn">Ceiling</span>(r.<span class="t">RetryAfter</span>.<span class="t">TotalSeconds</span>)
+            });
+            <span class="k">return</span>;
+        }
+        <span class="k">await</span> next(ctx);
+    }
+}
+
+<span class="c">// Wire up in Program.cs:
+//   builder.Services.AddSingleton&lt;IConnectionMultiplexer&gt;(_ =&gt;
+//       ConnectionMultiplexer.Connect(cfg["Redis"]));
+//   builder.Services.AddSingleton&lt;RedisRateLimiter&gt;();
+//   app.UseMiddleware&lt;RateLimitMiddleware&gt;();</span></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───── 5. Redis Lua, line by line ───── -->
+      <section class="dd-section" id="redis-lua">
+        <h2 class="section"><span class="num">05</span>Redis Lua, <span class="ital">line by line</span>.</h2>
+        <div class="prose">
+          <p>The Lua script above is doing three things atomically — and atomicity is the entire point. Without it, two replicas would read the same count, both pass the check, both increment, and both let the request through. With it, Redis executes the script as a single command; nothing else runs on that key until the script returns.</p>
+          <ol style="counter-reset: line; padding-left: 0; list-style: none; font-family: 'IBM Plex Sans', sans-serif; max-width: 70ch;">
+            <li style="counter-increment: line; padding-left: 56px; position: relative; margin-bottom: 14px; line-height: 1.6; color: var(--ink-soft); font-size: 16px;"><span style="position:absolute; left:0; top:0; font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--accent); width:48px; text-align:right;">ZREMRANGE<br/>BYSCORE</span><strong>Sweep the window.</strong> Remove every entry older than <code>now - window_ms</code>. The sorted set now contains only requests inside the active window.</li>
+            <li style="counter-increment: line; padding-left: 56px; position: relative; margin-bottom: 14px; line-height: 1.6; color: var(--ink-soft); font-size: 16px;"><span style="position:absolute; left:0; top:0; font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--accent); width:48px; text-align:right;">ZCARD</span><strong>Count.</strong> O(1) read of how many requests survived the sweep. This is your current usage.</li>
+            <li style="counter-increment: line; padding-left: 56px; position: relative; margin-bottom: 14px; line-height: 1.6; color: var(--ink-soft); font-size: 16px;"><span style="position:absolute; left:0; top:0; font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--accent); width:48px; text-align:right;">if &gt; limit</span><strong>Decide.</strong> If adding <code>cost</code> would breach the limit, peek at the oldest timestamp to compute when the client should retry, return <code>{0, remaining, retry_ms}</code> and don't increment.</li>
+            <li style="counter-increment: line; padding-left: 56px; position: relative; margin-bottom: 14px; line-height: 1.6; color: var(--ink-soft); font-size: 16px;"><span style="position:absolute; left:0; top:0; font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--accent); width:48px; text-align:right;">ZADD ×cost</span><strong>Commit.</strong> Otherwise add <code>cost</code> timestamps (so an expensive endpoint can consume multiple) and bump the TTL.</li>
+            <li style="counter-increment: line; padding-left: 56px; position: relative; margin-bottom: 14px; line-height: 1.6; color: var(--ink-soft); font-size: 16px;"><span style="position:absolute; left:0; top:0; font-family:'JetBrains Mono', monospace; font-size:11px; color:var(--accent); width:48px; text-align:right;">PEXPIRE</span><strong>Reap.</strong> Set the key TTL to the window. Idle keys vanish — memory stays bounded.</li>
+          </ol>
+          <div class="callout">
+            <div class="ctag">Why not INCR + TTL?</div>
+            <p>The classic <code>INCR + EXPIRE</code> pair gives you fixed-window semantics — and the 2× burst at the boundary. The sorted-set approach costs roughly 3× the bytes per key but gives you proper sliding-window precision for free. At p99 it adds ~0.3 ms. Worth it.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───── 6. Tradeoff matrix ───── -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <div class="prose">
+          <p>Where to enforce the limit matters as much as how. The same algorithm has very different cost and latency depending on whether it runs at the CDN, the gateway, or in your service. Here's how six common choices stack up.</p>
+        </div>
+
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th style="width:16%;">Technology</th>
+              <th>Where</th>
+              <th>Algorithms</th>
+              <th>p99 added</th>
+              <th>Cost / mo (mid-scale)</th>
+              <th>Operational complexity</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>ASP.NET 7 built-in<span class="sub">in-proc</span></th>
+              <td>Inside each app pod</td>
+              <td>Fixed, sliding, token, concurrency</td>
+              <td><strong>~0 ms</strong></td>
+              <td>$0 (already in your binary)</td>
+              <td>Trivial · zero ops</td>
+              <td><span class="verdict good">Use for ≤1 pod</span></td>
+            </tr>
+            <tr>
+              <th>Redis + Lua<span class="sub">central</span></th>
+              <td>Network hop, then app</td>
+              <td>Any algorithm; the recommended pattern</td>
+              <td>0.3 – 0.8 ms</td>
+              <td><strong>$70</strong> Azure Cache Basic C1 ↑</td>
+              <td>Mid · keep an eye on hot keys</td>
+              <td><span class="verdict good">Default pick</span></td>
+            </tr>
+            <tr>
+              <th>NGINX <code>limit_req</code><span class="sub">L7 proxy</span></th>
+              <td>At the edge, before TLS terminus</td>
+              <td>Leaky bucket only</td>
+              <td>~0.1 ms</td>
+              <td>$0 (sidecar / DaemonSet)</td>
+              <td>Mid · per-IP only; no per-tenant</td>
+              <td><span class="verdict warn">DDoS shield, not API limiter</span></td>
+            </tr>
+            <tr>
+              <th>Azure API Management<span class="sub">managed</span></th>
+              <td>Managed gateway tier</td>
+              <td>Token bucket + quotas (renew per period)</td>
+              <td>5 – 15 ms</td>
+              <td><strong>$700+</strong> Standard tier ↑</td>
+              <td>Low · UI-managed policies</td>
+              <td><span class="verdict warn">Pick if you already have APIM</span></td>
+            </tr>
+            <tr>
+              <th>Cloudflare WAF rules<span class="sub">CDN edge</span></th>
+              <td>Outside your DC entirely</td>
+              <td>Sliding window + rules engine</td>
+              <td>~0 ms (already at edge)</td>
+              <td>$5 Pro · $20 Business · $200+ Ent</td>
+              <td>Low · vendor-managed</td>
+              <td><span class="verdict good">DDoS + bot shield</span></td>
+            </tr>
+            <tr>
+              <th>Polly <code>RateLimit</code><span class="sub">client-side</span></th>
+              <td>Inside the calling client</td>
+              <td>Token bucket</td>
+              <td>~0 ms</td>
+              <td>$0</td>
+              <td>Trivial</td>
+              <td><span class="verdict warn">Be kind, not safe</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="prose">
+          <p>The honest production stack is <strong>layered</strong>, not one of the rows above:</p>
+          <ul>
+            <li><strong>Cloudflare</strong> for crude per-IP and known-bot rules — drop the obvious garbage before it reaches your origin.</li>
+            <li><strong>Redis + Lua</strong> inside your services for the per-tenant, per-endpoint contract enforcement that actually maps to your pricing tiers.</li>
+            <li><strong>Polly</strong> in your outbound clients so you're a good citizen to <em>your</em> dependencies.</li>
+          </ul>
+          <p>NGINX is a defence against unauthenticated abuse, not a replacement for application-level limits. APIM makes sense only when you already need its other features (subscription keys, developer portal, OAuth flows) — paying its price tag just for rate limiting is a poor trade.</p>
+        </div>
+      </section>
+
+      <!-- ───── 7. Decision guide ───── -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Single replica, internal tool</h5>
+            <p>Use the built-in <code>AddSlidingWindowLimiter</code>. Don't add a Redis just for this. Revisit when you scale out.</p>
+          </div>
+          <div class="cell">
+            <h5>Public B2B API, &gt;1 replica</h5>
+            <p>Redis + Lua sliding window. Partition by <code>(tenant, endpoint, action)</code>. Emit standard <code>X-RateLimit-*</code> headers.</p>
+          </div>
+          <div class="cell">
+            <h5>Pricing has tiers</h5>
+            <p>Limit policy comes from claims, not config. Free / Pro / Enterprise each get a different (limit, window) at runtime from the JWT.</p>
+          </div>
+          <div class="cell">
+            <h5>Expensive endpoint (search, reports)</h5>
+            <p>Charge multiple tokens per call via the <code>cost</code> param. A heavy search might cost 10; a status check, 1.</p>
+          </div>
+          <div class="cell">
+            <h5>Burst tolerance matters</h5>
+            <p>Token bucket. Sets capacity (allowed burst) independently from refill rate (sustained throughput).</p>
+          </div>
+          <div class="cell">
+            <h5>Smoothness matters (queue feeder)</h5>
+            <p>Leaky bucket on the producer. Downstream sees a steady drip even if upstream is bursty.</p>
+          </div>
+        </div>
+
+        <div class="pull">"Fail open. A broken limiter that refuses every request is indistinguishable from a global outage — and a lot harder to roll back."</div>
+
+        <div class="callout">
+          <div class="ctag">Three things people get wrong</div>
+          <p><strong>① Limiting by IP.</strong> NAT exists. Mobile carriers exist. Your customers' offices exist. Limit by <code>api_key</code> or <code>user_id</code>; use IP only as a coarse anti-abuse signal.</p>
+          <p><strong>② No headers.</strong> Without <code>X-RateLimit-*</code> headers, well-behaved clients can't back off gracefully. They'll just retry and you'll just keep 429'ing them.</p>
+          <p><strong>③ Same limit for every endpoint.</strong> A status check costs 1 ms; a CSV export costs 5 s. Charging them the same token is throwing away most of your headroom.</p>
+        </div>
+      </section>
+
+      <!-- ── next chapter ── -->
+      <div class="next-up">
+        <a class="next-back" href="../system-design.html">
+          <div class="label">Back</div>
+          <div class="ttl">All chapters &amp; index</div>
+        </a>
+        <a class="next-fwd" href="caching-patterns.html">
+          <div class="label">Chapter 02</div>
+          <div class="ttl">Caching patterns →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 01 of 06 · Rate Limiting · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

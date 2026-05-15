@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Cloudflare — 55M RPS, 15 Postgres clusters · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#cases">Case Studies</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Cloudflare</span>
+    </div>
+    <nav>
+      <a href="case-netflix-chaos.html">← Prev case</a>
+      <a href="case-hotstar-concurrent.html">Next case →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Year <b>2023</b></span>
+        <span>Scale <b>55M RPS</b></span>
+        <span>Stack <b>Postgres · pgbouncer · partitioning · NVMe</b></span>
+      </div>
+      <h1>55 million requests per second. <span class="ital">Fifteen</span> Postgres clusters.</h1>
+      <p class="lede">Cloudflare runs its core configuration store on a small number of large Postgres clusters. Not Spanner. Not Cassandra. Postgres — operated extremely well. The story is what "extremely well" actually means.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The surprise</h5>
+        <p>15 Postgres clusters, each ~140 TB, handle the entire Cloudflare control plane. <em>The data is critical; the volume is small relative to the request rate.</em></p>
+      </div>
+      <div>
+        <h5>The architecture</h5>
+        <p>One cluster per logical workload. pgbouncer for connection pooling. Heavy use of partitioning. Read replicas for everything that tolerates lag.</p>
+      </div>
+      <div>
+        <h5>Not used</h5>
+        <p>Cassandra, MongoDB, Spanner, DynamoDB. Cloudflare considered them and stayed with Postgres. <strong>The choice that scales is the one your team operates well.</strong></p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">What 55M RPS actually means</a></li>
+        <li><a href="#before">Postgres in a CDN's control plane</a></li>
+        <li><a href="#design">The discipline</a></li>
+        <li><a href="#scale">Connection pooling at scale</a></li>
+        <li><a href="#numbers">The numbers</a></li>
+        <li><a href="#lessons">Lessons</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>What 55M RPS actually <span class="ital">means</span>.</h2>
+        <div class="prose">
+          <p>The 55M figure is request volume across Cloudflare's edge — the HTTP requests their CDN serves globally. <strong>Almost none of those requests touch Postgres.</strong> Postgres serves the control plane: configuration, DNS records, security policies, customer settings, billing state. That data is fetched once and cached aggressively at the edge.</p>
+          <p>But the control plane is critical. A config change has to land in seconds across the edge. A DNS record edited in the dashboard has to propagate. A WAF rule pushed by an enterprise customer can't wait. <strong>The Postgres clusters are the source of truth for everything the edge does</strong>; they don't serve the request volume, but they cannot be down.</p>
+        </div>
+
+        <div class="pull">"Cloudflare's database isn't fast because Postgres is fast. It's fast because the data fits — and the team knows how to keep it fitting."</div>
+      </section>
+
+      <section class="dd-section" id="before">
+        <h2 class="section"><span class="num">02</span>Postgres in a CDN's control <span class="ital">plane</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 320" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="cfa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · CONTROL PLANE FANS OUT, EDGE FANS IN</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0" y="0" width="200" height="60" fill="#c2410c"/>
+              <text x="100" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">POSTGRES CLUSTERS</text>
+              <text x="100" y="40" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">15 clusters · ~140 TB each</text>
+
+              <rect x="280" y="0" width="160" height="60" fill="#1a1814"/>
+              <text x="360" y="30" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">CONFIG SYNC</text>
+
+              <g fill="#1a1814">
+                <rect x="480" y="-10" width="100" height="30"/>
+                <rect x="480" y="22"  width="100" height="30"/>
+                <rect x="480" y="54"  width="100" height="30"/>
+              </g>
+              <g font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">
+                <text x="530" y="9">edge cache</text>
+                <text x="530" y="41">edge cache</text>
+                <text x="530" y="73">edge cache</text>
+              </g>
+
+              <g fill="#c2410c">
+                <rect x="640" y="-10" width="80" height="30"/>
+                <rect x="640" y="22"  width="80" height="30"/>
+                <rect x="640" y="54"  width="80" height="30"/>
+              </g>
+              <g font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">
+                <text x="680" y="9">POP</text>
+                <text x="680" y="41">POP</text>
+                <text x="680" y="73">POP</text>
+              </g>
+
+              <g fill="#1a1814">
+                <rect x="760" y="-20" width="40" height="20"/>
+                <rect x="760" y="2"   width="40" height="20"/>
+                <rect x="760" y="24"  width="40" height="20"/>
+                <rect x="760" y="46"  width="40" height="20"/>
+                <rect x="760" y="68"  width="40" height="20"/>
+                <rect x="820" y="-20" width="40" height="20"/>
+                <rect x="820" y="2"   width="40" height="20"/>
+                <rect x="820" y="24"  width="40" height="20"/>
+                <rect x="820" y="46"  width="40" height="20"/>
+                <rect x="820" y="68"  width="40" height="20"/>
+              </g>
+
+              <line x1="200" y1="30" x2="278" y2="30" stroke="#c2410c" stroke-width="2" marker-end="url(#cfa)"/>
+              <line x1="440" y1="30" x2="478" y2="30" stroke="#c2410c" stroke-width="2" marker-end="url(#cfa)"/>
+              <line x1="580" y1="30" x2="638" y2="30" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3"/>
+              <line x1="720" y1="30" x2="758" y2="30" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3"/>
+
+              <text x="900" y="22" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Configs flow OUT from Postgres.</text>
+              <text x="900" y="40" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Requests are served at the edge.</text>
+              <text x="900" y="62" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Postgres reads ≪ edge requests.</text>
+              <text x="900" y="80" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">~10k QPS, not 55M.</text>
+            </g>
+
+            <text x="20" y="280" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">The clever part isn't Postgres. It's that Postgres only sees the slow path.</text>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Postgres is the source of truth. A sync layer pushes changes to the edge cache. The 55M RPS edge load never reaches a database.</span></div>
+        </div>
+
+        <div class="prose">
+          <p>The key architectural decision: <strong>Postgres is a control plane, not a data plane.</strong> Customer requests are answered at the edge from cached configuration. Postgres serves ~thousands of QPS, not millions. The 55M RPS number is what the edge serves; the database sees a small fraction of that.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="design">
+        <h2 class="section"><span class="num">03</span>The <span class="ital">discipline</span>.</h2>
+
+        <h3 class="sub">One cluster per logical workload</h3>
+        <div class="prose">
+          <p>15 clusters, each dedicated to a specific concern: DNS records, page rules, security policies, billing, customer accounts. <strong>Failure of one cluster degrades one feature, not the platform.</strong> The cost is operational — 15 things to monitor, patch, upgrade. The benefit is blast-radius isolation.</p>
+        </div>
+
+        <h3 class="sub">Partitioning over sharding</h3>
+        <div class="prose">
+          <p>Within a cluster, large tables are partitioned (Postgres native partitioning) by time or by tenant. <strong>Partitioning is cheaper than sharding</strong>: same database, same connection, same transactions. It scales reads and write distribution without the cross-shard query restrictions sharding imposes (see <a href="case-figma-postgres.html">Figma</a>). Cloudflare partitions aggressively; they shard only when partitioning ceases to suffice.</p>
+        </div>
+
+        <h3 class="sub">NVMe and right-sized hardware</h3>
+        <div class="prose">
+          <p>Cloudflare's Postgres clusters run on dedicated bare metal with NVMe SSDs — not RDS, not cloud VMs. The hardware is sized so the hot working set fits in RAM. <em>The fundamental performance trick is the same as 2015: keep the index hot.</em> Bare metal with NVMe is the modern way to do it.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="scale">
+        <h2 class="section"><span class="num">04</span>Connection <span class="ital">pooling</span>.</h2>
+        <div class="prose">
+          <p>Postgres at scale dies on connections, not on queries. Each connection consumes ~10 MB of RAM; thousands of app instances open thousands of connections; the server's memory is consumed by idle connection state. <strong>pgbouncer is non-optional</strong>: a connection-pool layer that fans out a small number of real Postgres connections among many client sessions.</p>
+          <p>Cloudflare's pgbouncer runs in transaction-pooling mode: each transaction gets a connection from the pool, returns it on commit. <em>This breaks some Postgres features</em> (session state, prepared statements stored on the connection) — application code has to be written aware of it. The performance benefit is worth the discipline.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">numbers</span>.</h2>
+
+        <table class="matrix">
+          <thead>
+            <tr><th>Metric</th><th>Value</th></tr>
+          </thead>
+          <tbody>
+            <tr><th>Edge RPS</th><td>~55M</td></tr>
+            <tr><th>Postgres clusters</th><td>~15</td></tr>
+            <tr><th>Storage per cluster</th><td>~140 TB</td></tr>
+            <tr><th>Postgres QPS (per cluster)</th><td>thousands, not millions</td></tr>
+            <tr><th>Connection pool ratio</th><td>~50:1 (clients:real conns)</td></tr>
+            <tr><th>Partitioning strategy</th><td>Native (time / tenant)</td></tr>
+            <tr><th>NoSQL deployed for the control plane</th><td>None</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">06</span>The <span class="ital">lessons</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Control plane vs data plane</div>
+          <p>The headline number (55M RPS) is the data plane. The Postgres clusters are the control plane. <strong>They are different problems with different solutions.</strong> Don't size your database for traffic the database isn't serving.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Partition before you shard</div>
+          <p>Postgres's native partitioning gets you ~10× scale-up with the same DB. Sharding is an order of magnitude more work for an additional 10×. <em>If you haven't partitioned the largest table, you haven't earned the right to discuss sharding.</em></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">pgbouncer or you die on connections</div>
+          <p>Direct app-to-Postgres connections do not scale past a few hundred. pgbouncer in transaction mode is the standard answer. <strong>Adopt it on day one</strong>; retrofitting after the connection table fills is a panicky afternoon.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Specialise the cluster, not the database</div>
+          <p>15 Postgres clusters each for one workload beats "one big Postgres for everything" for blast radius, deploy independence, and tuning. The cost is operational headcount; the benefit is that one bad query in billing doesn't touch DNS.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Bare metal still wins for stateful</div>
+          <p>RDS is convenient. NVMe on bare metal is 3–10× the IOPS for a third of the cost — and for stateful workloads, IOPS is the bottleneck. <em>The cloud's win is the stateless tier; for stateful, ownership often still pays.</em> Cloudflare's choice; not everyone's. But worth knowing the option exists.</p>
+        </div>
+
+        <div class="pull">"The hardest thing about scaling Postgres is admitting you don't need to scale Postgres."</div>
+
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-netflix-chaos.html">
+          <div class="label">Prev case</div>
+          <div class="ttl">Netflix — Chaos</div>
+        </a>
+        <a class="next-fwd" href="case-hotstar-concurrent.html">
+          <div class="label">Next case</div>
+          <div class="ttl">Hotstar — 25M concurrent →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Case Study · Cloudflare · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

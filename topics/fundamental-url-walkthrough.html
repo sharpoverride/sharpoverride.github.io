@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>What Happens When You Type a URL · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">URL walkthrough</span>
+    </div>
+    <nav><a href="fundamental-back-of-envelope.html">← Prev</a><a href="fundamental-api-design.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~11 min</b></span>
+        <span>Stack <b>DNS · TCP · TLS · HTTP/2 · render</b></span>
+      </div>
+      <h1>The fifteen <span class="ital">steps</span>.</h1>
+      <p class="lede">The canonical interview question. The user types <code>example.com</code> and presses enter. What happens? — fifteen separate things, each its own subsystem. The depth at which you can describe each is the depth at which you understand the web.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The categories</h5><p>(1) Resolve. (2) Connect. (3) Transfer. (4) Render. Each has 3–5 substeps.</p></div>
+      <div><h5>The interesting parts</h5><p>DNS caching, TLS 1.3 1-RTT, HTTP/2 multiplexing, the critical rendering path. <em>Every step has been optimised for milliseconds.</em></p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#resolve">Resolve</a></li>
+      <li><a href="#connect">Connect</a></li>
+      <li><a href="#transfer">Transfer</a></li>
+      <li><a href="#render">Render</a></li>
+      <li><a href="#numbers">The numbers</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="resolve">
+        <h2 class="section"><span class="num">01</span><span class="ital">Resolve</span> (0 – ~30 ms).</h2>
+
+        <h3 class="sub">1. Browser URL parser</h3>
+        <div class="prose"><p>The browser parses the input: protocol, host, port, path, query. If no protocol, it tries <code>https://</code> first. If the input looks like a search query, it goes to the default search engine instead. <strong>This is also where HSTS kicks in</strong> — if the host is on the HSTS preload list or the browser has remembered an HSTS directive, plain HTTP is rewritten to HTTPS before any network call.</p></div>
+
+        <h3 class="sub">2. Browser cache check</h3>
+        <div class="prose"><p>Already have this page cached and fresh? Serve from disk. Done. The fastest "request" is no request.</p></div>
+
+        <h3 class="sub">3. DNS lookup</h3>
+        <div class="prose"><p>OS resolver checks <code>/etc/hosts</code> → local stub cache → recursive resolver (configured DNS server, often the ISP's or 1.1.1.1/8.8.8.8). Recursive walks the hierarchy: root → TLD → authoritative. Returns an A or AAAA record. <strong>Cached at every layer; uncached lookups are rare in practice.</strong> See <a href="fundamental-dns.html">DNS chapter</a>.</p></div>
+      </section>
+
+      <section class="dd-section" id="connect">
+        <h2 class="section"><span class="num">02</span><span class="ital">Connect</span> (~30 – ~100 ms).</h2>
+
+        <h3 class="sub">4. TCP handshake</h3>
+        <div class="prose"><p>SYN → SYN-ACK → ACK. One round-trip. The client now has an open TCP socket to the server's IP:port. <strong>For HTTP/3, this is replaced by QUIC, which combines transport + crypto handshake.</strong></p></div>
+
+        <h3 class="sub">5. TLS handshake</h3>
+        <div class="prose"><p>TLS 1.3: ClientHello (with key share, SNI) → ServerHello + cert + Finished, all in one round-trip. Client verifies the cert chain against trusted CAs. Application data flows next. <strong>For a recently-visited site, 0-RTT resumption can attach the first HTTP request to ClientHello — saves the round-trip.</strong> See <a href="fundamental-https.html">HTTPS chapter</a>.</p></div>
+
+        <h3 class="sub">6. HTTP/2 connection setup</h3>
+        <div class="prose"><p>Inside the TLS tunnel, HTTP/2 negotiates settings, opens streams. Multiplexing: many requests share one connection. <strong>HTTP/3 (QUIC) replaces both TCP and TLS with a single UDP-based protocol</strong>; for ~30% of modern web traffic, the above two steps are merged into one.</p></div>
+      </section>
+
+      <section class="dd-section" id="transfer">
+        <h2 class="section"><span class="num">03</span><span class="ital">Transfer</span> (~100 – ~500 ms).</h2>
+
+        <h3 class="sub">7. Send the request</h3>
+        <div class="prose"><p><code>GET / HTTP/2 Host: example.com User-Agent: … Accept: … Cookie: …</code>. Compressed via HPACK (HTTP/2's header compression). <strong>The cookies attached are determined by the cookie-jar rules</strong>: same site, path, scheme, expiration.</p></div>
+
+        <h3 class="sub">8. Through the network</h3>
+        <div class="prose"><p>Through the ISP's network, peering points, possibly a CDN edge POP, possibly transit ASNs, into the destination's cloud region's load balancer. <em>The bytes travel at near light-speed; the latency floor is physics, not bandwidth.</em></p></div>
+
+        <h3 class="sub">9. Load balancer → application</h3>
+        <div class="prose"><p>L7 LB (Azure Front Door, ALB, NGINX) inspects the request, picks a backend instance, forwards. Cache check at the CDN happens first; cache hits return locally without touching origin (see <a href="cdn-architecture.html">CDN chapter</a>).</p></div>
+
+        <h3 class="sub">10. Application + database</h3>
+        <div class="prose"><p>App tier picks up the request, authenticates, queries the database (possibly via a cache), renders an HTML response or returns JSON. <strong>This is where the system-design content of every other deep dive in this academy applies.</strong></p></div>
+
+        <h3 class="sub">11. Response back</h3>
+        <div class="prose"><p>Bytes flow back through the LB, the CDN may cache, through the network, back to the browser. Compressed with brotli or gzip.</p></div>
+      </section>
+
+      <section class="dd-section" id="render">
+        <h2 class="section"><span class="num">04</span><span class="ital">Render</span> (~500 – ~2000 ms).</h2>
+
+        <h3 class="sub">12. HTML parsing</h3>
+        <div class="prose"><p>Browser parses HTML into a DOM tree as bytes arrive (streaming parser). When it encounters &lt;script&gt; tags, it blocks (or doesn't, with <code>async</code>/<code>defer</code>). When it encounters &lt;link rel="stylesheet"&gt;, it kicks off the CSS download in parallel.</p></div>
+
+        <h3 class="sub">13. Critical resources</h3>
+        <div class="prose"><p>CSS, fonts, hero images. <strong>The "critical rendering path" is the set of resources that block first paint</strong>; minimising it is half of frontend performance work. <code>&lt;link rel="preload"&gt;</code> hints to the browser to fetch a resource early.</p></div>
+
+        <h3 class="sub">14. Layout, paint, composite</h3>
+        <div class="prose"><p>Browser computes box positions (layout), paints pixels into layers, composites layers into the final frame. <strong>JavaScript that mutates the DOM invalidates layout; doing this on every scroll = jank.</strong></p></div>
+
+        <h3 class="sub">15. Interactive</h3>
+        <div class="prose"><p>The JS runs; event handlers wire up; the page becomes interactive (TTI — Time To Interactive). For SPAs, this is often the moment the user can actually <em>do</em> things.</p></div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">numbers</span>.</h2>
+        <table class="matrix"><thead><tr><th>Stage</th><th>Typical</th><th>Bad</th></tr></thead><tbody>
+          <tr><th>DNS lookup (cached)</th><td>1 ms</td><td>300 ms</td></tr>
+          <tr><th>TCP handshake</th><td>20–50 ms</td><td>200 ms</td></tr>
+          <tr><th>TLS handshake</th><td>30–80 ms (1.3)</td><td>200 ms (1.2 + revocation)</td></tr>
+          <tr><th>Server-render time</th><td>50–200 ms</td><td>1–5 s</td></tr>
+          <tr><th>Transfer time (HTML)</th><td>10–50 ms</td><td>1 s on 3G</td></tr>
+          <tr><th>First Contentful Paint</th><td>~1 s</td><td>~5 s</td></tr>
+          <tr><th>Time to Interactive</th><td>~2 s</td><td>~10 s</td></tr>
+        </tbody></table>
+        <div class="callout"><div class="ctag">Each step is somebody's full-time job</div><p>DNS, TLS, HTTP/2, CDN, frontend perf — every step has a dedicated specialism. Knowing the boundaries is enough for system design; depth in any one is its own career.</p></div>
+        <div class="pull">"This question reveals seniority not by what you say, but by where you choose to drill in."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-back-of-envelope.html"><div class="label">Prev</div><div class="ttl">BoE</div></a>
+        <a class="next-fwd" href="fundamental-api-design.html"><div class="label">Next</div><div class="ttl">API design →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · URL walkthrough · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

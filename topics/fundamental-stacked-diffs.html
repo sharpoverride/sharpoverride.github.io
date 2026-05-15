@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Stacked Diffs · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Stacked diffs</span>
+    </div>
+    <nav><a href="fundamental-troubleshooting.html">← Prev</a><a href="../system-design.html">Index →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~8 min</b></span>
+        <span>Stack <b>Graphite · Phabricator · Sapling · git CLI</b></span>
+      </div>
+      <h1>Many small PRs <span class="ital">stacked</span> in order.</h1>
+      <p class="lede">A 1500-line PR is reviewed badly. Splitting it into five dependent 300-line PRs gives you five good reviews — and ships the first one as soon as it's approved, instead of waiting for the whole stack. Phabricator, Graphite, Sapling popularised this; modern teams that ship fast use it.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The model</h5><p>Each PR is one commit. PRs depend on earlier ones. The bottom of the stack merges first; the next rebases onto main and merges; etc.</p></div>
+      <div><h5>Why it's hard in vanilla git</h5><p>Rebasing a stack on every merge is fiddly. Tools (Graphite CLI, ghstack, sapling) automate the rebase choreography.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">Why not a feature branch</a></li>
+      <li><a href="#how">How it works</a></li>
+      <li><a href="#tools">Tools</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why not a <span class="ital">feature branch</span>.</h2>
+        <div class="prose">
+          <p>The traditional approach: branch off main, write 1500 lines, open one PR. <strong>Reviewer sees a wall of code; skims; approves; bugs slip through.</strong> Plus: the author is blocked on review for the entire change before they can ship any of it. Plus: the longer the branch lives, the more main has moved underneath; the rebase eventually becomes a project.</p>
+          <p>Alternative: <em>split the work into independent commits, each reviewable on its own.</em> Each commit becomes its own PR. The five PRs depend in order; reviewer can tackle them sequentially or even in parallel.</p>
+        </div>
+        <div class="pull">"The big PR is the version of the work that respects nobody's time."</div>
+      </section>
+
+      <section class="dd-section" id="how">
+        <h2 class="section"><span class="num">02</span>How it <span class="ital">works</span>.</h2>
+        <div class="prose">
+          <p>You write commit A (refactor a helper). Commit B (use the helper in a new feature). Commit C (wire it to the UI). Open three PRs:</p>
+          <ul>
+            <li><strong>PR A</strong> targets <code>main</code></li>
+            <li><strong>PR B</strong> targets PR A's branch</li>
+            <li><strong>PR C</strong> targets PR B's branch</li>
+          </ul>
+          <p>Reviewer of PR A only sees commit A — small, focused. <strong>When PR A merges</strong>, the tool rebases PR B onto main, retargets it to <code>main</code>; B merges; rebases C; C merges. Author's "the whole thing is shipped" experience is identical to a single big PR; reviewers got three small reviews.</p>
+        </div>
+
+        <h3 class="sub">The rebase ballet</h3>
+        <div class="prose">
+          <p>The painful part of vanilla git: when PR A's commit changes (a fixup during review), PR B is now built on a stale base. <strong>You have to rebase the rest of the stack</strong> on every change, by hand, every time. Graphite / Sapling automate this — one command rebases the whole stack and updates all the open PRs.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="tools">
+        <h2 class="section"><span class="num">03</span><span class="ital">Tools</span>.</h2>
+
+        <table class="matrix"><thead><tr><th>Tool</th><th>Style</th><th>Notes</th></tr></thead><tbody>
+          <tr><th>Phabricator (legacy)</th><td>Per-commit reviews via <code>arc</code></td><td>Where the workflow was popularised (Facebook). Retired by Phabricator's owners; lives on in Phorge fork.</td></tr>
+          <tr><th>Sapling</th><td>Meta's source-control tool, git-compatible</td><td>Treats stacks as first-class. Open-source; production-grade.</td></tr>
+          <tr><th>Graphite</th><td>CLI + web UI on top of git+GitHub</td><td>The most-adopted product for GitHub-based teams in 2026.</td></tr>
+          <tr><th>ghstack (Meta)</th><td>Open-source CLI for GitHub</td><td>Adapter; less polished than Graphite but free.</td></tr>
+          <tr><th>git CLI raw</th><td>Manual</td><td>Possible. Painful. <code>git rebase --onto</code> dance.</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">04</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>You routinely ship 500+ line PRs</h5><p>Adopt stacked diffs. Graphite for a GitHub team; Sapling if you can switch source-control tooling.</p></div>
+          <div class="cell"><h5>Small team, simple changes</h5><p>Don't. Single-commit PRs are already small; the overhead isn't worth it.</p></div>
+          <div class="cell"><h5>Big refactor coming</h5><p>Strong case. Split into self-contained steps; ship the easy ones first; keep the risky ones for the end.</p></div>
+          <div class="cell"><h5>Your CI is slow</h5><p>Stacks make this worse — each PR runs CI. Fix CI speed first if you can.</p></div>
+          <div class="cell"><h5>Reviewer pool is small</h5><p>Stacks distribute review load — different reviewers per PR. Helps if you have the breadth.</p></div>
+          <div class="cell"><h5>You've never used it</h5><p>Try Graphite on a single PR first. The mental model takes a week; the productivity gain compounds for years.</p></div>
+        </div>
+        <div class="pull">"Stacked diffs feel like the difference between batched and streaming. Same total throughput; entirely different perceived latency."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-troubleshooting.html"><div class="label">Prev</div><div class="ttl">Troubleshooting</div></a>
+        <a class="next-fwd" href="../system-design.html"><div class="label">All fundamentals</div><div class="ttl">Back to index →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Stacked diffs · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

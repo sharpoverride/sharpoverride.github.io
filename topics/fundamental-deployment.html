@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Deployment Patterns · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#fundamentals">Fundamentals</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Deployment Patterns</span>
+    </div>
+    <nav>
+      <a href="fundamental-kafka.html">← Prev</a>
+      <a href="fundamental-load-balancing.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>Argo Rollouts · Flagger · feature flags</b></span>
+      </div>
+      <h1>Shipping without <span class="ital">downtime</span>, or fear.</h1>
+      <p class="lede">Five deployment patterns, ordered by how much risk they take with users. Rolling is the default; canary is the safety net; blue-green is the rollback insurance; feature flags decouple deploy from release. Pick by failure cost.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The five patterns</h5>
+        <p>Recreate (downtime). Rolling (gradual). Blue-green (parallel). Canary (small slice). Feature-flagged (deploy ≠ release).</p>
+      </div>
+      <div>
+        <h5>The key insight</h5>
+        <p>"Deploy" and "release to users" should be separate events. The deploy is when code reaches production. The release is when users see the change. Feature flags split the two; you can deploy daily and release weekly — or vice versa.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Kubernetes rolling update</span>
+          <span class="pill on">Argo Rollouts</span>
+          <span class="pill on">Flagger</span>
+          <span class="pill">LaunchDarkly</span>
+          <span class="pill">GrowthBook</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The deploy-risk tradeoff</a></li>
+        <li><a href="#core">Five patterns</a></li>
+        <li><a href="#flag">Feature flags as a separate layer</a></li>
+        <li><a href="#dotnet">In practice</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The deploy-risk <span class="ital">tradeoff</span>.</h2>
+        <div class="prose">
+          <p>Every deploy is a hypothesis: <em>this version is no worse than the previous one</em>. Sometimes the hypothesis is wrong. The question is how many users find out. <strong>Pick a deployment pattern by the cost of being wrong.</strong> If wrong = a 5% conversion drop on the homepage, you want canary with automated rollback. If wrong = three minutes of static error pages, rolling is fine.</p>
+          <p>The patterns differ on three axes: <em>blast radius during the deploy</em>, <em>capacity required</em>, and <em>rollback speed</em>. There's no winner; there's a portfolio. Most production systems use rolling for the boring deploys and canary for the scary ones.</p>
+        </div>
+
+        <div class="pull">"You don't roll back. You roll forward — to the version that was working ten minutes ago."</div>
+      </section>
+
+      <section class="dd-section" id="core">
+        <h2 class="section"><span class="num">02</span>Five <span class="ital">patterns</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 460" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 27 · PATTERNS BY TRAFFIC ROUTING</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 70)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">Recreate</text>
+              <rect x="120" y="0" width="200" height="22" fill="#1a1814"/>
+              <text x="220" y="14" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">v1 down</text>
+              <rect x="340" y="0" width="200" height="22" fill="#c2410c"/>
+              <text x="440" y="14" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">v2 up</text>
+              <text x="580" y="14" font-family="JetBrains Mono" font-size="10" fill="#c2410c">DOWNTIME</text>
+            </g>
+
+            <g transform="translate(40, 130)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">Rolling</text>
+              <rect x="120" y="0"  width="80" height="22" fill="#c2410c"/>
+              <rect x="200" y="0"  width="80" height="22" fill="#1a1814"/>
+              <rect x="280" y="0"  width="80" height="22" fill="#c2410c"/>
+              <rect x="360" y="0"  width="80" height="22" fill="#1a1814"/>
+              <rect x="440" y="0"  width="80" height="22" fill="#c2410c"/>
+              <text x="580" y="14" font-family="JetBrains Mono" font-size="10" fill="#1a1814">N pods swap one-by-one</text>
+            </g>
+
+            <g transform="translate(40, 190)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">Blue-green</text>
+              <rect x="120" y="0" width="200" height="22" fill="#1a1814"/>
+              <text x="220" y="14" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">v1 (BLUE) live</text>
+              <rect x="340" y="0" width="200" height="22" fill="#c2410c"/>
+              <text x="440" y="14" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">v2 (GREEN) standby</text>
+              <text x="580" y="14" font-family="JetBrains Mono" font-size="10" fill="#1a1814">cut traffic over instantly</text>
+            </g>
+
+            <g transform="translate(40, 250)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">Canary</text>
+              <rect x="120" y="0"  width="380" height="22" fill="#1a1814"/>
+              <text x="310" y="14" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">v1 — 95%</text>
+              <rect x="500" y="0"  width="40" height="22" fill="#c2410c"/>
+              <text x="520" y="14" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">v2 5%</text>
+              <text x="580" y="14" font-family="JetBrains Mono" font-size="10" fill="#1a1814">small slice, ramp up if green</text>
+            </g>
+
+            <g transform="translate(40, 310)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">Feature flag</text>
+              <rect x="120" y="0"  width="380" height="22" fill="#c2410c"/>
+              <text x="310" y="14" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">v2 deployed everywhere, FLAG OFF</text>
+              <text x="580" y="14" font-family="JetBrains Mono" font-size="10" fill="#1a1814">turn on per-user / per-cohort later</text>
+            </g>
+
+            <line x1="20" y1="380" x2="1180" y2="380" stroke="#1a1814" stroke-width="1" stroke-dasharray="3 3"/>
+            <text x="20" y="410" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">"Each row is the same deploy, with progressively more risk control."</text>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 27</span><span>Recreate is the simplest, riskiest. Feature flags decouple the deploy from the release entirely.</span></div>
+        </div>
+
+        <h3 class="sub">Rolling — the default</h3>
+        <div class="prose">
+          <p>Kubernetes' default <code>Deployment</code> strategy. Spin up one new pod of v2, wait for readiness, kill one v1 pod, repeat until all are swapped. <strong>Capacity stays roughly constant; users hit a mix of v1 and v2 during the rollout.</strong> Fast, cheap, and the right answer for most deploys. Rollback is "redeploy v1" — takes another rolling cycle.</p>
+        </div>
+
+        <h3 class="sub">Blue-green — for known-risky deploys</h3>
+        <div class="prose">
+          <p>Keep v1 (blue) running. Deploy v2 (green) to identical capacity alongside. Switch traffic at the load balancer atomically. <strong>Rollback is one config change — flip back to blue.</strong> The cost: 2× capacity during the cutover window. Useful for schema migrations, major framework upgrades, anything you suspect might be surprising.</p>
+        </div>
+
+        <h3 class="sub">Canary — graduated rollout</h3>
+        <div class="prose">
+          <p>Route a small percentage (typically 1–5%) of traffic to v2; monitor key metrics; expand on green, halt on red. Argo Rollouts and Flagger automate the ramp + halt loop based on Prometheus metrics. <strong>Best for user-facing changes where partial degradation is acceptable</strong> but a full rollout would be a Sev-2 incident.</p>
+        </div>
+
+        <h3 class="sub">A/B test — canary as experiment</h3>
+        <div class="prose">
+          <p>Same shape as canary, but the goal is to <em>measure</em> v2 vs v1 over hours/days/weeks. The split is randomised per user (sticky), the metrics compared are product metrics (conversion, retention), the outcome decides whether v2 is the new v1. Tools: GrowthBook, Optimizely, LaunchDarkly Experimentation.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="flag">
+        <h2 class="section"><span class="num">03</span>Feature flags as a <span class="ital">separate</span> layer.</h2>
+        <div class="prose">
+          <p>The fifth pattern isn't a deployment strategy at all — it's the realisation that <strong>code deployment and feature release are different events</strong>. Deploy v2 with the new feature wrapped in <code>if (flag.IsEnabled("new-checkout"))</code>. Roll v2 to 100% of pods. The new code is in production but the flag is off; users still see the old checkout. Days or weeks later, turn the flag on — for 1% of users, then 10%, then 100%.</p>
+          <p><strong>This is the single highest-leverage operational change a team can make.</strong> Deploys become routine. Rollback is a config change. A/B tests are flag variants. Long-running migrations can ship dark and turn on per-cohort. The pattern was invented at Flickr in 2009; it's the default at every modern engineering org that doesn't ship slowly.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">practice</span>.</h2>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">yaml</span> &nbsp; <span class="file">argo-rollout-canary.yaml</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre>apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata: { name: orders }
+spec:
+  replicas: 10
+  strategy:
+    canary:
+      steps:
+        - setWeight: 5      <span class="c"># 5% → v2</span>
+        - pause: { duration: 10m }
+        - analysis:
+            templates: [{ templateName: success-rate }]
+            args:
+              - { name: service-name, value: orders }
+        - setWeight: 25
+        - pause: { duration: 10m }
+        - setWeight: 50
+        - pause: { duration: 30m }
+        - setWeight: 100
+      analysis:
+        templates: [{ templateName: success-rate }]
+        startingStep: 1     <span class="c"># run analysis from step 1 onward</span>
+  selector: { matchLabels: { app: orders } }
+  template:
+    metadata: { labels: { app: orders } }
+    spec:
+      containers: [{ name: api, image: ghcr.io/example/orders:v2 }]</pre>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">FeatureFlag.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Microsoft.FeatureManagement.AspNetCore</span>
+<span class="k">using</span> <span class="t">Microsoft.FeatureManagement</span>;
+
+builder.<span class="t">Services</span>.<span class="fn">AddFeatureManagement</span>();
+
+app.<span class="fn">MapPost</span>(<span class="s">"/checkout"</span>, <span class="k">async</span> (
+    <span class="t">CheckoutRequest</span> req, <span class="t">IFeatureManager</span> features, <span class="t">CancellationToken</span> ct) =&gt;
+{
+    <span class="k">if</span> (<span class="k">await</span> features.<span class="fn">IsEnabledAsync</span>(<span class="s">"new-checkout"</span>))
+        <span class="k">return await</span> <span class="fn">NewCheckoutAsync</span>(req, ct);
+
+    <span class="k">return await</span> <span class="fn">LegacyCheckoutAsync</span>(req, ct);
+});</pre>
+        </div>
+      </section>
+
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Forward migrations only</div>
+          <p>Database migrations need a rollback story. The best one is "the migration is forward-only and the new code handles both old and new schemas." Two deploys: deploy v2 that handles both schemas, run the migration, deploy v3 that assumes the new schema. <strong>Rolling back from v3 requires the migration to be reversible</strong> — which most aren't. Plan for forward-only.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Pre-stop hook for graceful shutdown</div>
+          <p>When K8s kills a v1 pod during a rolling deploy, in-flight requests die mid-flight. Add a <code>preStop</code> hook: sleep a few seconds so the load balancer drains the pod from rotation, then exit cleanly. <em>This is the single most-overlooked production config</em> and the cause of "we get a few errors during every deploy" tickets.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Canary metrics need a baseline</div>
+          <p>Comparing "v2 error rate" to "absolute threshold of 1%" is wrong — what if v1 was also at 0.9%? Compare v2 to <strong>v1's concurrent error rate</strong>: if v2's rate exceeds v1's by &gt;0.5% for &gt;5min, halt. Tools like Flagger and Argo Rollouts do this differential analysis natively.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Feature flags decay</div>
+          <p>A 6-month-old feature flag is technical debt. Every flag adds a branch in production code. <strong>Bake in a retire-the-flag step</strong> at the end of every feature rollout. Some teams use "flag expiry dates" enforced in CI.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">The flag service can't be a SPOF</div>
+          <p>If your feature-flag SaaS is down, your app should default to last-known-good state, not 500. Local caches with TTL fallbacks; circuit-break the flag fetch; never let the flag service take down your app. <em>The flag is metadata, not control plane.</em></p>
+        </div>
+
+        <div class="pull">"Continuous deployment is what happens when rolling back becomes boring."</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">06</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Default for routine deploys</h5>
+            <p>Rolling. K8s default. Cheap. Use it 90% of the time.</p>
+          </div>
+          <div class="cell">
+            <h5>Schema migration, framework upgrade</h5>
+            <p>Blue-green. Pay the 2× capacity for the window; the atomic cutover and instant rollback are worth it.</p>
+          </div>
+          <div class="cell">
+            <h5>User-facing UI change, conversion-critical</h5>
+            <p>Canary + automated metric-based rollback. Argo Rollouts or Flagger. 1% → 5% → 25% → 100% with halts on red.</p>
+          </div>
+          <div class="cell">
+            <h5>Want to test in production</h5>
+            <p>Feature flag the new code. Deploy dark. Turn on for internal users, then 1% of real users, then ramp.</p>
+          </div>
+          <div class="cell">
+            <h5>Mobile app</h5>
+            <p>You can't roll back binaries fast — App Store review. <strong>Every server-affecting feature must be flagged.</strong> Server-side kill switch is the actual rollback.</p>
+          </div>
+          <div class="cell">
+            <h5>Database-heavy change</h5>
+            <p>Two-phase migration. Deploy v2 that handles both schemas → run migration → deploy v3 assuming new schema. Forward-only. Don't try to coordinate "atomic deploy + migrate".</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-kafka.html">
+          <div class="label">Prev fundamental</div>
+          <div class="ttl">Kafka</div>
+        </a>
+        <a class="next-fwd" href="fundamental-load-balancing.html">
+          <div class="label">Next fundamental</div>
+          <div class="ttl">Load balancing algorithms →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Fundamental · Deployment Patterns · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

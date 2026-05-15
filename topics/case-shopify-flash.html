@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Shopify — Flash sales · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#cases">Case Studies</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Shopify</span>
+    </div>
+    <nav>
+      <a href="case-paypal-actor.html">← Prev case</a>
+      <a href="../system-design.html">Index →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Year <b>2022 BFCM</b></span>
+        <span>Scale <b>32M RPM peak</b></span>
+        <span>Stack <b>Pods · Kafka · Rails monolith · Cell architecture</b></span>
+      </div>
+      <h1>Black Friday on a <span class="ital">monolith</span>.</h1>
+      <p class="lede">Shopify's Black Friday peak was 32 million requests per minute in 2022. The architecture serving it is a Ruby on Rails modular monolith, deployed in shards Shopify calls "pods", organised into "regions" via cell-based architecture. The interesting part is what they didn't do.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The shape</h5>
+        <p>Each merchant lives in one pod. Each pod is a complete vertical stack. Flash sales never cross pod boundaries; one merchant's spike doesn't touch another's. <em>Cell isolation is the architecture.</em></p>
+      </div>
+      <div>
+        <h5>What they didn't do</h5>
+        <p>Rewrite from Rails. Move to microservices. Migrate to a different database. <strong>The 30 TB/min Shopify monolith is the most-cited counterexample to the microservices-for-scale argument.</strong></p>
+      </div>
+      <div>
+        <h5>What the spike looks like</h5>
+        <p>32M RPM = ~533k RPS. Peak GMV processed in a single minute exceeds $1M. The system is busy but never on fire because the load is partitioned.</p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">What flash sales do to a platform</a></li>
+        <li><a href="#design">Pods and cells</a></li>
+        <li><a href="#tools">The tooling around the monolith</a></li>
+        <li><a href="#numbers">The numbers</a></li>
+        <li><a href="#lessons">Lessons</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>What flash sales do to a <span class="ital">platform</span>.</h2>
+        <div class="prose">
+          <p>Shopify is a multi-tenant SaaS: hundreds of thousands of stores share one platform. The risk shape is unusual: <strong>any one store can have a flash sale at any minute</strong> — a celebrity drop, a viral product, a coordinated marketing push. The platform doesn't know which store will spike on which day. A naive multi-tenant architecture would let one store's spike consume the platform's shared capacity, degrading everyone else.</p>
+          <p>The fundamental design principle: <em>tenants are isolated.</em> One store's traffic does not cross into another store's compute. This is the same principle as the cell-based architecture pattern (see <a href="fundamental-cell-architecture.html">Cell-based architecture</a>), applied at SaaS scale.</p>
+        </div>
+
+        <div class="pull">"Blast-radius limits are the only multi-tenant feature your customers will never know exists, and never forgive you for missing."</div>
+      </section>
+
+      <section class="dd-section" id="design">
+        <h2 class="section"><span class="num">02</span>Pods and <span class="ital">cells</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 360" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="spa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · POD ARCHITECTURE</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0" y="0" width="200" height="50" fill="#1a1814"/>
+              <text x="100" y="30" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">REQUEST ROUTER</text>
+
+              <line x1="200" y1="25" x2="238" y2="25" stroke="#c2410c" stroke-width="2" marker-end="url(#spa)"/>
+
+              <g>
+                <rect x="240" y="-20" width="240" height="90" fill="#c2410c"/>
+                <text x="360" y="2"  font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">POD 1</text>
+                <text x="360" y="22" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">~10k stores</text>
+                <rect x="260" y="36" width="60" height="22" fill="#1a1814"/>
+                <text x="290" y="50" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">Rails</text>
+                <rect x="324" y="36" width="60" height="22" fill="#1a1814"/>
+                <text x="354" y="50" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">Redis</text>
+                <rect x="388" y="36" width="80" height="22" fill="#1a1814"/>
+                <text x="428" y="50" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">MySQL</text>
+              </g>
+
+              <g transform="translate(0, 100)">
+                <rect x="240" y="-20" width="240" height="90" fill="#c2410c"/>
+                <text x="360" y="2"  font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">POD 2</text>
+                <text x="360" y="22" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">~10k stores</text>
+                <rect x="260" y="36" width="60" height="22" fill="#1a1814"/>
+                <text x="290" y="50" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">Rails</text>
+                <rect x="324" y="36" width="60" height="22" fill="#1a1814"/>
+                <text x="354" y="50" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">Redis</text>
+                <rect x="388" y="36" width="80" height="22" fill="#1a1814"/>
+                <text x="428" y="50" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">MySQL</text>
+              </g>
+
+              <g transform="translate(0, 200)">
+                <rect x="240" y="-20" width="240" height="90" fill="#c2410c"/>
+                <text x="360" y="2"  font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">POD N (…hundreds)</text>
+              </g>
+
+              <text x="540" y="20" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Each pod is a complete vertical stack.</text>
+              <text x="540" y="38" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Stores never share a database with stores in another pod.</text>
+              <text x="540" y="66" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Flash sale in pod 1 ≠ traffic in pod 2.</text>
+              <text x="540" y="84" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Failure of pod 1 ≠ outage of pod 2.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>The router resolves a store to its pod. Within the pod, the full Rails monolith handles the store's traffic with dedicated database, cache, and worker capacity.</span></div>
+        </div>
+
+        <h3 class="sub">A pod is a complete Shopify</h3>
+        <div class="prose">
+          <p>Each pod runs the full Shopify Rails monolith — the same codebase. The pod has its own MySQL primary, its own Redis, its own background-job workers. <strong>From the application's perspective, the pod is the world</strong>: the code never queries across pods, and stores within a pod are co-tenants the same way they would have been on a single shared database.</p>
+        </div>
+
+        <h3 class="sub">The router knows which pod owns which store</h3>
+        <div class="prose">
+          <p>The first hop is a request router. It looks up <code>shop.example.com</code> → <code>pod-42</code> and forwards. The mapping is held in a small, highly-replicated configuration store. <em>This routing decision is the only cross-pod operation in the hot path.</em> Once you're routed to a pod, you stay there for the whole request lifecycle.</p>
+        </div>
+
+        <h3 class="sub">Resharding stores between pods</h3>
+        <div class="prose">
+          <p>When a pod gets hot — too many large merchants, too much traffic — Shopify moves merchants to other pods. <strong>This is a routine operational procedure</strong>; the tooling is automated; it happens during low-traffic windows. The merchant doesn't notice unless they're in the small percentage of moves that hit a rare bug.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="tools">
+        <h2 class="section"><span class="num">03</span>The tooling around the <span class="ital">monolith</span>.</h2>
+
+        <h3 class="sub">Throttling at the boundary</h3>
+        <div class="prose">
+          <p>Each store has rate limits (similar to <a href="case-stripe-rate-limiting.html">Stripe's design</a>). The cap protects the pod from a single store consuming all its capacity. <strong>This is the inner layer of cell-isolation</strong>: even within a pod, one store's traffic is bounded.</p>
+        </div>
+
+        <h3 class="sub">Queue-everything-not-time-critical</h3>
+        <div class="prose">
+          <p>Webhook deliveries, fulfillment notifications, marketing emails, analytics events — all asynchronous via background jobs. The synchronous request path stays small. <strong>During a flash sale, the queues grow</strong>; consumers catch up after the spike. The user sees a fast checkout; the downstream effects land within minutes.</p>
+        </div>
+
+        <h3 class="sub">Pre-defined "load shedding" tiers</h3>
+        <div class="prose">
+          <p>Like <a href="case-hotstar-concurrent.html">Hotstar</a>, Shopify has predetermined "what breaks first" tiers. Recommendations turn off. Real-time inventory previews fall back to stale-but-cached. Search may temporarily route to a degraded mode. <em>The checkout flow is the last thing standing.</em></p>
+        </div>
+
+        <h3 class="sub">Chaos engineering — internally</h3>
+        <div class="prose">
+          <p>Shopify runs failure injection (similar to <a href="case-netflix-chaos.html">Netflix Chaos</a>) targeted at individual pods. The blast radius is one pod's worth of stores; the validation is that the rest of the platform keeps running. <strong>Practising the worst case is the architecture, not the diagram.</strong></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">numbers</span>.</h2>
+
+        <table class="matrix">
+          <thead>
+            <tr><th>Metric</th><th>Value (BFCM 2022)</th></tr>
+          </thead>
+          <tbody>
+            <tr><th>Peak RPM</th><td>32M (~533k RPS)</td></tr>
+            <tr><th>Sales / minute peak</th><td>$3.5M</td></tr>
+            <tr><th>Sales across BFCM</th><td>$7.5B</td></tr>
+            <tr><th>Languages</th><td>Ruby (monolith)</td></tr>
+            <tr><th>Pods</th><td>~hundreds</td></tr>
+            <tr><th>Stores / pod (typical)</th><td>~10k</td></tr>
+            <tr><th>Cross-pod hot-path queries</th><td>0</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">lessons</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Cells, not microservices</div>
+          <p>The architectural unit of scale at Shopify is a <strong>pod</strong>, not a microservice. The whole monolith runs in the pod; the partition is by tenant, not by service boundary. <em>Cell-based architecture solves the multi-tenant blast-radius problem better than microservices does</em> — and keeps the engineering organisation in one codebase.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Routing is the only cross-cell concern</div>
+          <p>Once a request lands in a pod, it never crosses. The router is the only piece of platform-global state, and it's a config store, not a hot path. <strong>Keep the cross-cell surface area as small as possible</strong>; every other service should run cell-locally.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Resharding tooling is non-negotiable</div>
+          <p>Stores grow at different rates. Pods get unbalanced. The ability to move a store from pod A to pod B without user impact is what makes the architecture sustainable. <em>Build the move tooling before you need it</em>; retrofitting it under load pressure is a multi-quarter project.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Async everything you can</div>
+          <p>Webhooks, emails, analytics, fulfillment, inventory reconciliation — all queued. The synchronous path is just "create order, confirm to user." Background workers absorb the spike; the user-facing path stays fast. <strong>If a feature can be a job, it should be a job.</strong></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">A monolith can scale further than you think</div>
+          <p>Shopify is the canonical counter-example to "you have to do microservices to scale." The Rails monolith handles 533k RPS during peak. <em>The architectural insight is the partition, not the language or the framework.</em></p>
+        </div>
+
+        <div class="pull">"Microservices versus monolith is the wrong question. The right question is: what's the unit of isolation, and how do you keep customers inside it?"</div>
+
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-paypal-actor.html">
+          <div class="label">Prev case</div>
+          <div class="ttl">PayPal — Actor model</div>
+        </a>
+        <a class="next-fwd" href="../system-design.html">
+          <div class="label">All cases</div>
+          <div class="ttl">Back to index →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Case Study · Shopify · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>7 ways to fail a system design interview · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive interview">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#interviews">Interviews</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Failure modes</span>
+    </div>
+    <nav><a href="../system-design.html">← Index</a><a href="interview-cheat-sheet.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Interview <b>playbook</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~9 min</b></span>
+        <span>Stack <b>Recurring mistakes · how to spot them</b></span>
+      </div>
+      <h1>Seven ways to <span class="ital">fail</span>.</h1>
+      <p class="lede">Interviewers run hundreds of system design rounds and see the same failure modes over and over. Knowing the patterns means you can catch yourself committing one in the moment, while there's still time to recover.</p>
+    </div>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#1">1 · Skipping clarification</a></li>
+      <li><a href="#2">2 · No estimation</a></li>
+      <li><a href="#3">3 · Diving into one box</a></li>
+      <li><a href="#4">4 · Buzzword soup</a></li>
+      <li><a href="#5">5 · No tradeoff vocabulary</a></li>
+      <li><a href="#6">6 · Frozen on the bottleneck</a></li>
+      <li><a href="#7">7 · Forgetting failure</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="1">
+        <h2 class="section"><span class="num">01</span>Skipping <span class="ital">clarification</span>.</h2>
+        <div class="prose">
+          <p>The interviewer says "Design Twitter." You start drawing. <strong>You've already signaled junior thinking.</strong> The senior move is to spend the first five minutes shaping the problem: which features, what scale, what's out of scope, what consistency, what latency. The interviewer is waiting for those questions; their silence isn't an invitation to skip them.</p>
+          <p><em>Fix:</em> ten clarifying questions before any drawing. Functional scope. Non-functional scope. Constraints. Re-confirm.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="2">
+        <h2 class="section"><span class="num">02</span>No <span class="ital">estimation</span>.</h2>
+        <div class="prose">
+          <p>"This service will need to handle a lot of traffic." How much? <strong>Without numbers, no architectural decision is grounded.</strong> "Use a cache" is a fine instinct; "use a cache because 500k QPS hits the DB and we can offload 95% to Redis" is the signal.</p>
+          <p><em>Fix:</em> back-of-envelope math (see <a href="fundamental-back-of-envelope.html">BoE chapter</a>) for QPS, storage, bandwidth before you commit to a design.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="3">
+        <h2 class="section"><span class="num">03</span>Diving into <span class="ital">one box</span>.</h2>
+        <div class="prose">
+          <p>The interviewer says "Design YouTube." You spend 30 minutes on the video transcoder. The interviewer wanted to see you cover the whole pipeline and pick a deep-dive based on their cue. <strong>Now they don't know whether you understand playback, the metadata API, or the CDN story.</strong></p>
+          <p><em>Fix:</em> high-level design first (~10 minutes, all the boxes). <em>Then</em> ask "which part should we dive into?" — let them steer.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="4">
+        <h2 class="section"><span class="num">04</span>Buzzword <span class="ital">soup</span>.</h2>
+        <div class="prose">
+          <p>"We'll use Kafka for messaging, Cassandra for storage, Spark for analytics, Kubernetes for orchestration, Istio for the mesh." <strong>Why?</strong> If you can't articulate the reason each component is there, you've ordered from a menu instead of designing.</p>
+          <p><em>Fix:</em> name the requirement before naming the tool. "Messages need to be replayable and consumed by multiple groups, so Kafka over RabbitMQ."</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="5">
+        <h2 class="section"><span class="num">05</span>No tradeoff <span class="ital">vocabulary</span>.</h2>
+        <div class="prose">
+          <p>The interviewer probes: "why not the other option?" You shrug. <strong>Senior engineers articulate tradeoffs explicitly</strong>: "I chose A; B would give us more consistency but with a 50ms cross-region cost; here the consistency isn't worth it." The probe is the chance to demonstrate judgment; a non-answer leaves the interviewer guessing.</p>
+          <p><em>Fix:</em> for every design choice, name the alternative and why you didn't pick it. Two sentences each.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="6">
+        <h2 class="section"><span class="num">06</span>Frozen on the <span class="ital">bottleneck</span>.</h2>
+        <div class="prose">
+          <p>You hit a problem you don't immediately know how to solve. You go quiet. The interview clock keeps running. <strong>Silence is a signal of stuckness</strong>; the interviewer wants to see you reason out loud, propose options even if imperfect, and respond to hints.</p>
+          <p><em>Fix:</em> talk through your thinking. "I can think of two approaches; let me weigh them." If genuinely stuck: "I'd want to look this up; my best guess is X." Show the reasoning even when uncertain.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="7">
+        <h2 class="section"><span class="num">07</span>Forgetting <span class="ital">failure</span>.</h2>
+        <div class="prose">
+          <p>Your beautiful design works perfectly when nothing goes wrong. <strong>It says nothing about what happens when a pod dies, a region partitions, a downstream times out, a deployment introduces a regression.</strong> Senior interviewers ask: "What happens when X dies?" If you can't answer, your design isn't production-ready in their view.</p>
+          <p><em>Fix:</em> bake failure thinking into every component. Database down → cache fallback? Cache down → graceful degradation? Region down → failover? Mention these unprompted; it's a seniority signal.</p>
+        </div>
+        <div class="pull">"The interviewer isn't looking for the perfect design. They're looking for the engineer who'd survive the post-mortem."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="../system-design.html"><div class="label">Index</div><div class="ttl">All interviews</div></a>
+        <a class="next-fwd" href="interview-cheat-sheet.html"><div class="label">Next</div><div class="ttl">Cheat sheet →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Interview · Failure modes · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

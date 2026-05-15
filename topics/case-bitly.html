@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Bitly — URL shortener · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#cases">Case Studies</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Bitly</span>
+    </div>
+    <nav><a href="case-google-docs.html">← Prev</a><a href="case-dropbox.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Years <b>2008 → today</b></span>
+        <span>Scale <b>~10B clicks/month</b></span>
+        <span>Stack <b>MySQL → bitly hashtable · Memcache · Cassandra</b></span>
+      </div>
+      <h1>The simplest <span class="ital">interview</span> question.</h1>
+      <p class="lede">"Design a URL shortener." Asked in every coding interview for a decade. The toy version fits in 30 lines. The real Bitly handles ~10 billion clicks a month, half of which are bots. The system-design lessons are in the gap.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The core problem</h5><p>Map short code → long URL. Fast redirect. Click analytics. Custom branded short domains.</p></div>
+      <div><h5>The size</h5><p>~10⁹+ unique short links cumulative. ~10B clicks/month. Most reads are "redirect"; analytics is async.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">The simple version</a></li>
+      <li><a href="#design">The real version</a></li>
+      <li><a href="#analytics">Click analytics</a></li>
+      <li><a href="#numbers">The numbers</a></li>
+      <li><a href="#lessons">Lessons</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The <span class="ital">simple</span> version.</h2>
+        <div class="prose">
+          <p><strong>Generate a unique short code.</strong> 7 characters base-62 = 62⁷ ≈ 3.5T URLs — enough. Store in <code>codes(code PRIMARY KEY, long_url, created_at)</code>. On request, lookup, 301 redirect.</p>
+          <p>The interesting parts: <em>how do you generate the code?</em> Hash of URL collides; random + retry-on-collision works but doesn't scale linearly; base-62 of an auto-increment ID is elegant but reveals creation order; a key-generation service handing out blocks works in practice.</p>
+        </div>
+        <div class="pull">"The URL shortener interview question is interesting because the constraints aren't visible in the prompt."</div>
+      </section>
+
+      <section class="dd-section" id="design">
+        <h2 class="section"><span class="num">02</span>The <span class="ital">real</span> version.</h2>
+
+        <h3 class="sub">Key generation service</h3>
+        <div class="prose">
+          <p>Pre-generate codes in batches. <strong>A central service mints a million codes at a time</strong>; web servers grab a batch of 1000, use them locally, ask for more when depleted. No coordination on the hot path; no race conditions; no collision retries.</p>
+        </div>
+
+        <h3 class="sub">Read-heavy means cache-heavy</h3>
+        <div class="prose">
+          <p>The hot read pattern is "this code → that URL." <strong>Memcached / Redis cluster in front of MySQL</strong>; hit rate &gt;95%. Cache TTL essentially infinite (URLs rarely change post-creation); invalidation on the rare edit.</p>
+        </div>
+
+        <h3 class="sub">Custom domains</h3>
+        <div class="prose">
+          <p>Enterprise customers want <code>brand.co/abc</code>, not <code>bit.ly/abc</code>. <strong>One service, many domains</strong>: the redirect handler checks the Host header and looks up the brand's namespace. SSL via a separate cert per customer (or wildcards).</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="analytics">
+        <h2 class="section"><span class="num">03</span>Click <span class="ital">analytics</span>.</h2>
+        <div class="prose">
+          <p>Every redirect is a click event. Store who clicked, when, where (geo from IP), referrer, user-agent. <strong>10B clicks/month = ~4k events/sec average</strong>; peak much higher. Bursts on social-viral content can do 100× normal.</p>
+          <p>Pattern: <em>fire-and-forget the click event to a queue (Kafka)</em>; the redirect path returns 301 within microseconds. The analytics pipeline reads from Kafka asynchronously and aggregates into a data store (Cassandra historically, now various). <strong>Redirects don't wait on analytics</strong>; analytics is best-effort.</p>
+        </div>
+
+        <h3 class="sub">Bot traffic</h3>
+        <div class="prose">
+          <p>Up to half of Bitly's redirect traffic is bots. <strong>Filter early</strong>: per-IP rate limiting, user-agent classification, CAPTCHA on suspicious patterns. <em>Bots inflate the analytics</em> if you don't filter; customers see misleading dashboards.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">numbers</span>.</h2>
+        <table class="matrix"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+          <tr><th>Short links created (cumulative)</th><td>~10⁹+ (billions)</td></tr>
+          <tr><th>Clicks / month</th><td>~10B</td></tr>
+          <tr><th>Clicks / sec (avg)</th><td>~4k</td></tr>
+          <tr><th>Clicks / sec (peak)</th><td>~100k+ during viral events</td></tr>
+          <tr><th>Code length</th><td>7 chars base-62</td></tr>
+          <tr><th>Cache hit rate</th><td>&gt;95%</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">lessons</span>.</h2>
+        <div class="callout"><div class="ctag">Pre-generate keys</div><p>Hot-path code-generation = bottleneck. Pre-mint in batches; serve from cache. Same pattern as Twitter Snowflake IDs, Stripe charge IDs.</p></div>
+        <div class="callout"><div class="ctag">Async analytics from day one</div><p>Don't block the redirect on logging. Queue → consumer → aggregate. The redirect SLA is microseconds; the analytics SLA is minutes.</p></div>
+        <div class="callout"><div class="ctag">Cache aggressively; URLs are immutable</div><p>A short link rarely changes. Cache forever. Invalidate on the rare edit. Cache hit rate is the system's heartbeat.</p></div>
+        <div class="callout"><div class="ctag">Bots inflate every metric</div><p>~50% of Bitly traffic is bots. Filter at ingest. <em>Without filtering, every customer metric is a lie</em>; with filtering, they're not.</p></div>
+        <div class="pull">"The URL shortener interview is a real production problem with a charmingly small surface area."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-google-docs.html"><div class="label">Prev</div><div class="ttl">Google Docs</div></a>
+        <a class="next-fwd" href="case-dropbox.html"><div class="label">Next</div><div class="ttl">Dropbox →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Case · Bitly · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Dropbox — File sync · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#cases">Case Studies</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Dropbox</span>
+    </div>
+    <nav><a href="case-bitly.html">← Prev</a><a href="case-tinder.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Years <b>2007 → today</b></span>
+        <span>Scale <b>700M users · 600B+ pieces of content</b></span>
+        <span>Stack <b>Magic Pocket · block storage · sync engine</b></span>
+      </div>
+      <h1>The folder that <span class="ital">syncs</span>.</h1>
+      <p class="lede">Dropbox shipped a magical product: a folder that "just stays in sync" between devices. Under the hood: chunked block storage, content-addressable hashing, delta sync, conflict resolution. And in 2016, a famously bold move — repatriating from AWS to their own storage system, Magic Pocket.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The sync protocol</h5><p>File → split into 4 MB blocks → hash each block → upload only blocks the server doesn't have → metadata DB records "file = these blocks."</p></div>
+      <div><h5>Magic Pocket</h5><p>Dropbox's own object storage, replacing S3 for ~90% of their data. Erasure coding, cross-region replication, ~$75M/year savings.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#sync">The sync protocol</a></li>
+      <li><a href="#blocks">Block-level dedup</a></li>
+      <li><a href="#magic-pocket">Magic Pocket</a></li>
+      <li><a href="#numbers">The numbers</a></li>
+      <li><a href="#lessons">Lessons</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="sync">
+        <h2 class="section"><span class="num">01</span>The sync <span class="ital">protocol</span>.</h2>
+        <div class="prose">
+          <p>The desktop client watches the local Dropbox folder. <strong>On file change</strong>: split file into 4 MB blocks, hash each block, send block hashes to server. Server replies "I have these; I don't have these"; client uploads only the missing blocks. Metadata DB records "file at path X = blocks [a, b, c]."</p>
+          <p>On the receive side: client polls (or holds a long-poll connection) for changes. When a file change lands, server tells client "this file's block list changed to [a, b, d]." Client downloads any block it doesn't have locally; assembles the file.</p>
+        </div>
+        <div class="pull">"The first 100k users were powered by one Python script and rsync."</div>
+      </section>
+
+      <section class="dd-section" id="blocks">
+        <h2 class="section"><span class="num">02</span>Block-level <span class="ital">dedup</span>.</h2>
+        <div class="prose">
+          <p>Content-addressable: a block's identity is its SHA-256. <strong>Two users upload the same file; the server stores one copy.</strong> Edit a 1 GB file's first byte; only the first 4 MB block changes; the rest dedup. The bandwidth savings are enormous, especially at corporate scale where shared documents proliferate.</p>
+        </div>
+
+        <h3 class="sub">Rolling hashes for partial changes</h3>
+        <div class="prose">
+          <p>Inserting bytes in the middle of a file shifts everything; naive 4 MB chunking would invalidate every subsequent block. <strong>Content-defined chunking</strong> (rolling hash, Rabin fingerprint) finds chunk boundaries at content-dependent positions; an insert only invalidates the chunk it landed in.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="magic-pocket">
+        <h2 class="section"><span class="num">03</span><span class="ital">Magic Pocket</span>.</h2>
+        <div class="prose">
+          <p>Until 2015, Dropbox stored its blocks on S3. ~$1B annual AWS bill. <strong>Magic Pocket</strong>: their own object storage, custom-built on commodity hardware in Dropbox-leased datacenters. Migration took 2.5 years. ~90% of stored bytes now on Magic Pocket.</p>
+        </div>
+
+        <h3 class="sub">Architecture</h3>
+        <div class="prose">
+          <p>SMR (shingled magnetic recording) disks for cold storage. Erasure-coded across many disks (Reed-Solomon style; 10+4 typical — survive 4 disk failures). Cross-region replication. <strong>Custom storage software, custom hardware ordering, custom-everything.</strong></p>
+        </div>
+
+        <h3 class="sub">When does building your own storage make sense?</h3>
+        <div class="prose">
+          <p>For Dropbox: ~exabyte of storage, predictable access patterns, billion-dollar AWS bill. The math worked. <em>For everyone else: don't.</em> The fixed cost is ~$1B in engineering + facilities; the per-GB savings only matter at exabyte scale. <strong>Magic Pocket is a case study in what's possible, not a recommendation.</strong></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">numbers</span>.</h2>
+        <table class="matrix"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+          <tr><th>Users</th><td>~700M</td></tr>
+          <tr><th>Files / objects</th><td>~600B</td></tr>
+          <tr><th>Block size</th><td>4 MB (with content-defined chunking)</td></tr>
+          <tr><th>Storage</th><td>~exabyte</td></tr>
+          <tr><th>Magic Pocket savings</th><td>~$75M/yr (estimated)</td></tr>
+          <tr><th>Migration off AWS</th><td>2.5 years</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">lessons</span>.</h2>
+        <div class="callout"><div class="ctag">Block-level dedup is the architecture</div><p>The bandwidth savings, the storage savings, the resume-from-interruption — all flow from content-addressable blocks. Most modern file-sync systems (iCloud, Drive, etc.) work this way.</p></div>
+        <div class="callout"><div class="ctag">Content-defined chunking is the upgrade</div><p>Fixed boundaries are simple; content-defined boundaries are correct under inserts. The complexity is in the rolling hash; the wins are real.</p></div>
+        <div class="callout"><div class="ctag">Cloud → on-prem can be a win at extreme scale</div><p>Magic Pocket was the right move at $1B/year. The break-even is in the hundreds of millions; below that, the cloud is cheaper. <em>Don't build your own storage to save money — build it because you've outgrown the elasticity of the cloud.</em></p></div>
+        <div class="callout"><div class="ctag">Sync is harder than it looks</div><p>Conflict resolution (two devices edit the same file offline). Permissions. Sharing. Trash. Versions. <strong>Every one of these is its own subsystem</strong>; the magic is the engineering work across them.</p></div>
+        <div class="pull">"Dropbox's product is a folder. Their architecture is everything that makes the folder feel like one place."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-bitly.html"><div class="label">Prev</div><div class="ttl">Bitly</div></a>
+        <a class="next-fwd" href="case-tinder.html"><div class="label">Next</div><div class="ttl">Tinder →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Case · Dropbox · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

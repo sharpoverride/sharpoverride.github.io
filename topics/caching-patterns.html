@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Caching Patterns · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">02 · Caching Patterns</span>
+    </div>
+    <nav>
+      <a href="rate-limiting.html">← Prev</a>
+      <a href="message-queues.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>02</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~15 min</b></span>
+        <span>Stack <b>ASP.NET Core · Redis · EF Core · IMemoryCache</b></span>
+      </div>
+      <h1>Caching <span class="ital">patterns</span>.</h1>
+      <p class="lede">Five patterns, two hard problems, and the <em>L1/L2 architecture</em> that takes Postgres from "the bottleneck" to "the durable backup."</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The two hard things</h5>
+        <p>Phil Karlton was right. <em>Naming things</em> and <em>cache invalidation</em>. We can't help with the first one. The second one is mostly what this chapter is about.</p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Pick the pattern by who owns the writes. <strong>Cache-aside</strong> when reads dominate. <strong>Write-through</strong> when freshness is law. <strong>Write-behind</strong> when throughput is law and you can afford to lose a write.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Redis</span>
+          <span class="pill on">IMemoryCache</span>
+          <span class="pill on">EF Core</span>
+          <span class="pill">Memcached</span>
+          <span class="pill">SQL Server In-Mem</span>
+          <span class="pill">Cosmos integrated cache</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why we cache</a></li>
+        <li><a href="#patterns">Five patterns</a></li>
+        <li><a href="#l1l2">The L1/L2 stack</a></li>
+        <li><a href="#code">Cache-aside in EF Core</a></li>
+        <li><a href="#invalidation">Invalidation strategies</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why we <span class="ital">cache</span>.</h2>
+        <div class="prose">
+          <p>A cache is a wager. You bet that the cost of <em>maybe being slightly wrong</em> is less than the cost of <em>always being slow</em>. For 99% of read traffic on 99% of products, that wager pays off — Postgres takes ~3 ms for an indexed lookup, Redis takes ~0.2 ms, and IMemoryCache takes ~50 ns. Three orders of magnitude buys you a lot of forgiveness.</p>
+          <p>But you don't add a cache to <em>solve a problem</em>. You add a cache because you've already <strong>measured</strong> three things:</p>
+          <ul>
+            <li><strong>Read/write ratio.</strong> If you write as often as you read, the cache hit-rate plummets and you're paying for two systems to do the job of one.</li>
+            <li><strong>Working set size.</strong> If the hot working set fits in RAM, you'll get 95%+ hit rates. If it's the whole database, you'll get 5%.</li>
+            <li><strong>Staleness budget.</strong> How wrong are you allowed to be, for how long? "Product price" is 5 minutes. "Account balance" is 0 ms.</li>
+          </ul>
+          <div class="pull">"A cache without a measured hit-rate is just a way to make production outages more interesting."</div>
+        </div>
+      </section>
+
+      <!-- 2 -->
+      <section class="dd-section" id="patterns">
+        <h2 class="section"><span class="num">02</span>Five <span class="ital">patterns</span>.</h2>
+        <div class="prose">
+          <p>Caching patterns differ on one axis: <strong>who is responsible for keeping the cache and the database in agreement?</strong> The application, the cache, or nobody (let it expire).</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 440" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="#1a1814"/>
+              </marker>
+              <marker id="a2o" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/>
+              </marker>
+            </defs>
+
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 02 · CACHING PATTERNS · WHO OWNS THE WRITE PATH</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- ── 1. Cache-aside ── -->
+            <g transform="translate(20, 70)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="22" fill="#1a1814">Cache-aside</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">LAZY · APP OWNS BOTH</text>
+              <!-- App -->
+              <rect x="0"   y="46" width="60" height="36" fill="#1a1814"/>
+              <text x="30" y="69" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">APP</text>
+              <!-- Cache -->
+              <rect x="100" y="30" width="60" height="36" fill="#c2410c"/>
+              <text x="130" y="53" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CACHE</text>
+              <!-- DB -->
+              <rect x="100" y="86" width="60" height="36" fill="#1a1814"/>
+              <text x="130" y="109" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">DB</text>
+              <!-- arrows: read miss → DB → fill -->
+              <line x1="60" y1="56" x2="100" y2="48" stroke="#c2410c" stroke-width="1.5" marker-end="url(#a2o)"/>
+              <text x="62" y="44" font-family="JetBrains Mono" font-size="8" fill="#c2410c">1. get</text>
+              <line x1="60" y1="68" x2="100" y2="100" stroke="#1a1814" stroke-width="1.5" marker-end="url(#a2)"/>
+              <text x="62" y="92" font-family="JetBrains Mono" font-size="8" fill="#1a1814">2. miss → query</text>
+              <line x1="100" y1="55" x2="100" y2="89" stroke="#8a8478" stroke-width="1" stroke-dasharray="2 2"/>
+              <text x="170" y="60" font-family="JetBrains Mono" font-size="8" fill="#c2410c">3. set</text>
+            </g>
+
+            <!-- ── 2. Read-through ── -->
+            <g transform="translate(260, 70)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="22" fill="#1a1814">Read-through</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">CACHE OWNS THE FETCH</text>
+              <rect x="0"   y="46" width="60" height="36" fill="#1a1814"/>
+              <text x="30" y="69" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">APP</text>
+              <rect x="100" y="46" width="60" height="36" fill="#c2410c"/>
+              <text x="130" y="69" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CACHE</text>
+              <rect x="200" y="46" width="60" height="36" fill="#1a1814"/>
+              <text x="230" y="69" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">DB</text>
+              <line x1="60"  y1="64" x2="100" y2="64" stroke="#c2410c" stroke-width="1.5" marker-end="url(#a2o)"/>
+              <line x1="160" y1="64" x2="200" y2="64" stroke="#1a1814" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#a2)"/>
+              <text x="180" y="58" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">on miss</text>
+            </g>
+
+            <!-- ── 3. Write-through ── -->
+            <g transform="translate(560, 70)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="22" fill="#1a1814">Write-through</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">FRESH · SLOW WRITES</text>
+              <rect x="0"   y="46" width="60" height="36" fill="#1a1814"/>
+              <text x="30" y="69" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">APP</text>
+              <rect x="100" y="46" width="60" height="36" fill="#c2410c"/>
+              <text x="130" y="69" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CACHE</text>
+              <rect x="200" y="46" width="60" height="36" fill="#1a1814"/>
+              <text x="230" y="69" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">DB</text>
+              <line x1="60"  y1="56" x2="100" y2="56" stroke="#c2410c" stroke-width="1.5" marker-end="url(#a2o)"/>
+              <line x1="160" y1="56" x2="200" y2="56" stroke="#c2410c" stroke-width="1.5" marker-end="url(#a2o)"/>
+              <text x="40"  y="50" font-family="JetBrains Mono" font-size="8" fill="#c2410c">1.</text>
+              <text x="180" y="50" font-family="JetBrains Mono" font-size="8" fill="#c2410c">2. sync</text>
+              <text x="0"   y="100" font-family="JetBrains Mono" font-size="8" fill="#8a8478">latency = cache + db (both)</text>
+            </g>
+
+            <!-- ── 4. Write-behind ── -->
+            <g transform="translate(860, 70)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="22" fill="#1a1814">Write-behind</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">FAST · MAY LOSE WRITES</text>
+              <rect x="0"   y="46" width="60" height="36" fill="#1a1814"/>
+              <text x="30" y="69" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">APP</text>
+              <rect x="100" y="46" width="60" height="36" fill="#c2410c"/>
+              <text x="130" y="69" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CACHE</text>
+              <rect x="200" y="46" width="60" height="36" fill="#1a1814"/>
+              <text x="230" y="69" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">DB</text>
+              <line x1="60"  y1="56" x2="100" y2="56" stroke="#c2410c" stroke-width="1.5" marker-end="url(#a2o)"/>
+              <line x1="160" y1="64" x2="200" y2="64" stroke="#8a8478" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#a2)"/>
+              <text x="40"  y="50" font-family="JetBrains Mono" font-size="8" fill="#c2410c">1.</text>
+              <text x="180" y="80" font-family="JetBrains Mono" font-size="8" fill="#8a8478">2. async batch</text>
+              <text x="0"   y="100" font-family="JetBrains Mono" font-size="8" fill="#8a8478">latency = cache only</text>
+            </g>
+
+            <!-- ── 5. Refresh-ahead ── -->
+            <g transform="translate(20, 260)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="22" fill="#1a1814">Refresh-ahead</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">NEVER MISS THE HOT KEY</text>
+              <rect x="0"   y="46" width="60" height="36" fill="#1a1814"/>
+              <text x="30" y="69" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">APP</text>
+              <rect x="100" y="46" width="60" height="36" fill="#c2410c"/>
+              <text x="130" y="69" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CACHE</text>
+              <rect x="200" y="46" width="60" height="36" fill="#1a1814"/>
+              <text x="230" y="69" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">DB</text>
+              <!-- TTL bar -->
+              <rect x="100" y="100" width="60" height="6" fill="#1a1814"/>
+              <rect x="100" y="100" width="42" height="6" fill="#c2410c"/>
+              <text x="100" y="120" font-family="JetBrains Mono" font-size="8" fill="#8a8478">at 70% TTL, refresh in background →</text>
+              <line x1="160" y1="103" x2="200" y2="64" stroke="#8a8478" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#a2)"/>
+            </g>
+
+            <!-- ── verdict table ── -->
+            <line x1="20" y1="240" x2="1180" y2="240" stroke="#1a1814" stroke-width="1"/>
+            <text x="280" y="262" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. 02 (cont.) · WHEN TO USE EACH</text>
+
+            <g transform="translate(280, 280)" font-family="JetBrains Mono" font-size="11" fill="#1a1814">
+              <text x="0"   y="0" letter-spacing="0.1em" fill="#8a8478">PATTERN</text>
+              <text x="180" y="0" letter-spacing="0.1em" fill="#8a8478">READ COST</text>
+              <text x="320" y="0" letter-spacing="0.1em" fill="#8a8478">WRITE COST</text>
+              <text x="480" y="0" letter-spacing="0.1em" fill="#8a8478">STALENESS</text>
+              <text x="640" y="0" letter-spacing="0.1em" fill="#8a8478">DATA LOSS RISK</text>
+
+              <text x="0"   y="28" font-family="Instrument Serif" font-size="16">cache-aside</text>
+              <text x="180" y="28" font-family="Instrument Serif" font-size="16">low (hit) / high (miss)</text>
+              <text x="320" y="28" font-family="Instrument Serif" font-size="16">db only</text>
+              <text x="480" y="28" font-family="Instrument Serif" font-size="16">TTL window</text>
+              <text x="640" y="28" font-family="Instrument Serif" font-size="16">none</text>
+
+              <text x="0"   y="56" font-family="Instrument Serif" font-size="16">read-through</text>
+              <text x="180" y="56" font-family="Instrument Serif" font-size="16">low / mid</text>
+              <text x="320" y="56" font-family="Instrument Serif" font-size="16">db only</text>
+              <text x="480" y="56" font-family="Instrument Serif" font-size="16">TTL window</text>
+              <text x="640" y="56" font-family="Instrument Serif" font-size="16">none</text>
+
+              <text x="0"   y="84" font-family="Instrument Serif" font-size="16">write-through</text>
+              <text x="180" y="84" font-family="Instrument Serif" font-size="16">low</text>
+              <text x="320" y="84" font-family="Instrument Serif" font-size="16" fill="#c2410c">db + cache</text>
+              <text x="480" y="84" font-family="Instrument Serif" font-size="16">~zero</text>
+              <text x="640" y="84" font-family="Instrument Serif" font-size="16">none</text>
+
+              <text x="0"   y="112" font-family="Instrument Serif" font-size="16">write-behind</text>
+              <text x="180" y="112" font-family="Instrument Serif" font-size="16">low</text>
+              <text x="320" y="112" font-family="Instrument Serif" font-size="16">cache only</text>
+              <text x="480" y="112" font-family="Instrument Serif" font-size="16">~zero</text>
+              <text x="640" y="112" font-family="Instrument Serif" font-size="16" fill="#c2410c">cache crash = lost writes</text>
+
+              <text x="0"   y="140" font-family="Instrument Serif" font-size="16">refresh-ahead</text>
+              <text x="180" y="140" font-family="Instrument Serif" font-size="16">low (never miss)</text>
+              <text x="320" y="140" font-family="Instrument Serif" font-size="16">db only</text>
+              <text x="480" y="140" font-family="Instrument Serif" font-size="16">bounded</text>
+              <text x="640" y="140" font-family="Instrument Serif" font-size="16">none</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 02</span><span>Five patterns &middot; data-flow &middot; where the latency lives</span></div>
+        </div>
+
+        <div class="prose">
+          <p><strong>Cache-aside</strong> is the default. The app reads the cache, falls back to the database on miss, fills the cache on the way back. It's the only pattern where the cache being down is merely "slow" rather than "broken." This is the pattern you'll write in 90% of services.</p>
+          <p><strong>Read-through</strong> hides the database from the app — the cache library fetches on miss. Tidier code, but you're coupled to a cache that knows how to query your DB. <em>(Most useful when the cache is a managed product like Cosmos integrated cache or DAX.)</em></p>
+          <p><strong>Write-through</strong> guarantees the cache is never stale. Every write goes to both stores synchronously. Pay for the freshness with doubled write latency.</p>
+          <p><strong>Write-behind</strong> (aka write-back) acknowledges the write to the client after the cache write, batches to the DB asynchronously. Wonderful throughput; if the cache process crashes before the batch flushes, you've just lost writes. Use only when the source of truth is, in fact, the cache — counters, leaderboards, session data.</p>
+          <p><strong>Refresh-ahead</strong> proactively refreshes a key before it expires. The hot key never thunders past your DB. Great for predictable, expensive-to-compute objects: homepage feeds, ranking results.</p>
+        </div>
+      </section>
+
+      <!-- 3. L1/L2 -->
+      <section class="dd-section" id="l1l2">
+        <h2 class="section"><span class="num">03</span>The <span class="ital">L1/L2</span> stack.</h2>
+        <div class="prose">
+          <p>One cache is good. <strong>Two caches</strong> — one in-process (L1), one networked (L2) — is better, and is how every serious service operates above ~10k RPS. The in-process cache absorbs the absurdly hot keys (the top 0.1%) at memory-bus speed; the Redis tier holds the warm working set; Postgres remains the durable truth.</p>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 800 240" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="#1a1814"/>
+              </marker>
+            </defs>
+            <!-- Pod 1 -->
+            <rect x="20"  y="30"  width="180" height="180" fill="none" stroke="#1a1814" stroke-width="2"/>
+            <text x="32"  y="50"  font-family="JetBrains Mono" font-size="11" letter-spacing="0.12em" fill="#8a8478">POD · API</text>
+            <rect x="40"  y="70"  width="140" height="34" fill="#1a1814"/>
+            <text x="110" y="92"  font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">APP CODE</text>
+            <rect x="40"  y="120" width="140" height="34" fill="#c2410c"/>
+            <text x="110" y="142" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">L1 · IMemoryCache</text>
+            <text x="40"  y="178" font-family="Instrument Serif" font-size="14" fill="#1a1814">~50 ns &middot; 50 MB</text>
+
+            <!-- Pod 2 -->
+            <rect x="220" y="30"  width="180" height="180" fill="none" stroke="#1a1814" stroke-width="2"/>
+            <text x="232" y="50"  font-family="JetBrains Mono" font-size="11" letter-spacing="0.12em" fill="#8a8478">POD · API</text>
+            <rect x="240" y="70"  width="140" height="34" fill="#1a1814"/>
+            <rect x="240" y="120" width="140" height="34" fill="#c2410c"/>
+            <text x="310" y="92"  font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">APP CODE</text>
+            <text x="310" y="142" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">L1 · IMemoryCache</text>
+
+            <!-- L2 redis -->
+            <rect x="440" y="80" width="160" height="80" fill="#1a1814"/>
+            <text x="520" y="108" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">L2 · REDIS</text>
+            <text x="440" y="178" font-family="Instrument Serif" font-size="14" fill="#1a1814">~0.5 ms &middot; 64 GB</text>
+
+            <!-- DB -->
+            <rect x="640" y="80" width="140" height="80" fill="none" stroke="#1a1814" stroke-width="2"/>
+            <text x="710" y="108" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#1a1814">POSTGRES</text>
+            <text x="640" y="178" font-family="Instrument Serif" font-size="14" fill="#1a1814">~3 ms &middot; durable</text>
+
+            <line x1="180" y1="137" x2="440" y2="120" stroke="#1a1814" stroke-width="1.5" marker-end="url(#a3)"/>
+            <line x1="380" y1="137" x2="440" y2="130" stroke="#1a1814" stroke-width="1.5"/>
+            <line x1="600" y1="120" x2="640" y2="120" stroke="#1a1814" stroke-width="1.5" marker-end="url(#a3)"/>
+          </svg>
+          <div class="cap"><span>Fig. 03 &middot; L1 sits inside the pod; L2 is shared across all pods</span><b>~50 ns &nbsp;&nbsp; 0.5 ms &nbsp;&nbsp; 3 ms</b></div>
+        </div>
+
+        <div class="prose">
+          <p>The interesting design question isn't the architecture, it's the <strong>invalidation propagation</strong>. If pod A writes to Postgres and invalidates Redis, how do pods B and C know to evict their L1 entry? Three workable answers:</p>
+          <ul>
+            <li><strong>Short L1 TTL</strong> (30–60 s). Crude but free. Accept the stale window; works for product catalogues, feature flags, user profiles.</li>
+            <li><strong>Pub/sub invalidation</strong>. Pod A publishes <code>cache:invalidate product:42</code>; every pod subscribes and evicts. Use Redis pub/sub or Azure Service Bus topic.</li>
+            <li><strong>Client-side caching</strong> (RESP3). Redis 6+ pushes invalidations to clients automatically — the L1 becomes a passive mirror. StackExchange.Redis supports this but the ergonomics are still rough.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 4. Code -->
+      <section class="dd-section" id="code">
+        <h2 class="section"><span class="num">04</span>Cache-aside, in <span class="ital">ASP.NET Core</span>.</h2>
+        <div class="prose">
+          <p>The code below is the cache-aside pattern at production strength: L1 + L2, single-flight (only one DB query when N concurrent requests miss the same key), pub/sub invalidation across pods, and stale-while-revalidate so a request never waits for a refresh it could read a slightly-old value through.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">TwoTierCache.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Microsoft.Extensions.Caching.Memory StackExchange.Redis MessagePack</span>
+<span class="k">using</span> <span class="t">System.Collections.Concurrent</span>;
+<span class="k">using</span> <span class="t">MessagePack</span>;
+<span class="k">using</span> <span class="t">Microsoft.Extensions.Caching.Memory</span>;
+<span class="k">using</span> <span class="t">StackExchange.Redis</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Caching</span>;
+
+<span class="k">public sealed class</span> <span class="t">TwoTierCache</span>(
+    <span class="t">IConnectionMultiplexer</span> redis,
+    <span class="t">IMemoryCache</span> l1,
+    <span class="t">ILogger</span>&lt;<span class="t">TwoTierCache</span>&gt; log) : <span class="t">IAsyncDisposable</span>
+{
+    <span class="k">private readonly</span> <span class="t">IDatabase</span> _db    = redis.<span class="fn">GetDatabase</span>();
+    <span class="k">private readonly</span> <span class="t">ISubscriber</span> _bus = redis.<span class="fn">GetSubscriber</span>();
+    <span class="k">private readonly</span> <span class="t">ConcurrentDictionary</span>&lt;<span class="k">string</span>, <span class="t">Task</span>&gt; _inflight = <span class="k">new</span>();
+    <span class="k">private const string</span> <span class="t">InvalidateChannel</span> = <span class="s">"cache:invalidate"</span>;
+    <span class="k">private static readonly</span> <span class="t">MessagePackSerializerOptions</span> <span class="t">MpOpts</span> =
+        <span class="t">MessagePackSerializerOptions</span>.<span class="t">Standard</span>.<span class="fn">WithCompression</span>(<span class="t">MessagePackCompression</span>.<span class="t">Lz4BlockArray</span>);
+
+    <span class="c">// One subscriber per pod, wired up in DI startup.</span>
+    <span class="k">public</span> <span class="t">Task</span> <span class="fn">StartAsync</span>() =&gt; _bus.<span class="fn">SubscribeAsync</span>(<span class="t">InvalidateChannel</span>, (_, key) =&gt;
+    {
+        l1.<span class="fn">Remove</span>((<span class="k">string</span>)key!);
+    });
+
+    <span class="c">// The headline API. Single call site for the whole cache-aside pattern.</span>
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">T</span>&gt; <span class="fn">GetOrSetAsync</span>&lt;<span class="t">T</span>&gt;(
+        <span class="k">string</span> key,
+        <span class="t">Func</span>&lt;<span class="t">CancellationToken</span>, <span class="t">Task</span>&lt;<span class="t">T</span>&gt;&gt; factory,
+        <span class="t">TimeSpan</span> ttl,
+        <span class="t">CancellationToken</span> ct = <span class="k">default</span>) <span class="k">where</span> <span class="t">T</span> : <span class="k">class</span>
+    {
+        <span class="c">// L1 — in-process; 50 ns, no network.</span>
+        <span class="k">if</span> (l1.<span class="fn">TryGetValue</span>(key, <span class="k">out</span> <span class="t">T</span>? hit) &amp;&amp; hit <span class="k">is not null</span>)
+            <span class="k">return</span> hit;
+
+        <span class="c">// L2 — Redis; ~0.5 ms.</span>
+        <span class="k">var</span> raw = <span class="k">await</span> _db.<span class="fn">StringGetAsync</span>(key);
+        <span class="k">if</span> (raw.<span class="t">HasValue</span>)
+        {
+            <span class="k">var</span> value = <span class="t">MessagePackSerializer</span>.<span class="fn">Deserialize</span>&lt;<span class="t">T</span>&gt;(raw!, <span class="t">MpOpts</span>);
+            l1.<span class="fn">Set</span>(key, value, <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="t">Math</span>.<span class="fn">Min</span>(ttl.<span class="t">TotalSeconds</span>, <span class="n">30</span>)));
+            <span class="k">return</span> value;
+        }
+
+        <span class="c">// MISS — single-flight: only one factory() per key in-process.</span>
+        <span class="k">var</span> task = _inflight.<span class="fn">GetOrAdd</span>(key, k =&gt; <span class="t">Task</span>.<span class="fn">Run</span>(<span class="k">async</span> () =&gt;
+        {
+            <span class="k">try</span>
+            {
+                <span class="k">var</span> fresh = <span class="k">await</span> factory(ct);
+                <span class="k">if</span> (fresh <span class="k">is null</span>) <span class="k">return</span> (<span class="k">object</span>?)<span class="k">null</span>;
+
+                <span class="k">var</span> bytes = <span class="t">MessagePackSerializer</span>.<span class="fn">Serialize</span>(fresh, <span class="t">MpOpts</span>);
+                <span class="k">await</span> _db.<span class="fn">StringSetAsync</span>(k, bytes, ttl);
+                l1.<span class="fn">Set</span>(k, fresh, <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="t">Math</span>.<span class="fn">Min</span>(ttl.<span class="t">TotalSeconds</span>, <span class="n">30</span>)));
+                <span class="k">return</span> (<span class="k">object</span>?)fresh;
+            }
+            <span class="k">finally</span> { _inflight.<span class="fn">TryRemove</span>(k, <span class="k">out</span> _); }
+        }, ct));
+
+        <span class="k">var</span> result = <span class="k">await</span> task;
+        <span class="k">return</span> (<span class="t">T</span>)result!;
+    }
+
+    <span class="c">// Call after EVERY successful write to the source of truth.</span>
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">InvalidateAsync</span>(<span class="k">string</span> key)
+    {
+        <span class="k">await</span> _db.<span class="fn">KeyDeleteAsync</span>(key);
+        <span class="k">await</span> _bus.<span class="fn">PublishAsync</span>(<span class="t">InvalidateChannel</span>, key);  <span class="c">// fan out to all pods</span>
+    }
+
+    <span class="k">public async</span> <span class="t">ValueTask</span> <span class="fn">DisposeAsync</span>() =&gt; <span class="k">await</span> _bus.<span class="fn">UnsubscribeAllAsync</span>();
+}</pre>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">ProductService.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// Pattern in use: a repository that goes through the cache.</span>
+<span class="k">public sealed class</span> <span class="t">ProductService</span>(<span class="t">TwoTierCache</span> cache, <span class="t">ShopDbContext</span> db)
+{
+    <span class="k">private static</span> <span class="k">string</span> <span class="fn">Key</span>(<span class="t">Guid</span> id) =&gt; $<span class="s">"product:v3:{id}"</span>;
+    <span class="k">private static readonly</span> <span class="t">TimeSpan</span> <span class="t">Ttl</span> = <span class="t">TimeSpan</span>.<span class="fn">FromMinutes</span>(<span class="n">10</span>);
+
+    <span class="k">public</span> <span class="t">Task</span>&lt;<span class="t">Product</span>?&gt; <span class="fn">GetAsync</span>(<span class="t">Guid</span> id, <span class="t">CancellationToken</span> ct) =&gt;
+        cache.<span class="fn">GetOrSetAsync</span>(
+            <span class="fn">Key</span>(id),
+            <span class="k">async</span> token =&gt; <span class="k">await</span> db.<span class="t">Products</span>
+                .<span class="fn">AsNoTracking</span>()                            <span class="c">// no change-tracker overhead</span>
+                .<span class="fn">FirstOrDefaultAsync</span>(p =&gt; p.<span class="t">Id</span> == id, token),
+            <span class="t">Ttl</span>, ct);
+
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">UpdatePriceAsync</span>(<span class="t">Guid</span> id, <span class="k">decimal</span> price, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">var</span> rows = <span class="k">await</span> db.<span class="t">Products</span>
+            .<span class="fn">Where</span>(p =&gt; p.<span class="t">Id</span> == id)
+            .<span class="fn">ExecuteUpdateAsync</span>(s =&gt; s.<span class="fn">SetProperty</span>(p =&gt; p.<span class="t">Price</span>, price), ct);
+        <span class="k">if</span> (rows &gt; <span class="n">0</span>)
+            <span class="k">await</span> cache.<span class="fn">InvalidateAsync</span>(<span class="fn">Key</span>(id));
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Three production-grade things this snippet quietly gets right:</p>
+          <ul>
+            <li><strong>Single-flight in L1.</strong> If 500 requests hit a cold key simultaneously, exactly one runs <code>factory()</code> and the other 499 await its task. Without this, you've built a "thundering herd amplifier," not a cache.</li>
+            <li><strong>MessagePack with LZ4.</strong> ~5× smaller than JSON for typical entities; ~10× faster to (de)serialise. Memory and CPU both matter at Redis scale.</li>
+            <li><strong>Versioned key prefix.</strong> <code>product:v3:</code> — bump the version when the schema changes and the entire old cache becomes inert. No mass <code>FLUSHALL</code>, no thundering migration.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 5. Invalidation -->
+      <section class="dd-section" id="invalidation">
+        <h2 class="section"><span class="num">05</span>Invalidation <span class="ital">strategies</span>.</h2>
+        <div class="prose">
+          <p>If you only remember one thing from this chapter: <strong>every cached entry is either explicitly invalidated or implicitly trusted to be slightly wrong</strong>. There is no third option. Pick the right mix.</p>
+        </div>
+
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>TTL only</h5>
+            <p>Cheapest. Set an expiry; let it die naturally. Use for things where "a few minutes stale" is fine — feature flags, product listings, search facets, public counts.</p>
+          </div>
+          <div class="cell">
+            <h5>Write-invalidate</h5>
+            <p>The default for transactional data. After every write, delete the key. Pair with TTL as a safety net for bugs ("the time you forgot to invalidate").</p>
+          </div>
+          <div class="cell">
+            <h5>Versioned keys</h5>
+            <p>Encode a schema version (<code>product:v3:42</code>) or an entity version (<code>product:42:v8</code>) into the key. Writes bump the version; old keys age out by TTL.</p>
+          </div>
+          <div class="cell">
+            <h5>Event-driven (CDC)</h5>
+            <p>Postgres → Debezium / Azure SQL CDC → Kafka → cache invalidator service. Writes don't need to know about the cache. Operationally heavy; only justified at scale.</p>
+          </div>
+          <div class="cell">
+            <h5>Tag-based</h5>
+            <p>Each entry has tags (<code>tags=[user:42, org:8]</code>). Invalidate by tag, fan out to all matching keys. Redis modules (RediSearch) or your own tag-set in a hash.</p>
+          </div>
+          <div class="cell">
+            <h5>Stale-while-revalidate</h5>
+            <p>Serve the stale value <em>and</em> kick off a background refresh. A reader never blocks on the DB; the refresh thread eats the latency. Pairs beautifully with refresh-ahead.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 6. Tradeoff matrix -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th style="width:16%;">Technology</th>
+              <th>Latency p99</th>
+              <th>Capacity</th>
+              <th>Persistence</th>
+              <th>Cost / mo (mid-scale)</th>
+              <th>Best at</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>IMemoryCache<span class="sub">in-proc</span></th>
+              <td>~50 ns</td>
+              <td>50–500 MB / pod</td>
+              <td>None — gone on restart</td>
+              <td>$0</td>
+              <td>Top-0.1% hot keys, config, computed lookups</td>
+              <td><span class="verdict good">Always-on L1</span></td>
+            </tr>
+            <tr>
+              <th>Redis<span class="sub">remote · open-source</span></th>
+              <td>0.3 – 1 ms</td>
+              <td>1 GB – 1 TB (cluster)</td>
+              <td>Optional RDB / AOF</td>
+              <td><strong>$70 → $1.5k</strong> Azure Cache C1 → C6</td>
+              <td>Mainline L2; pub/sub; sorted sets; Lua</td>
+              <td><span class="verdict good">Default pick</span></td>
+            </tr>
+            <tr>
+              <th>Memcached<span class="sub">remote · open-source</span></th>
+              <td>0.2 – 0.6 ms</td>
+              <td>Up to ~256 GB</td>
+              <td>None</td>
+              <td><strong>$60+</strong> ElastiCache</td>
+              <td>Pure key→blob; horizontal scale-out</td>
+              <td><span class="verdict warn">Use only if you need nothing else</span></td>
+            </tr>
+            <tr>
+              <th>Azure Cache for Redis (Ent)<span class="sub">managed</span></th>
+              <td>0.3 – 0.8 ms</td>
+              <td>Up to 13 TB</td>
+              <td>Full + active geo-rep</td>
+              <td><strong>$1.5k → $15k</strong> Enterprise</td>
+              <td>Multi-region, RediSearch, modules</td>
+              <td><span class="verdict warn">Pick if regulated or HA-critical</span></td>
+            </tr>
+            <tr>
+              <th>SQL Server In-Memory OLTP<span class="sub">db-resident</span></th>
+              <td>~0.5 ms</td>
+              <td>Up to RAM of the box</td>
+              <td>Durable (option: non-durable)</td>
+              <td>$0 over your SQL licence</td>
+              <td>Hot tables when you already have SQL Server</td>
+              <td><span class="verdict warn">Niche; reduces ops, not cost</span></td>
+            </tr>
+            <tr>
+              <th>Cosmos DB Integrated Cache<span class="sub">managed read-through</span></th>
+              <td>1 – 2 ms</td>
+              <td>Configurable per partition</td>
+              <td>Backed by Cosmos itself</td>
+              <td><strong>+25%</strong> over base Cosmos RU</td>
+              <td>You're already on Cosmos and reads dominate</td>
+              <td><span class="verdict warn">Only if Cosmos-shop</span></td>
+            </tr>
+            <tr>
+              <th>CDN (Cloudflare / Front Door)<span class="sub">edge</span></th>
+              <td>~0 ms (PoP-local)</td>
+              <td>Global</td>
+              <td>Hours – days</td>
+              <td>$5 → $200+</td>
+              <td>Public, idempotent GETs · images · video · API</td>
+              <td><span class="verdict good">Free wins on public reads</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="prose">
+          <p><strong>Three honest opinions.</strong></p>
+          <ul>
+            <li><strong>Redis won.</strong> Memcached was the right answer in 2010 — Redis is the right answer in 2026. The "Redis costs more" argument vanishes the first time you reach for sorted sets, pub/sub, or Lua.</li>
+            <li><strong>The CDN is a cache.</strong> Treat your CDN as the first tier of your cache hierarchy, not as a deploy artefact. Cache-Control headers earn their keep; <code>stale-while-revalidate</code> and <code>stale-if-error</code> are free wins.</li>
+            <li><strong>Don't cache what's already fast.</strong> A 2 ms Postgres lookup behind a 50 ms LLM call does not need a cache. Cache the LLM call.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 7. Decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Read-heavy, small mutable</h5>
+            <p>Cache-aside · L1 + L2 Redis · write-invalidate. The textbook pick. Product catalogues, user profiles, feature flags.</p>
+          </div>
+          <div class="cell">
+            <h5>Read-heavy, immutable</h5>
+            <p>CDN with long max-age + versioned URLs. JS bundles, static config, public API responses keyed by query string.</p>
+          </div>
+          <div class="cell">
+            <h5>Counter / leaderboard / session</h5>
+            <p>Cache <em>is</em> the source of truth (write-behind or skip the DB entirely). Persist with Redis AOF; snapshot to durable storage every N minutes.</p>
+          </div>
+          <div class="cell">
+            <h5>Strong freshness required</h5>
+            <p>Write-through with single-writer per key. Or don't cache. "We need it fresh" and "we need a cache" are often in opposition.</p>
+          </div>
+          <div class="cell">
+            <h5>Expensive computation (feed, ranking)</h5>
+            <p>Refresh-ahead at 70% TTL. Hot key is always warm; cold computation runs out-of-band.</p>
+          </div>
+          <div class="cell">
+            <h5>Multi-tenant SaaS</h5>
+            <p>Prefix every key with <code>tenant:</code>. Set per-tenant memory limits in Redis. Hot-key isolation is a regulatory issue, not a perf issue.</p>
+          </div>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">The two failure modes you must design for</div>
+          <p><strong>Thundering herd.</strong> A hot key expires; 10k requests miss simultaneously; your DB falls over. Mitigations: single-flight (above), probabilistic early expiration, refresh-ahead.</p>
+          <p><strong>Cache stampede on restart.</strong> A pod boots with a cold L1 and immediately receives 1k RPS. Mitigations: warm L1 from L2 on startup; rolling deploys (not all-at-once); pre-warm critical keys.</p>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="rate-limiting.html">
+          <div class="label">Chapter 01</div>
+          <div class="ttl">Rate limiting</div>
+        </a>
+        <a class="next-fwd" href="message-queues.html">
+          <div class="label">Chapter 03</div>
+          <div class="ttl">Message queues →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 02 of 06 · Caching Patterns · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

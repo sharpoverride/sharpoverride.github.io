@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Design Web Crawler · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive interview">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#interviews">Interviews</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Design Web Crawler</span>
+    </div>
+    <nav>
+      <a href="interview-design-chatgpt.html">← Prev</a>
+      <a href="../system-design.html">Index →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Interview <b>walkthrough</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~13 min</b></span>
+        <span>Scale <b>billions of pages</b></span>
+      </div>
+      <h1>Design a <span class="ital">web crawler</span>.</h1>
+      <p class="lede">A polite, large-scale crawler is a frontier queue, a duplicate detector, a politeness scheduler, and an army of fetchers — all of which scale on different bottlenecks. The unsexy parts (deduplication, politeness, robots.txt) win the interview.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>Anchor numbers</h5>
+        <p>~10B pages on the surface web · ~1 MB avg HTML · ~10 PB total · crawl-budget targets vary (Google: re-crawl every few days for important pages; once a month for cold ones).</p>
+      </div>
+      <div>
+        <h5>The four subsystems</h5>
+        <p>(1) URL frontier (queue). (2) Fetchers. (3) Parser + URL extractor. (4) Duplicate detector. The politeness scheduler glues them.</p>
+      </div>
+      <div>
+        <h5>The hidden constraint</h5>
+        <p>Politeness: don't hammer any single site. Robots.txt: respect crawl rules. <em>Get either wrong and you become an attacker.</em></p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#clarify">Clarify</a></li>
+        <li><a href="#estimate">Estimate</a></li>
+        <li><a href="#architecture">High-level architecture</a></li>
+        <li><a href="#frontier">Deep dive — URL frontier</a></li>
+        <li><a href="#dedupe">Deep dive — deduplication</a></li>
+        <li><a href="#politeness">Deep dive — politeness</a></li>
+        <li><a href="#scale">Scale &amp; bottlenecks</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="clarify">
+        <h2 class="section"><span class="num">01</span><span class="ital">Clarify</span>.</h2>
+        <table class="matrix">
+          <thead><tr><th>Aspect</th><th>Scope</th></tr></thead>
+          <tbody>
+            <tr><th>Goal</th><td>Crawl the public web; store HTML for downstream indexing</td></tr>
+            <tr><th>Pages</th><td>~10B distinct URLs initially; grow over time</td></tr>
+            <tr><th>Refresh</th><td>Re-crawl popular pages more often than long-tail</td></tr>
+            <tr><th>Politeness</th><td>Respect robots.txt; rate-limit per host; crawl-delay headers</td></tr>
+            <tr><th>Content</th><td>HTML primary; images, JS, CSS optional</td></tr>
+            <tr><th>JavaScript rendering</th><td>Out of scope for v1 (huge cost increase if in)</td></tr>
+            <tr><th>Out of scope</th><td>Indexing the crawled content (separate system, see <a href="search-architecture.html">search architecture</a>)</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="estimate">
+        <h2 class="section"><span class="num">02</span><span class="ital">Estimate</span>.</h2>
+        <table class="matrix">
+          <thead><tr><th>Quantity</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><th>Pages to crawl</th><td>10B</td></tr>
+            <tr><th>Avg HTML size</th><td>~500 KB compressed</td></tr>
+            <tr><th>Total HTML storage</th><td>~5 PB</td></tr>
+            <tr><th>Crawl rate (re-crawl monthly)</th><td>~4k pages/sec sustained</td></tr>
+            <tr><th>Fetchers needed (1 fetch/sec each)</th><td>~4000</td></tr>
+            <tr><th>Frontier size at any time</th><td>~100M URLs (pending)</td></tr>
+            <tr><th>Network bandwidth at fleet</th><td>~16 Gbps (4k × 500 KB)</td></tr>
+          </tbody>
+        </table>
+        <div class="prose">
+          <p><strong>Network egress is one bottleneck</strong>; politeness is the other (a single site can only be crawled at ~1 req/sec). 4000 fetchers is the parallelism; thousands of hosts make politeness fit.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="architecture">
+        <h2 class="section"><span class="num">03</span>High-level <span class="ital">architecture</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 320" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="wca" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · CRAWLER LOOP</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0"   y="20" width="160" height="40" fill="#c2410c"/>
+              <text x="80"  y="45" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">URL FRONTIER</text>
+
+              <rect x="200" y="20" width="160" height="40" fill="#1a1814"/>
+              <text x="280" y="45" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">POLITENESS SCHEDULER</text>
+
+              <rect x="400" y="20" width="160" height="40" fill="#c2410c"/>
+              <text x="480" y="45" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">FETCHER POOL</text>
+
+              <rect x="600" y="20" width="160" height="40" fill="#1a1814"/>
+              <text x="680" y="45" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">PARSER / EXTRACTOR</text>
+
+              <rect x="800" y="-30" width="160" height="40" fill="#c2410c"/>
+              <text x="880" y="-5" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">DEDUP STORE</text>
+
+              <rect x="800" y="20" width="160" height="40" fill="#c2410c"/>
+              <text x="880" y="45" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CONTENT STORE</text>
+
+              <rect x="800" y="70" width="160" height="40" fill="#c2410c"/>
+              <text x="880" y="95" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">FRONTIER WRITEBACK</text>
+
+              <line x1="160" y1="40" x2="198" y2="40" stroke="#c2410c" stroke-width="2" marker-end="url(#wca)"/>
+              <line x1="360" y1="40" x2="398" y2="40" stroke="#c2410c" stroke-width="2" marker-end="url(#wca)"/>
+              <line x1="560" y1="40" x2="598" y2="40" stroke="#c2410c" stroke-width="2" marker-end="url(#wca)"/>
+              <line x1="760" y1="35" x2="798" y2="-10" stroke="#c2410c" stroke-width="1.5" marker-end="url(#wca)"/>
+              <line x1="760" y1="40" x2="798" y2="40" stroke="#c2410c" stroke-width="1.5" marker-end="url(#wca)"/>
+              <line x1="760" y1="45" x2="798" y2="90" stroke="#c2410c" stroke-width="1.5" marker-end="url(#wca)"/>
+
+              <path d="M880 110 Q 100 200 80 62" fill="none" stroke="#c2410c" stroke-width="2" stroke-dasharray="3 3" marker-end="url(#wca)"/>
+              <text x="450" y="195" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#c2410c">new URLs added back to frontier</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Loop: take URL → fetch → parse → extract links → add new links back to frontier. Dedup, politeness, and storage hang off each step.</span></div>
+        </div>
+      </section>
+
+      <section class="dd-section" id="frontier">
+        <h2 class="section"><span class="num">04</span>Deep dive — URL <span class="ital">frontier</span>.</h2>
+
+        <h3 class="sub">Two-tier queue: priority &amp; politeness</h3>
+        <div class="prose">
+          <p>The frontier needs to balance two things. <strong>Priority</strong>: important pages (high PageRank, frequent change) should be visited more often. <strong>Politeness</strong>: don't hit any one host too fast. The classic shape: a <em>front queue</em> per priority level (1=high, 2=medium, 3=low) and a <em>back queue</em> per host that buffers URLs ready to fetch at the next polite time.</p>
+        </div>
+
+        <h3 class="sub">Storage</h3>
+        <div class="prose">
+          <p>100M URLs in flight; ~10B total ever seen. <strong>The frontier doesn't fit in RAM</strong>; back it with a distributed store (Cassandra, RocksDB, or a partitioned key-value store). Each URL's record: URL, priority, last-fetched timestamp, retry count, host. Hot queue partitions stay in RAM via the dedup bloom filter (see below).</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="dedupe">
+        <h2 class="section"><span class="num">05</span>Deep dive — <span class="ital">deduplication</span>.</h2>
+
+        <h3 class="sub">URL dedup</h3>
+        <div class="prose">
+          <p>"Have I queued this URL?" — checked on every link extraction. For 10B URLs, a hash set in RAM is impossible (~640 GB). <strong>Use a bloom filter</strong> (see <a href="bloom-filters.html">bloom filters chapter</a>): ~12 GB at 1% false-positive rate, distributed across the cluster. False positive = skip a real URL (acceptable; tolerated for the savings). Persistence-backed for restart.</p>
+        </div>
+
+        <h3 class="sub">Content dedup</h3>
+        <div class="prose">
+          <p>Different URLs can serve the same content (mirrors, tracking-parameter variants). <strong>Hash the page content and dedup by content hash.</strong> SimHash for near-duplicate detection. <em>This is where you avoid storing the same page a hundred times.</em></p>
+        </div>
+
+        <h3 class="sub">Canonical URL normalisation</h3>
+        <div class="prose">
+          <p>Before hashing, normalise the URL: lowercase host, strip default ports, sort query parameters, strip <code>utm_*</code>. <strong>Different normalised forms of the same logical URL collapse to one frontier entry.</strong> Without this, the dedup bloom filter degrades — you store 10× the URLs you need.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="politeness">
+        <h2 class="section"><span class="num">06</span>Deep dive — <span class="ital">politeness</span>.</h2>
+
+        <h3 class="sub">Robots.txt</h3>
+        <div class="prose">
+          <p>Before crawling a host, fetch <code>/robots.txt</code>; cache it for 24 hours. The file tells you which URLs to skip and (optionally) the crawl delay. <strong>Honor it strictly</strong>; failing to do so gets you blocked.</p>
+        </div>
+
+        <h3 class="sub">Per-host rate limiting</h3>
+        <div class="prose">
+          <p>One in-flight request per host, with a delay between requests (default ~5s; respect <code>Crawl-delay</code> from robots). <strong>A back-queue per host enforces this</strong>: URLs are pulled from the back-queue at the rate the host allows. A small site has 5 URLs and takes 30 seconds to crawl; a large site has 10M URLs and takes a year. <em>The crawler's fairness is per-host, not per-URL.</em></p>
+        </div>
+
+        <h3 class="sub">Identify yourself</h3>
+        <div class="prose">
+          <p>Set a clear <code>User-Agent</code> with contact info. Most webmasters distinguish "legitimate crawler" from "scraper" by that header. <strong>Without it, you'll be IP-blocked by everyone with a WAF.</strong></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="scale">
+        <h2 class="section"><span class="num">07</span>Scale &amp; <span class="ital">bottlenecks</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Politeness caps absolute crawl rate</div>
+          <p>You can't crawl Wikipedia faster than Wikipedia allows. <strong>Total crawl rate is bounded by the count of distinct hosts × per-host rate.</strong> Want more pages/sec → crawl more hosts in parallel; you can't crawl any single one faster.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">JavaScript rendering changes the math</div>
+          <p>Modern web pages are JS-heavy; raw HTML doesn't reveal the content. <strong>Rendering means running a headless browser per page</strong>; that's 10–100× the CPU. If JS rendering is in scope, the architecture changes: a separate render fleet, render-only when a page is identified as JS-heavy.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Re-crawl strategy matters</div>
+          <p>"Crawl every page once" is not the goal. <strong>"Re-crawl popular pages frequently" is.</strong> Use change-frequency hints (last-modified, ETag), HTTP 304 responses, and a freshness scoring model. A news homepage gets re-crawled hourly; a 2007 forum post gets re-crawled annually.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Storage is colossal</div>
+          <p>5 PB of HTML. <strong>Compress aggressively</strong>; gzip is 70% reduction on HTML. Cold tier for old crawls; hot tier for recent. WARC format (the web-archive standard) is the canonical container — multiple records in one file, indexable offset.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Tradeoffs to mention</div>
+          <p><strong>Depth-first vs breadth-first</strong>: BFS gives broader coverage early; DFS digs into one site fast. Most crawlers are BFS with priority. <strong>Storage vs re-crawl</strong>: pages stored cheaply once; if frequently revisited, the cost shifts to compute. <strong>Polite crawler vs hostile crawler</strong>: polite is right; hostile crawls get blocked.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Open questions</div>
+          <p>Auth-walled content (login required) — out of scope. Anti-bot defences (Cloudflare bot management) — even legitimate crawlers fight this; need fingerprint diversification or partnerships. International domains — DNS resolution latency, IDN handling, character encoding gotchas.</p>
+        </div>
+
+        <div class="pull">"A crawler isn't a tight loop — it's a polite, slow conversation with a million unhappy webmasters."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="interview-design-chatgpt.html">
+          <div class="label">Prev</div>
+          <div class="ttl">Design ChatGPT</div>
+        </a>
+        <a class="next-fwd" href="../system-design.html">
+          <div class="label">All interviews</div>
+          <div class="ttl">Back to index →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Interview · Design Web Crawler · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

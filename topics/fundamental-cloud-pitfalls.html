@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>15 Cloud Pitfalls · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Cloud pitfalls</span>
+    </div>
+    <nav><a href="fundamental-code-review.html">← Prev</a><a href="fundamental-troubleshooting.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~12 min</b></span>
+        <span>Stack <b>AWS · Azure · GCP — pitfalls common to all</b></span>
+      </div>
+      <h1>The mistakes everybody <span class="ital">repeats</span>.</h1>
+      <p class="lede">Fifteen pitfalls that turn into Sev-2s, surprise bills, and resume-paragraph stories. None are exotic. All are documented. Most production teams ship at least three of them by accident.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The pattern</h5><p>These are recurring because the cloud's defaults are not always production-safe. The vendor's docs assume you'll read every page; you won't.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#cost">Cost pitfalls</a></li>
+      <li><a href="#reliability">Reliability pitfalls</a></li>
+      <li><a href="#security">Security pitfalls</a></li>
+      <li><a href="#performance">Performance pitfalls</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="cost">
+        <h2 class="section"><span class="num">01</span>Cost <span class="ital">pitfalls</span>.</h2>
+
+        <div class="callout"><div class="ctag">1. Cross-AZ egress is not free</div><p>Inter-AZ data transfer on AWS is ~$0.01/GB. A chatty service that crosses AZs constantly racks up four-figure bills. Co-locate the chatty pieces; design for AZ-affinity where possible.</p></div>
+
+        <div class="callout"><div class="ctag">2. NAT Gateway / Internet egress is the cost-line nobody sees</div><p>$0.045/GB processed plus the per-hour rate. If your serverless functions egress 10 TB/month through NAT, that's $450 in NAT alone. Use VPC endpoints for AWS-internal services; PrivateLink for vendors.</p></div>
+
+        <div class="callout"><div class="ctag">3. Forgotten dev environments</div><p>The staging cluster that's been running idle for 9 months. <strong>Auto-shutdown overnight</strong>. Schedule weekly review of unused resources. The biggest "where did our bill come from" investigations end here.</p></div>
+
+        <div class="callout"><div class="ctag">4. Reserved instances expired or wrong</div><p>An RI covering c5.xlarge but you're now on c6i.xlarge — you're paying on-demand and the RI is wasted. <strong>Audit RI utilisation monthly</strong>; modernise commitments as you modernise instances.</p></div>
+      </section>
+
+      <section class="dd-section" id="reliability">
+        <h2 class="section"><span class="num">02</span>Reliability <span class="ital">pitfalls</span>.</h2>
+
+        <div class="callout"><div class="ctag">5. Single-AZ database</div><p>RDS single-AZ saves ~50% on cost. Loses 4–10 hours of availability during the AZ failure that happens every couple of years. <strong>Multi-AZ for anything production</strong>; the math is settled.</p></div>
+
+        <div class="callout"><div class="ctag">6. No backup of cloud-managed storage</div><p>"S3 has 11 nines of durability so we don't need backups." Doesn't protect against your own delete. Versioning + lifecycle + MFA-Delete for irreplaceable buckets. <strong>The biggest data-loss event most companies have is their own engineers, not S3.</strong></p></div>
+
+        <div class="callout"><div class="ctag">7. Quotas you didn't know existed</div><p>EBS volumes per region. Lambda concurrent executions. RDS instances per account. Most clouds soft-cap your account. The cap matters during your highest-traffic event. <strong>Audit quotas annually; pre-request increases.</strong></p></div>
+
+        <div class="callout"><div class="ctag">8. Region failover untested</div><p>You have multi-region for "DR"; you've never failed over. <em>Untested DR is a fiction</em>. Quarterly drills are the actual architecture; see <a href="case-netflix-chaos.html">Netflix Chaos</a>.</p></div>
+
+        <div class="callout"><div class="ctag">9. Service-account key leak</div><p>The AWS access key in a commit, the GCP service-account JSON in a Slack message. Bots scan public repos in seconds; the bill arrives in hours. <strong>Detect secret commits in CI; rotate via Secret Manager; use short-lived tokens (STS, Workload Identity).</strong></p></div>
+      </section>
+
+      <section class="dd-section" id="security">
+        <h2 class="section"><span class="num">03</span>Security <span class="ital">pitfalls</span>.</h2>
+
+        <div class="callout"><div class="ctag">10. Public S3 buckets</div><p>The classic. Default has been "private" for years, but legacy buckets and "make-it-work" diagnostics still produce public-by-accident. <strong>Block-public-access at account level</strong>; the per-bucket flag is the override.</p></div>
+
+        <div class="callout"><div class="ctag">11. Overly-broad IAM</div><p>Roles with <code>*:*</code>. Easier than figuring out exact permissions; results in compromised tokens having keys to the kingdom. <strong>Least privilege; auto-detect overreach (AWS Access Analyzer, GCP Policy Analyzer).</strong></p></div>
+
+        <div class="callout"><div class="ctag">12. Logging secrets</div><p>Request middleware that logs full headers. Auth header captured. Logs aggregated to Datadog. Secrets in the SIEM forever. <strong>Filter sensitive headers at the source</strong>; never trust downstream log redaction alone.</p></div>
+      </section>
+
+      <section class="dd-section" id="performance">
+        <h2 class="section"><span class="num">04</span>Performance <span class="ital">pitfalls</span>.</h2>
+
+        <div class="callout"><div class="ctag">13. Default HttpClient connection pool</div><p>.NET, Java, Python — the default pool sizes are tuned for low traffic. <strong>Bump pool, enable keep-alive, set <code>PooledConnectionLifetime</code></strong> (see <a href="service-discovery.html">service discovery</a>).</p></div>
+
+        <div class="callout"><div class="ctag">14. Cold starts on serverless</div><p>Lambda / Functions cold start = 100ms – 5s depending on language and image size. Hit on every period of inactivity. <strong>Provisioned concurrency for latency-sensitive functions</strong>; smaller deployment packages; native-compiled where possible.</p></div>
+
+        <div class="callout"><div class="ctag">15. Misconfigured CDN cache headers</div><p>Origin says nothing about caching; CDN serves &lt;5% from edge. <strong>Get the <code>Cache-Control</code> right</strong> (see <a href="cdn-architecture.html">CDN chapter</a>); it's the single biggest perf-and-cost lever for content-shaped systems.</p></div>
+
+        <div class="pull">"None of these are exotic. All of them ship anyway. The architecture's job is to inhibit the ones that don't yet."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-code-review.html"><div class="label">Prev</div><div class="ttl">Code review</div></a>
+        <a class="next-fwd" href="fundamental-troubleshooting.html"><div class="label">Next</div><div class="ttl">Troubleshooting →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Cloud pitfalls · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

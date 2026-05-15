@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Zoom — 300M video calls/day · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#cases">Case Studies</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Zoom</span>
+    </div>
+    <nav><a href="case-tinder.html">← Prev</a><a href="case-apple-pay.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Years <b>2020 pandemic</b></span>
+        <span>Scale <b>300M daily participants · 20× in 3 months</b></span>
+        <span>Stack <b>SFU · custom video codec · multi-DC</b></span>
+      </div>
+      <h1>10 million to 300 million in <span class="ital">three months</span>.</h1>
+      <p class="lede">March 2020. Zoom's daily participant count went from ~10M to ~300M in 90 days. The infrastructure didn't melt. The story is half engineering investment they'd been making and half the SFU architecture that scales linearly with capacity.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>SFU vs MCU</h5><p>SFU (Selective Forwarding Unit) just relays streams between participants. MCU (Multi-point Control Unit) mixes streams server-side. Zoom uses SFU — clients do their own composition.</p></div>
+      <div><h5>Why it scales</h5><p>Server-side cost per participant is just forwarding video — not transcoding. A single SFU node handles hundreds of meetings.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">The 300M problem</a></li>
+      <li><a href="#sfu">SFU — the architectural unlock</a></li>
+      <li><a href="#video">Adaptive video</a></li>
+      <li><a href="#numbers">The numbers</a></li>
+      <li><a href="#lessons">Lessons</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The 300M <span class="ital">problem</span>.</h2>
+        <div class="prose">
+          <p>March 2020. Schools and offices closed; everyone went home; Zoom was the default. <strong>Daily participants: 10M → 200M in two months, 300M by April.</strong> Video calls are expensive: each participant uploads their video and downloads everyone else's. The server cost per participant is significant; the network bill scales linearly.</p>
+          <p>Most other video conferencing products got slow, dropped calls, or rate-limited. Zoom mostly didn't. The investment the team had been making for years — multi-DC fabric, the SFU architecture — paid off in the spike.</p>
+        </div>
+        <div class="pull">"You can't auto-scale your way out of 300 million users. You have to have already built the architecture."</div>
+      </section>
+
+      <section class="dd-section" id="sfu">
+        <h2 class="section"><span class="num">02</span>SFU — the <span class="ital">architectural unlock</span>.</h2>
+        <div class="prose">
+          <p>Two competing architectures for multi-party video: <strong>MCU</strong> (server mixes all streams into one composite, sends one output per participant — server-CPU-heavy, low client bandwidth) and <strong>SFU</strong> (server forwards each stream to each other participant — server-CPU-light, higher client bandwidth).</p>
+          <p>Zoom uses SFU. <strong>The server's job is bandwidth, not CPU.</strong> Each SFU node handles hundreds of participants because forwarding is cheap. The client does the rendering — composing N streams into the grid view, encoding the local camera, decoding incoming streams.</p>
+        </div>
+
+        <h3 class="sub">Why SFU scales</h3>
+        <div class="prose">
+          <p>For a meeting of N participants with simulcast: each participant uploads 1 stream; the SFU forwards (N-1) copies. Total server traffic: O(N²). For a 1:1 call, 2 streams. For a 100-person call, ~10,000 streams. <strong>Mitigation</strong>: video layers (different qualities); a participant only receives the layer they need (e.g., low-quality for the 30 people not currently speaking).</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="video">
+        <h2 class="section"><span class="num">03</span>Adaptive <span class="ital">video</span>.</h2>
+        <div class="prose">
+          <p>Each participant uploads at multiple qualities (simulcast: e.g., 180p, 360p, 720p). <strong>The SFU forwards the quality each recipient can use</strong> based on their downlink. Recipient on a phone on 4G: 180p. Recipient on Wi-Fi: 720p. Speaker view gets the high-quality stream of the active speaker; gallery view gets low-quality streams of everyone.</p>
+          <p><strong>Bandwidth adapts in real time.</strong> The recipient's client signals available bandwidth; the SFU adjusts which layer it forwards. No server-side transcoding (which would be expensive); the encoder did the work upfront.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">numbers</span>.</h2>
+        <table class="matrix"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+          <tr><th>Daily participants (April 2020)</th><td>~300M</td></tr>
+          <tr><th>Growth over 3 months</th><td>~20×</td></tr>
+          <tr><th>Concurrent video streams (peak)</th><td>~100M</td></tr>
+          <tr><th>Average meeting size</th><td>~10 participants</td></tr>
+          <tr><th>Server architecture</th><td>SFU (Selective Forwarding Unit)</td></tr>
+          <tr><th>Video codec</th><td>H.264, partial AV1 by 2024</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">lessons</span>.</h2>
+        <div class="callout"><div class="ctag">SFU is the modern multi-party video default</div><p>Pre-Zoom, MCU was common. SFU scales better and gives clients composition freedom. Almost every modern video conferencing product is SFU-based: Google Meet, Microsoft Teams, Discord, Twitch's video.</p></div>
+        <div class="callout"><div class="ctag">Simulcast is non-optional at scale</div><p>Encoding multiple qualities at the source means the server doesn't transcode. The cost is on the sender (modern devices handle it); the savings are on the server farm.</p></div>
+        <div class="callout"><div class="ctag">Architectural investment compounds during spikes</div><p>The Zoom team had been building this for 8 years before the pandemic. The 20× spike didn't break them because they'd already designed for headroom. <em>You can't make this kind of investment under pressure</em> — it's the work you do in the quiet years.</p></div>
+        <div class="callout"><div class="ctag">Multi-DC routing for global meetings</div><p>An attendee in Sydney joining a meeting hosted by an attendee in NY shouldn't traverse the Pacific. Zoom routes to the SFU nearest the participant, with cross-DC fabric for streams that need to cross.</p></div>
+        <div class="pull">"Capacity is a build decision, not a deploy decision."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-tinder.html"><div class="label">Prev</div><div class="ttl">Tinder</div></a>
+        <a class="next-fwd" href="case-apple-pay.html"><div class="label">Next</div><div class="ttl">Apple Pay →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Case · Zoom · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

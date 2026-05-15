@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>NGINX — 1M concurrent connections · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">NGINX</span>
+    </div>
+    <nav><a href="fundamental-gossip.html">← Prev</a><a href="fundamental-frontend-system-design.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>Event loop · epoll · workers · TLS</b></span>
+      </div>
+      <h1>One process, a <span class="ital">million</span> sockets.</h1>
+      <p class="lede">Apache forked a thread per connection and died at ~10k. NGINX uses an event loop per worker and lives at 1M. The architectural difference is one of the most consequential in web infrastructure history.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The trick</h5><p>Non-blocking I/O + event loop (epoll/kqueue) + small number of worker processes pinned to CPU cores. No thread-per-connection.</p></div>
+      <div><h5>The C10K problem</h5><p>The 1999 paper that named the wall — Dan Kegel's "How to handle 10,000 simultaneous connections." NGINX (2004) was the answer.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">The thread-per-connection wall</a></li>
+      <li><a href="#arch">NGINX architecture</a></li>
+      <li><a href="#tuning">Tuning for 1M</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The thread-per-connection <span class="ital">wall</span>.</h2>
+        <div class="prose">
+          <p>Apache prefork: one process per connection. ~10 MB per process. 10k connections = 100 GB RAM. <strong>Doesn't fit.</strong> Apache worker MPM: one thread per connection. ~1 MB per thread stack. 10k = 10 GB; still a lot. Plus the kernel scheduling cost of context-switching among thousands of threads.</p>
+          <p>The fundamental issue: <em>most connections are idle most of the time.</em> A web server is waiting on the network 99% of the wall-clock. Allocating a thread to each idle connection is paying for the cost of capacity without using it.</p>
+        </div>
+        <div class="pull">"The C10K problem isn't a hardware limit. It's an architectural one."</div>
+      </section>
+
+      <section class="dd-section" id="arch">
+        <h2 class="section"><span class="num">02</span>NGINX <span class="ital">architecture</span>.</h2>
+
+        <h3 class="sub">Master + workers</h3>
+        <div class="prose">
+          <p>One master process (privileged, manages configuration and workers) and N worker processes (handle all connections). <strong>Typical: one worker per CPU core.</strong> 8 cores → 8 workers. Each worker is single-threaded.</p>
+        </div>
+
+        <h3 class="sub">Event loop per worker</h3>
+        <div class="prose">
+          <p>Each worker runs an event loop. It calls <code>epoll_wait()</code> (Linux) or <code>kqueue()</code> (BSD) and gets a list of sockets that are ready to do something. For each ready socket: read what it can, write what it can, move on. <strong>Never blocks.</strong> A single worker can manage tens of thousands of concurrent sockets.</p>
+        </div>
+
+        <h3 class="sub">Why epoll/kqueue scale</h3>
+        <div class="prose">
+          <p>The old <code>select()</code> and <code>poll()</code> were O(N) in number of file descriptors per call. epoll is O(1) — it returns only the FDs that are actually ready. <strong>You can monitor 1M FDs and the syscall to find ready ones is essentially constant time.</strong> This is the kernel feature that made the C10M era possible.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 200" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · ONE WORKER, MANY SOCKETS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+            <g transform="translate(40, 80)">
+              <circle cx="60" cy="40" r="30" fill="#c2410c"/><text x="60" y="44" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">WORKER</text>
+              <g fill="#1a1814">
+                <rect x="160" y="0" width="60" height="14"/><rect x="160" y="18" width="60" height="14"/><rect x="160" y="36" width="60" height="14"/>
+                <rect x="240" y="0" width="60" height="14"/><rect x="240" y="18" width="60" height="14"/><rect x="240" y="36" width="60" height="14"/>
+                <rect x="320" y="0" width="60" height="14"/><rect x="320" y="18" width="60" height="14"/><rect x="320" y="36" width="60" height="14"/>
+                <rect x="400" y="0" width="60" height="14"/><rect x="400" y="18" width="60" height="14"/><rect x="400" y="36" width="60" height="14"/>
+                <rect x="480" y="0" width="60" height="14"/><rect x="480" y="18" width="60" height="14"/><rect x="480" y="36" width="60" height="14"/>
+              </g>
+              <text x="350" y="80" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#1a1814">~50k sockets in epoll set</text>
+              <text x="700" y="40" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Worker polls epoll → handles the ready FDs → loops.</text>
+              <text x="700" y="58" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">No thread per connection. No blocking syscalls.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>The architecture that broke C10K. Same shape used by Node.js, Go's runtime, Tokio, and modern Rust async.</span></div>
+        </div>
+      </section>
+
+      <section class="dd-section" id="tuning">
+        <h2 class="section"><span class="num">03</span>Tuning for <span class="ital">1M</span>.</h2>
+
+        <h3 class="sub">File descriptor limits</h3>
+        <div class="prose">
+          <p>OS defaults are 1024. <strong>Bump to 1M+</strong>: <code>/etc/security/limits.conf</code> for the user; <code>fs.file-max</code> sysctl for the system. NGINX config: <code>worker_rlimit_nofile 1000000;</code>.</p>
+        </div>
+
+        <h3 class="sub">Worker connections</h3>
+        <div class="prose">
+          <p>NGINX directive <code>worker_connections 50000;</code> — per worker. Total capacity ≈ workers × connections. <strong>With 8 workers × 50k = 400k connections; doubled to 1M with tuning and 16-core hardware.</strong></p>
+        </div>
+
+        <h3 class="sub">Ephemeral port range</h3>
+        <div class="prose">
+          <p>If NGINX is proxying to backends, it needs ephemeral ports for outbound connections. Default range is ~28k ports. <strong>Expand</strong>: <code>net.ipv4.ip_local_port_range = 1024 65535</code>. Plus keepalive to upstream so you don't burn ports per request.</p>
+        </div>
+
+        <h3 class="sub">TIME_WAIT and reuse</h3>
+        <div class="prose">
+          <p>Closed sockets sit in TIME_WAIT for ~60s. At 1M conn/sec, the table fills. <strong><code>net.ipv4.tcp_tw_reuse = 1</code></strong>; tune timeout if needed.</p>
+        </div>
+
+        <h3 class="sub">TLS terminating is the CPU cost</h3>
+        <div class="prose">
+          <p>1M idle HTTPS connections is the easy case. 1M actively-handshaking is CPU-bound. <strong>Session resumption tickets, OCSP stapling, modern ciphers (TLS 1.3)</strong> cut the per-connection cost. ECDSA certs are faster than RSA.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">04</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Reverse proxy / load balancer</h5><p>NGINX is the default. Or HAProxy if you prefer config style. Envoy if you want L7 features and a control plane.</p></div>
+          <div class="cell"><h5>Static file serving</h5><p>NGINX (or just a CDN). NGINX serves static files faster than almost anything; combine with sendfile() and you're at line rate.</p></div>
+          <div class="cell"><h5>API gateway with logic</h5><p>NGINX + Lua (OpenResty) for scripted behaviour. Or Envoy if you want WASM filters and a service mesh control plane.</p></div>
+          <div class="cell"><h5>Massive concurrent connections (chat, push)</h5><p>NGINX in front + dedicated app-tier (SignalR, Erlang, Go). NGINX terminates TLS, holds the WebSocket, forwards.</p></div>
+          <div class="cell"><h5>Cloud-native, K8s</h5><p>NGINX ingress controller or Envoy-based (Istio, Contour). Same architectural shape; different operational story.</p></div>
+          <div class="cell"><h5>Trying to scale Apache</h5><p>Switch to NGINX. The work is config translation, not architectural change. Most Apache configs translate to NGINX in a day.</p></div>
+        </div>
+        <div class="pull">"NGINX wins because Apache won the previous decade. The architectural idea has bled into everything else."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-gossip.html"><div class="label">Prev</div><div class="ttl">Gossip protocol</div></a>
+        <a class="next-fwd" href="fundamental-frontend-system-design.html"><div class="label">Next</div><div class="ttl">Frontend system design →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · NGINX · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

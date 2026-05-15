@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>How RAG Works · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive ai">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#ai">AI</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">RAG</span>
+    </div>
+    <nav>
+      <a href="../system-design.html">← Index</a>
+      <a href="ai-agents.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>AI <b>deep dive</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~13 min</b></span>
+        <span>Stack <b>Embeddings · vector DB · BM25 hybrid · re-ranker</b></span>
+      </div>
+      <h1>Give the model the <span class="ital">notes</span> first.</h1>
+      <p class="lede">Retrieval-augmented generation: before answering, fetch relevant context from a knowledge base and stuff it into the prompt. The LLM stays general; the knowledge stays current. The interesting engineering is in the retrieval, not the generation.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>What RAG solves</h5>
+        <p>LLMs hallucinate. They're frozen at training time. RAG grounds them in fresh, owned, verified content — your docs, your codebase, your customer data.</p>
+      </div>
+      <div>
+        <h5>The three stages</h5>
+        <p>Indexing (offline) → Retrieval (online, ~50ms) → Generation (online, ~1–10s). Most engineering time goes into stage 2.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Embeddings</span>
+          <span class="pill on">Vector DBs</span>
+          <span class="pill on">Hybrid retrieval</span>
+          <span class="pill on">Re-rankers</span>
+          <span class="pill">Chunking</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why retrieval beats finetuning</a></li>
+        <li><a href="#pipeline">The three stages</a></li>
+        <li><a href="#hybrid">Hybrid retrieval &amp; re-ranking</a></li>
+        <li><a href="#dotnet">In .NET</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why retrieval beats <span class="ital">finetuning</span>.</h2>
+        <div class="prose">
+          <p>You want an LLM that knows your company's documentation. Two options. <strong>Finetune</strong>: take a base model, train it on your docs. Costly (~$10k–$1M depending on size), slow to update (new docs = new training run), no source-of-truth (you can't see what the model "learned"). <strong>RAG</strong>: keep the base model as-is; at query time, retrieve the relevant docs and put them in the prompt. <em>Cheap to update (re-index nightly), traceable (you can show which docs the answer came from), and works on any base model.</em></p>
+          <p>RAG won the architecture war for "ask my docs"–shaped products. Finetuning still wins for "change the model's style or domain," but for grounding in current data, retrieval is the default.</p>
+        </div>
+
+        <div class="pull">"Retrieval is how an LLM borrows your library card."</div>
+      </section>
+
+      <section class="dd-section" id="pipeline">
+        <h2 class="section"><span class="num">02</span>The three <span class="ital">stages</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 380" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="rga" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · INDEX (OFFLINE) → RETRIEVE → GENERATE</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">INDEXING (offline)</text>
+              <rect x="0"   y="30" width="140" height="40" fill="#1a1814"/>
+              <text x="70"  y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">DOCS</text>
+              <rect x="160" y="30" width="140" height="40" fill="#c2410c"/>
+              <text x="230" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CHUNKER</text>
+              <rect x="320" y="30" width="140" height="40" fill="#c2410c"/>
+              <text x="390" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">EMBEDDER</text>
+              <rect x="480" y="30" width="180" height="40" fill="#1a1814"/>
+              <text x="570" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">VECTOR DB + BM25 INDEX</text>
+
+              <line x1="140" y1="50" x2="158" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#rga)"/>
+              <line x1="300" y1="50" x2="318" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#rga)"/>
+              <line x1="460" y1="50" x2="478" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#rga)"/>
+            </g>
+
+            <line x1="40" y1="170" x2="1140" y2="170" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+            <g transform="translate(40, 200)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">QUERY (online)</text>
+              <rect x="0"   y="30" width="100" height="40" fill="#1a1814"/>
+              <text x="50"  y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">USER QUESTION</text>
+              <rect x="120" y="30" width="140" height="40" fill="#c2410c"/>
+              <text x="190" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">EMBED + BM25</text>
+              <rect x="280" y="30" width="140" height="40" fill="#1a1814"/>
+              <text x="350" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">TOP-K (~50)</text>
+              <rect x="440" y="30" width="140" height="40" fill="#c2410c"/>
+              <text x="510" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">RE-RANKER</text>
+              <rect x="600" y="30" width="140" height="40" fill="#1a1814"/>
+              <text x="670" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">TOP-N (~5)</text>
+              <rect x="760" y="30" width="180" height="40" fill="#c2410c"/>
+              <text x="850" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">LLM + GROUNDED PROMPT</text>
+              <rect x="960" y="30" width="120" height="40" fill="#1a1814"/>
+              <text x="1020" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">ANSWER</text>
+
+              <line x1="100" y1="50" x2="118" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#rga)"/>
+              <line x1="260" y1="50" x2="278" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#rga)"/>
+              <line x1="420" y1="50" x2="438" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#rga)"/>
+              <line x1="580" y1="50" x2="598" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#rga)"/>
+              <line x1="740" y1="50" x2="758" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#rga)"/>
+              <line x1="940" y1="50" x2="958" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#rga)"/>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Two pipelines: indexing batches ahead of time; query runs end-to-end on each user request.</span></div>
+        </div>
+
+        <h3 class="sub">Indexing — get the docs into a queryable shape</h3>
+        <div class="prose">
+          <p>Docs come from various sources — Confluence, Notion, GitHub, S3, your DB. <strong>Chunk</strong> them into pieces small enough to fit in the LLM's context (typically 200–800 tokens). <strong>Embed</strong> each chunk into a vector (e.g. with OpenAI text-embedding-3-small or a local model like BGE). <strong>Index</strong> both the vector (in Qdrant, Pinecone, Weaviate, or pgvector) and the text (in Elasticsearch / Lucene for BM25).</p>
+        </div>
+
+        <h3 class="sub">Retrieval — find the relevant chunks</h3>
+        <div class="prose">
+          <p>At query time: embed the user's question; do a vector search (top-50 by cosine similarity) <em>and</em> a BM25 search (top-50 by lexical match). Combine the two sets. <strong>Re-rank</strong> the combined set using a cross-encoder model that scores each candidate against the query. Take the top 3–10. This is hybrid retrieval with re-ranking — the modern default.</p>
+        </div>
+
+        <h3 class="sub">Generation — build the prompt</h3>
+        <div class="prose">
+          <p>Build a prompt that includes the retrieved chunks as context, then the user's question. Pass to the LLM. <strong>Cite the sources</strong> — the model can reference the chunk IDs in its answer, and the UI can link to the original docs. <em>Citation is the only protection against hallucination</em>; without it, the user can't verify the answer.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="hybrid">
+        <h2 class="section"><span class="num">03</span>Hybrid retrieval &amp; <span class="ital">re-ranking</span>.</h2>
+
+        <h3 class="sub">Why hybrid beats pure vector</h3>
+        <div class="prose">
+          <p>Pure vector search misses exact matches. The user types "Error code SQL-0931"; the embedding similarity says "this looks like a database error topic" and returns 100 generic DB chunks — none containing the literal "SQL-0931". <strong>BM25 catches the exact match.</strong> Hybrid takes the best of both: vector for semantic similarity, BM25 for exact terms. Combined with reciprocal rank fusion or score normalisation.</p>
+        </div>
+
+        <h3 class="sub">Re-rankers are the secret weapon</h3>
+        <div class="prose">
+          <p>The top-50 from retrieval is noisy. A cross-encoder model (Cohere Rerank, BGE-Reranker, Voyage rerank-2) takes the (query, chunk) pair and produces a relevance score, jointly considering both. <strong>The top-5 after re-ranking is dramatically better</strong> than the top-5 from retrieval alone. Cost: ~50ms latency for re-ranking 50 candidates. Worth it.</p>
+        </div>
+
+        <h3 class="sub">Chunking is the make-or-break</h3>
+        <div class="prose">
+          <p>Chunks too small (50 tokens) = no context, retrieval misses. Chunks too large (2000 tokens) = irrelevant context drowns the relevant signal. <strong>Sweet spot: ~300–500 tokens, with ~50 tokens overlap between chunks</strong>. Split on semantic boundaries (paragraphs, sections) when possible, not arbitrary character counts. Per-document strategies vary: code wants AST-aware chunking; markdown wants header-aware.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">.NET</span>.</h2>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">RagPipeline.cs (using Semantic Kernel + Qdrant)</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Microsoft.SemanticKernel</span>
+<span class="c">// dotnet add package Qdrant.Client</span>
+<span class="k">using</span> <span class="t">Microsoft.SemanticKernel</span>;
+<span class="k">using</span> <span class="t">Qdrant.Client</span>;
+
+<span class="k">public sealed class</span> <span class="t">RagPipeline</span>
+{
+    <span class="k">private readonly</span> <span class="t">QdrantClient</span>   _vec;
+    <span class="k">private readonly</span> <span class="t">IElasticClient</span> _es;     <span class="c">// for BM25</span>
+    <span class="k">private readonly</span> <span class="t">IRerankerClient</span> _rerank;
+    <span class="k">private readonly</span> <span class="t">Kernel</span>         _kernel;  <span class="c">// SK with chat completion</span>
+
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">RagAnswer</span>&gt; <span class="fn">AskAsync</span>(<span class="k">string</span> question, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="c">// 1. Hybrid retrieval — vector + BM25, top 50 each.</span>
+        <span class="k">var</span> queryEmbed = <span class="k">await</span> _kernel.<span class="fn">InvokeAsync</span>&lt;<span class="k">float</span>[]&gt;(<span class="s">"embed"</span>, <span class="k">new</span>() { [<span class="s">"input"</span>] = question }, ct);
+
+        <span class="k">var</span> vectorTask = _vec.<span class="fn">SearchAsync</span>(
+            <span class="s">"chunks"</span>, queryEmbed,
+            limit: <span class="n">50</span>,
+            cancellationToken: ct);
+
+        <span class="k">var</span> bm25Task = _es.<span class="fn">SearchAsync</span>&lt;<span class="t">Chunk</span>&gt;(s =&gt; s
+            .<span class="fn">Index</span>(<span class="s">"chunks"</span>)
+            .<span class="fn">Size</span>(<span class="n">50</span>)
+            .<span class="fn">Query</span>(q =&gt; q.<span class="fn">Match</span>(m =&gt; m.<span class="fn">Field</span>(c =&gt; c.<span class="t">Text</span>).<span class="fn">Query</span>(question))));
+
+        <span class="k">await</span> <span class="t">Task</span>.<span class="fn">WhenAll</span>(vectorTask, bm25Task);
+
+        <span class="c">// 2. Reciprocal rank fusion → union top 100, score by 1/(rank+60).</span>
+        <span class="k">var</span> fused = <span class="fn">ReciprocalRankFusion</span>(vectorTask.<span class="t">Result</span>, bm25Task.<span class="t">Result</span>);
+
+        <span class="c">// 3. Re-rank fused set with a cross-encoder; keep top 5.</span>
+        <span class="k">var</span> reranked = <span class="k">await</span> _rerank.<span class="fn">RerankAsync</span>(question, fused, topK: <span class="n">5</span>, ct);
+
+        <span class="c">// 4. Build the prompt with citations.</span>
+        <span class="k">var</span> contextBlock = <span class="k">string</span>.<span class="fn">Join</span>(<span class="s">"\n\n"</span>, reranked.<span class="fn">Select</span>((c, i) =&gt;
+            $<span class="s">"[doc:{c.DocId}#{c.ChunkId}]\n{c.Text}"</span>));
+
+        <span class="k">var</span> prompt = $<span class="s">"""
+            Answer the question using ONLY the context below.
+            Cite sources by [doc:ID#CHUNK] in the answer.
+            If the context doesn't contain the answer, say so.
+
+            === CONTEXT ===
+            {contextBlock}
+
+            === QUESTION ===
+            {question}
+            """</span>;
+
+        <span class="c">// 5. Generate the answer.</span>
+        <span class="k">var</span> response = <span class="k">await</span> _kernel.<span class="fn">InvokeAsync</span>&lt;<span class="k">string</span>&gt;(<span class="s">"chat"</span>, <span class="k">new</span>() { [<span class="s">"prompt"</span>] = prompt }, ct);
+
+        <span class="k">return new</span> <span class="t">RagAnswer</span>(response, reranked.<span class="fn">Select</span>(c =&gt; c.<span class="t">DocId</span>).<span class="fn">ToArray</span>());
+    }
+}</pre>
+        </div>
+      </section>
+
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Citations are non-negotiable</div>
+          <p>Make the LLM cite sources by chunk ID. The UI links back to original docs. <strong>Without citations, users can't trust the answer; with them, they can verify and you can trace bad answers back to bad chunks.</strong></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Embedding model choice matters less than you'd think</div>
+          <p>OpenAI's text-embedding-3-small, BGE-large, Voyage-3, Cohere embed-v3 — all are within ~5% of each other on most benchmarks. <em>Spend the optimization budget on chunking, re-ranking, and prompt engineering — not on chasing the latest embedding model.</em></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Re-indexing is a regular operational task</div>
+          <p>Docs change. Embeddings need to be re-computed for changed chunks. <strong>Build a CDC-style pipeline</strong> (see <a href="change-data-capture.html">CDC chapter</a>): doc updates trigger chunk re-embedding; the vector DB is updated incrementally. Full re-indexing is expensive; do it only when you change the embedding model.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Hallucinations still happen</div>
+          <p>Even with grounding, LLMs invent details. <strong>Test with adversarial queries</strong>; have an eval suite of (question, expected sources, accepted answers) that you run on every prompt or model change. The eval is the QA gate.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Access control is your job</div>
+          <p>If only some users can see some docs, you have to filter at retrieval time. <strong>Pre-filter the vector search by user permissions</strong> (most vector DBs support metadata filters). Post-filtering — retrieving everything then filtering — leaks the existence of restricted content via timing.</p>
+        </div>
+
+        <div class="pull">"The model is the borrowed mouth. The retrieval is your voice."</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">06</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>"Ask my docs" chatbot</h5>
+            <p>Hybrid retrieval (vector + BM25) → re-rank → grounded prompt with citations. Start with Azure AI Search or pgvector + Elasticsearch.</p>
+          </div>
+          <div class="cell">
+            <h5>Vector DB choice</h5>
+            <p>pgvector if you already have Postgres. Qdrant for self-hosted vector-first. Pinecone for managed. Azure AI Search for "vector + lexical in one box."</p>
+          </div>
+          <div class="cell">
+            <h5>Small data, &lt;100k chunks</h5>
+            <p>Skip the vector DB. Embeddings in a list, compute cosine in-process. Stay simple until it hurts.</p>
+          </div>
+          <div class="cell">
+            <h5>Multi-tenant SaaS RAG</h5>
+            <p>Tenant-id as a metadata filter on every query. Cell-architecture model (see <a href="fundamental-cell-architecture.html">cell architecture</a>) if tenant isolation must be hard.</p>
+          </div>
+          <div class="cell">
+            <h5>Code search / repo Q&amp;A</h5>
+            <p>AST-aware chunking — chunk by function/method, not by line count. Use a code-specific embedding model (e.g. text-embedding-3-large with code-tuned prompts, or CodeBERT-style).</p>
+          </div>
+          <div class="cell">
+            <h5>Real-time freshness needed</h5>
+            <p>CDC pipeline doc → re-embed → vector DB. Get the lag down to seconds; don't try for milliseconds — the value isn't there.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="../system-design.html">
+          <div class="label">Index</div>
+          <div class="ttl">All AI chapters</div>
+        </a>
+        <a class="next-fwd" href="ai-agents.html">
+          <div class="label">Next AI</div>
+          <div class="ttl">AI Agents →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>AI · RAG · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

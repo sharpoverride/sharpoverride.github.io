@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Tinder — 1.6B swipes/day · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#cases">Case Studies</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Tinder</span>
+    </div>
+    <nav><a href="case-dropbox.html">← Prev</a><a href="case-zoom.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Years <b>2012 → today</b></span>
+        <span>Scale <b>~75M users · 1.6B swipes/day</b></span>
+        <span>Stack <b>Elasticsearch · MongoDB · Redis · Go</b></span>
+      </div>
+      <h1>One billion <span class="ital">swipes</span> a day.</h1>
+      <p class="lede">Tinder's swipe gesture is the world's most-used UI mechanism. Underneath: a geo-indexed candidate pool, a match-detection engine that fires on mutual right-swipes, and a write-heavy load most apps never see.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The pattern</h5><p>Show next candidate → user swipes → record swipe → if other party already right-swiped you, create a match. Repeat ~30 times per session.</p></div>
+      <div><h5>The hot path</h5><p>Almost all swipes are no-match. The expensive lookup ("did the other side right-swipe me?") happens once per match — &lt;1% of swipes.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#discovery">Discovery — who to show next</a></li>
+      <li><a href="#swipe">The swipe write path</a></li>
+      <li><a href="#match">Match detection</a></li>
+      <li><a href="#numbers">The numbers</a></li>
+      <li><a href="#lessons">Lessons</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="discovery">
+        <h2 class="section"><span class="num">01</span><span class="ital">Discovery</span>.</h2>
+        <div class="prose">
+          <p>"Who shows up next on the deck?" — a recommendation problem. Inputs: location, age range, gender preferences, recent activity, ML-derived attractiveness signals. <strong>Elasticsearch is the candidate index</strong>; geo + age + gender filters, score by recommendation model, return top 50. User pre-fetches the next batch while swiping the current one.</p>
+        </div>
+        <div class="pull">"The hard problem isn't the swipe. It's making sure the next face is worth swiping on."</div>
+      </section>
+
+      <section class="dd-section" id="swipe">
+        <h2 class="section"><span class="num">02</span>The swipe <span class="ital">write path</span>.</h2>
+        <div class="prose">
+          <p>1.6B swipes/day = ~20k writes/sec average; ~80k at peak. Each swipe is a small write: <code>(user_id, target_id, direction, timestamp)</code>. <strong>Per-user partitioned</strong>: one user's swipes live on one shard. Read pattern is rare per swipe (mostly write-only); the heavy reads are during match detection.</p>
+          <p>The data is somewhat ephemeral — months-old swipes don't usually affect future discovery (the swiped person may be inactive, may have changed photos, may have left the app). <strong>TTL on cold swipes</strong> keeps the dataset bounded.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="match">
+        <h2 class="section"><span class="num">03</span>Match <span class="ital">detection</span>.</h2>
+        <div class="prose">
+          <p>When Alice right-swipes Bob, check: has Bob already right-swiped Alice? <strong>One lookup against Bob's "people I liked" index.</strong> If yes, it's a match; create a match row; send push notifications to both; open a chat.</p>
+        </div>
+
+        <h3 class="sub">The asymmetric data</h3>
+        <div class="prose">
+          <p>The "did Bob right-swipe Alice" lookup is against Bob's data, not Alice's. <em>Cross-shard read.</em> Mitigation: a separate "right-swiped-by" index per user, denormalised. <strong>Two writes per right-swipe</strong> (Alice's "I liked Bob"; Bob's "Alice liked me"); one read per match check. Trades write for read.</p>
+        </div>
+
+        <h3 class="sub">Push notification</h3>
+        <div class="prose">
+          <p>Match → notification within seconds. Push to both devices via APNs/FCM. <strong>The user engagement hook is timing</strong>; a match they hear about an hour later doesn't generate a conversation. Notification is the conversion event.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">numbers</span>.</h2>
+        <table class="matrix"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+          <tr><th>Users</th><td>~75M</td></tr>
+          <tr><th>Swipes / day</th><td>~1.6B</td></tr>
+          <tr><th>Swipes / sec (avg)</th><td>~20k</td></tr>
+          <tr><th>Matches / day</th><td>~26M</td></tr>
+          <tr><th>Match rate</th><td>~1.6%</td></tr>
+          <tr><th>Push notifications / day</th><td>~50M+</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">lessons</span>.</h2>
+        <div class="callout"><div class="ctag">Denormalise for hot reads</div><p>"Right-swiped-by-me" and "right-swiped-me" are different indexes; one's cheap per write, the other's cheap per read. Tinder maintains both. <em>Storage costs nothing; latency costs everything.</em></p></div>
+        <div class="callout"><div class="ctag">Pre-fetch the next batch</div><p>While the user swipes one, fetch the next 5. Mobile UI feels instant; the network is hidden.</p></div>
+        <div class="callout"><div class="ctag">TTL the cold data</div><p>Swipes from a year ago rarely matter. Trim them; keep the dataset bounded. Same pattern as TTL on Redis keys.</p></div>
+        <div class="callout"><div class="ctag">The recommendation is the product</div><p>Showing better candidates beats showing more candidates. ML model + ranking is the engineering investment that compounds.</p></div>
+        <div class="pull">"Tinder's tech is unremarkable except for the candidate ranking. The candidate ranking is the entire product."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-dropbox.html"><div class="label">Prev</div><div class="ttl">Dropbox</div></a>
+        <a class="next-fwd" href="case-zoom.html"><div class="label">Next</div><div class="ttl">Zoom →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Case · Tinder · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

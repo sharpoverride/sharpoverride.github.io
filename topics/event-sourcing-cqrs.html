@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Event Sourcing &amp; CQRS · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">13 · Event Sourcing &amp; CQRS</span>
+    </div>
+    <nav>
+      <a href="monolith-vs-microservices.html">← Prev</a>
+      <a href="bloom-filters.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>13</b></span>
+        <span>Difficulty <b>★★★★★</b></span>
+        <span>Read <b>~17 min</b></span>
+        <span>Stack <b>Marten · EventStoreDB · Postgres · MediatR</b></span>
+      </div>
+      <h1>Store the <span class="ital">decisions</span>. Derive the rest.</h1>
+      <p class="lede">A row in a database is a summary. The events that produced it are gone. Event sourcing keeps the events as the source of truth and rebuilds the row on demand. Pair it with CQRS — separate write and read models — and you get an audit log, time travel, and projection-as-a-feature, in exchange for one of the steeper learning curves in the field.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>"Why is this customer's balance $43.21?" — a CRUD database can show you the row, but not the sequence of facts that produced it. <em>That sequence is the business.</em></p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Append-only event log is the write model. Projections build whatever read models the queries need. Rebuild the read side without touching the write side. <strong>The events are the contract.</strong></p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Marten</span>
+          <span class="pill on">EventStoreDB</span>
+          <span class="pill on">Postgres</span>
+          <span class="pill on">MediatR</span>
+          <span class="pill">Cosmos Change Feed</span>
+          <span class="pill">Kafka</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">What CRUD throws away</a></li>
+        <li><a href="#core">Events, streams, projections</a></li>
+        <li><a href="#deeper">Snapshots and versioning</a></li>
+        <li><a href="#dotnet">In Marten</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>What CRUD throws <span class="ital">away</span>.</h2>
+        <div class="prose">
+          <p>A CRUD database stores the result of decisions. A customer's <code>Balance = 43.21</code> column tells you the current state. It doesn't tell you that the balance was <code>50.00</code>, then a charge for <code>10.00</code> arrived, then a refund of <code>3.21</code> was applied, then a fee of <code>0.00</code> was logged and reverted because it was a bug. <strong>The facts are the events; the row is the summary.</strong> Every <code>UPDATE</code> destroys information the business may later need.</p>
+          <p>The traditional workaround is the audit table — a parallel structure that records every change. Audit tables are unloved, frequently divergent from the truth, and rebuilt every two years when somebody discovers nobody trusts them anymore. <em>Event sourcing inverts the trust: the audit log is the database, and the "current state" is the materialised view.</em> The trick that took fifteen years to land in mainstream stacks is that this isn't more storage — disks are cheap — it's a different relationship to your data.</p>
+        </div>
+
+        <div class="pull">"The state is a function of the events. Lose the events, lose the truth."</div>
+
+        <div class="prose">
+          <p>The decision to event-source is binary at the aggregate level. You event-source <em>orders</em>; you don't event-source the search index. The aggregates whose history is the business — accounts, orders, policies, prescriptions, claims — earn the cost. The aggregates that are derived — product catalogs, configuration, recommendations — don't. <strong>If you can't articulate why your bounded context needs the history, don't event-source it.</strong></p>
+        </div>
+      </section>
+
+      <!-- 2 core -->
+      <section class="dd-section" id="core">
+        <h2 class="section"><span class="num">02</span>Events, streams, <span class="ital">projections</span>.</h2>
+
+        <div class="prose">
+          <p>Three primitives, in order of architectural weight: <strong>events</strong> (immutable facts), <strong>streams</strong> (events about one aggregate, in order), <strong>projections</strong> (anything derived).</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 500" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="esa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+              <marker id="esb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a1814"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 13 · ONE STREAM, MANY PROJECTIONS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- command -->
+            <g transform="translate(20, 80)">
+              <rect x="0" y="0" width="160" height="50" fill="#1a1814"/>
+              <text x="80" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">COMMAND</text>
+              <text x="80" y="38" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">PlaceOrder</text>
+            </g>
+
+            <!-- write side -->
+            <g transform="translate(220, 80)">
+              <rect x="0" y="0" width="200" height="50" fill="#c2410c"/>
+              <text x="100" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">DECISION (aggregate)</text>
+              <text x="100" y="38" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">validate → emit events</text>
+            </g>
+
+            <!-- event stream -->
+            <g transform="translate(20, 170)">
+              <rect x="0" y="0" width="1100" height="56" fill="#1a1814"/>
+              <text x="20"  y="20" font-family="JetBrains Mono" font-size="10" fill="#f1ece1" letter-spacing="0.1em">EVENT STREAM order-7c4a</text>
+              <g fill="#c2410c">
+                <rect x="20"  y="28" width="170" height="24"/>
+                <rect x="200" y="28" width="190" height="24"/>
+                <rect x="400" y="28" width="180" height="24"/>
+                <rect x="590" y="28" width="200" height="24"/>
+                <rect x="800" y="28" width="160" height="24"/>
+              </g>
+              <g fill="#f1ece1" font-family="JetBrains Mono" font-size="9" text-anchor="middle">
+                <text x="105" y="44">OrderPlaced</text>
+                <text x="295" y="44">PaymentAuthorised</text>
+                <text x="490" y="44">StockReserved</text>
+                <text x="690" y="44">ShipmentBooked</text>
+                <text x="880" y="44">OrderCompleted</text>
+              </g>
+            </g>
+
+            <line x1="120" y1="130" x2="120" y2="168" stroke="#c2410c" stroke-width="2" marker-end="url(#esa)"/>
+            <line x1="320" y1="130" x2="320" y2="168" stroke="#c2410c" stroke-width="2" marker-end="url(#esa)"/>
+
+            <!-- projections -->
+            <g transform="translate(20, 260)">
+              <text x="0" y="14" font-family="JetBrains Mono" font-size="10" letter-spacing="0.1em" fill="#c2410c">PROJECTIONS</text>
+              <text x="0" y="32" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Each projection consumes the stream &amp; writes a read model. Independent. Rebuildable.</text>
+
+              <rect x="0"   y="50" width="260" height="80" fill="#1a1814"/>
+              <text x="130" y="74" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">Order Summary</text>
+              <text x="130" y="92" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">id, status, total, last_event</text>
+              <text x="130" y="108" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">→ Postgres table</text>
+
+              <rect x="280" y="50" width="260" height="80" fill="#1a1814"/>
+              <text x="410" y="74" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">Search Index</text>
+              <text x="410" y="92" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">tokenised, faceted</text>
+              <text x="410" y="108" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">→ Elasticsearch</text>
+
+              <rect x="560" y="50" width="260" height="80" fill="#1a1814"/>
+              <text x="690" y="74" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">Daily Revenue</text>
+              <text x="690" y="92" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">date, sum, count</text>
+              <text x="690" y="108" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">→ aggregate table</text>
+
+              <rect x="840" y="50" width="260" height="80" fill="#1a1814"/>
+              <text x="970" y="74" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">Audit Trail</text>
+              <text x="970" y="92" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">who, when, what changed</text>
+              <text x="970" y="108" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">→ compliance store</text>
+
+              <line x1="130" y1="0"  x2="130" y2="48" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#esa)"/>
+              <line x1="410" y1="0"  x2="410" y2="48" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#esa)"/>
+              <line x1="690" y1="0"  x2="690" y2="48" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#esa)"/>
+              <line x1="970" y1="0"  x2="970" y2="48" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#esa)"/>
+            </g>
+
+            <line x1="20" y1="460" x2="1180" y2="460" stroke="#1a1814" stroke-width="1" stroke-dasharray="3 3"/>
+            <text x="20" y="488" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">"The stream is the source of truth. Every read model is a cache you can throw away."</text>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 13</span><span>The same event stream produces every read shape the business needs. New shape? New projection. The write model never changes.</span></div>
+        </div>
+
+        <h3 class="sub">CQRS is the natural pair</h3>
+        <div class="prose">
+          <p>Command Query Responsibility Segregation says the model for writing and the model for reading should be different. Event sourcing forces it: the write model is "append an event to a stream"; the read model is "query a projection". <strong>The schemas don't match. They shouldn't.</strong> The orders write side has one shape; the customer-facing order list view has a different shape; the back-office reconciliation report has a third shape; the search index has a fourth. Trying to serve all four from one normalised SQL schema is what kills relational designs at scale.</p>
+        </div>
+
+        <h3 class="sub">Projections are not transactional with writes</h3>
+        <div class="prose">
+          <p>An event lands in the stream. The Order Summary projection is updated 50 milliseconds later. <strong>The read side is eventually consistent.</strong> A user who just placed an order may not see it in their list immediately. The workaround for that specific UX is to return the projected entity from the command handler — read your own writes by re-projecting in-process — or to read from the stream directly for the post-command refresh. Beyond that, the business has to accept the lag. The lag is the price; not all systems can pay it.</p>
+        </div>
+      </section>
+
+      <!-- 3 deeper -->
+      <section class="dd-section" id="deeper">
+        <h2 class="section"><span class="num">03</span>Snapshots and <span class="ital">versioning</span>.</h2>
+        <div class="prose">
+          <p>Two operational realities that the textbook skips: rebuilding the aggregate from 10,000 events is slow, and your events evolve over the codebase's lifetime. Both have solved patterns; both have to be built in from day one.</p>
+        </div>
+
+        <h3 class="sub">Snapshots: cache the state, not the truth</h3>
+        <div class="prose">
+          <p>To rebuild an aggregate, you replay all its events. For long-lived aggregates — a customer with five years of activity — that's thousands of events on every command. The fix is a snapshot: every N events (typically 100), serialise the aggregate's state and store it next to the stream. Rebuild becomes "load the latest snapshot, then replay only events newer than the snapshot." <strong>Snapshots are an optimisation, not a source of truth.</strong> If a snapshot is corrupt or stale, the events still rebuild correctly; you just rebuild slowly until the next snapshot.</p>
+          <p>Marten handles snapshots transparently. EventStoreDB does too. Roll-your-own event stores need to remember that snapshots must invalidate cleanly on aggregate-schema changes — otherwise you replay against an old shape and the deserialiser explodes at 3am.</p>
+        </div>
+
+        <h3 class="sub">Event versioning is your most permanent decision</h3>
+        <div class="prose">
+          <p>An event was written in 2022 with a <code>currency: string</code> field. In 2024, you split it into <code>currencyCode</code> and <code>currencyExponent</code>. The 2022 events are still in the stream — they're immutable facts. Three patterns to deal with this, in order of pain:</p>
+          <p><strong>Upcasters</strong>: when an old event is loaded, transform it to the new shape on the way in. Code stays clean; deserialisation gets a hook. Marten's <code>Schema.For&lt;TEvent&gt;().Upcaster(...)</code> handles this. <strong>Versioned event types</strong>: <code>OrderPlacedV1</code> and <code>OrderPlacedV2</code> co-exist as distinct types; the projection handles both. Verbose but unambiguous. <strong>Migration rewrite</strong>: replay the stream, write a new stream with corrected events, swap. Use only for breaking changes you cannot upcast — and accept that the new stream is the new truth.</p>
+        </div>
+
+        <h3 class="sub">Idempotent projections</h3>
+        <div class="prose">
+          <p>Projections will be re-run. A bug is found, the projection is reset, the stream is replayed. The projection must produce the same read model from the same events every time. <strong>No external side-effects in a projection</strong> — no emails, no Slack alerts, no third-party API calls. Those are handled by separate event handlers that track their own "have I processed this event id" idempotency keys. The projection's job is to write to a SQL table or a search index, with idempotent <code>UPSERT</code>s. That's the contract.</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">Marten</span>.</h2>
+
+        <div class="prose">
+          <p>Marten is the most pragmatic .NET event store: it's a Postgres extension. The same database that holds your projection tables holds your event log, transactionally. No second cluster to operate. The aggregate is a class that knows how to fold events into state; the projection is a class that mirrors that fold into a read table.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">OrderAggregate.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Marten</span>
+<span class="k">using</span> <span class="t">Marten.Events.Aggregation</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Orders</span>;
+
+<span class="c">// Events — append-only facts. Immutable records.</span>
+<span class="k">public sealed record</span> <span class="t">OrderPlaced</span>(<span class="t">Guid</span> <span class="t">OrderId</span>, <span class="t">Guid</span> <span class="t">CustomerId</span>, <span class="k">decimal</span> <span class="t">Amount</span>);
+<span class="k">public sealed record</span> <span class="t">PaymentAuthorised</span>(<span class="t">Guid</span> <span class="t">OrderId</span>, <span class="t">Guid</span> <span class="t">PaymentId</span>);
+<span class="k">public sealed record</span> <span class="t">StockReserved</span>(<span class="t">Guid</span> <span class="t">OrderId</span>, <span class="t">Guid</span> <span class="t">ReservationId</span>);
+<span class="k">public sealed record</span> <span class="t">ShipmentBooked</span>(<span class="t">Guid</span> <span class="t">OrderId</span>, <span class="k">string</span> <span class="t">Carrier</span>, <span class="k">string</span> <span class="t">Tracking</span>);
+<span class="k">public sealed record</span> <span class="t">OrderCompleted</span>(<span class="t">Guid</span> <span class="t">OrderId</span>);
+<span class="k">public sealed record</span> <span class="t">OrderCancelled</span>(<span class="t">Guid</span> <span class="t">OrderId</span>, <span class="k">string</span> <span class="t">Reason</span>);
+
+<span class="c">// Aggregate state — folded from events. Pure functions, no side effects.</span>
+<span class="k">public sealed class</span> <span class="t">Order</span>
+{
+    <span class="k">public</span> <span class="t">Guid</span>    <span class="t">Id</span>          { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="t">Guid</span>    <span class="t">CustomerId</span>  { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="k">decimal</span> <span class="t">Amount</span>      { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="k">string</span>  <span class="t">Status</span>      { <span class="k">get</span>; <span class="k">set</span>; } = <span class="s">"Pending"</span>;
+    <span class="k">public</span> <span class="t">Guid</span>?   <span class="t">PaymentId</span>   { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="t">Guid</span>?   <span class="t">ReservationId</span> { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="k">string</span>? <span class="t">Tracking</span>    { <span class="k">get</span>; <span class="k">set</span>; }
+
+    <span class="k">public void</span> <span class="fn">Apply</span>(<span class="t">OrderPlaced</span> e)
+        { <span class="t">Id</span> = e.<span class="t">OrderId</span>; <span class="t">CustomerId</span> = e.<span class="t">CustomerId</span>; <span class="t">Amount</span> = e.<span class="t">Amount</span>; }
+
+    <span class="k">public void</span> <span class="fn">Apply</span>(<span class="t">PaymentAuthorised</span> e) { <span class="t">PaymentId</span> = e.<span class="t">PaymentId</span>; <span class="t">Status</span> = <span class="s">"Paid"</span>; }
+    <span class="k">public void</span> <span class="fn">Apply</span>(<span class="t">StockReserved</span> e)     { <span class="t">ReservationId</span> = e.<span class="t">ReservationId</span>; }
+    <span class="k">public void</span> <span class="fn">Apply</span>(<span class="t">ShipmentBooked</span> e)    { <span class="t">Tracking</span> = e.<span class="t">Tracking</span>; <span class="t">Status</span> = <span class="s">"Shipped"</span>; }
+    <span class="k">public void</span> <span class="fn">Apply</span>(<span class="t">OrderCompleted</span> e)    { <span class="t">Status</span> = <span class="s">"Completed"</span>; }
+    <span class="k">public void</span> <span class="fn">Apply</span>(<span class="t">OrderCancelled</span> e)    { <span class="t">Status</span> = <span class="s">"Cancelled"</span>; }
+}
+
+<span class="c">// Read model — built by a projection from the same events.</span>
+<span class="k">public sealed class</span> <span class="t">OrderSummary</span>
+{
+    <span class="k">public</span> <span class="t">Guid</span> <span class="t">Id</span> { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="k">string</span> <span class="t">Status</span> { <span class="k">get</span>; <span class="k">set</span>; } = <span class="s">""</span>;
+    <span class="k">public</span> <span class="k">decimal</span> <span class="t">Total</span>  { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="k">string</span>? <span class="t">Tracking</span> { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="t">DateTimeOffset</span> <span class="t">LastUpdated</span> { <span class="k">get</span>; <span class="k">set</span>; }
+}
+
+<span class="k">public sealed class</span> <span class="t">OrderSummaryProjection</span> : <span class="t">SingleStreamProjection</span>&lt;<span class="t">OrderSummary</span>&gt;
+{
+    <span class="k">public</span> <span class="t">OrderSummary</span> <span class="fn">Create</span>(<span class="t">OrderPlaced</span> e) =&gt; <span class="k">new</span>()
+        { <span class="t">Id</span> = e.<span class="t">OrderId</span>, <span class="t">Total</span> = e.<span class="t">Amount</span>, <span class="t">Status</span> = <span class="s">"Pending"</span>, <span class="t">LastUpdated</span> = <span class="t">DateTimeOffset</span>.<span class="t">UtcNow</span> };
+
+    <span class="k">public void</span> <span class="fn">Apply</span>(<span class="t">PaymentAuthorised</span> _, <span class="t">OrderSummary</span> s) { s.<span class="t">Status</span> = <span class="s">"Paid"</span>; s.<span class="t">LastUpdated</span> = <span class="t">DateTimeOffset</span>.<span class="t">UtcNow</span>; }
+    <span class="k">public void</span> <span class="fn">Apply</span>(<span class="t">ShipmentBooked</span> e,   <span class="t">OrderSummary</span> s) { s.<span class="t">Status</span> = <span class="s">"Shipped"</span>; s.<span class="t">Tracking</span> = e.<span class="t">Tracking</span>; }
+    <span class="k">public void</span> <span class="fn">Apply</span>(<span class="t">OrderCompleted</span> _,   <span class="t">OrderSummary</span> s) { s.<span class="t">Status</span> = <span class="s">"Completed"</span>; }
+    <span class="k">public void</span> <span class="fn">Apply</span>(<span class="t">OrderCancelled</span> _,   <span class="t">OrderSummary</span> s) { s.<span class="t">Status</span> = <span class="s">"Cancelled"</span>; }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>The command handler appends events; Marten persists them and runs the projection inline (or async, configurable per projection). The append is transactional with the projection update — same Postgres database, same SQL transaction.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">Program.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+builder.<span class="t">Services</span>.<span class="fn">AddMarten</span>(opts =&gt;
+{
+    opts.<span class="fn">Connection</span>(builder.<span class="t">Configuration</span>.<span class="fn">GetConnectionString</span>(<span class="s">"Postgres"</span>)!);
+    opts.<span class="t">Events</span>.<span class="t">StreamIdentity</span> = <span class="t">StreamIdentity</span>.<span class="t">AsGuid</span>;
+
+    opts.<span class="t">Projections</span>.<span class="fn">Add</span>&lt;<span class="t">OrderSummaryProjection</span>&gt;(<span class="t">ProjectionLifecycle</span>.<span class="t">Inline</span>);
+
+    <span class="c">// Snapshot every 100 events; rebuild safely from the stream.</span>
+    opts.<span class="t">Events</span>.<span class="fn">AddEventType</span>(<span class="k">typeof</span>(<span class="t">OrderPlaced</span>));
+    opts.<span class="t">Schema</span>.<span class="fn">For</span>&lt;<span class="t">Order</span>&gt;().<span class="fn">Identity</span>(o =&gt; o.<span class="t">Id</span>);
+}).<span class="fn">UseLightweightSessions</span>();
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+
+app.<span class="fn">MapPost</span>(<span class="s">"/orders"</span>, <span class="k">async</span> (<span class="t">PlaceOrderDto</span> req, <span class="t">IDocumentSession</span> s, <span class="t">CancellationToken</span> ct) =&gt;
+{
+    <span class="k">var</span> id = <span class="t">Guid</span>.<span class="fn">NewGuid</span>();
+    <span class="k">var</span> placed = <span class="k">new</span> <span class="t">OrderPlaced</span>(id, req.<span class="t">CustomerId</span>, req.<span class="t">Amount</span>);
+    s.<span class="t">Events</span>.<span class="fn">StartStream</span>&lt;<span class="t">Order</span>&gt;(id, placed);
+    <span class="k">await</span> s.<span class="fn">SaveChangesAsync</span>(ct);
+    <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Created</span>($<span class="s">"/orders/{id}"</span>, <span class="k">new</span> { id });
+});
+
+app.<span class="fn">MapPost</span>(<span class="s">"/orders/{id:guid}/pay"</span>, <span class="k">async</span> (
+    <span class="t">Guid</span> id, <span class="t">PayDto</span> req, <span class="t">IDocumentSession</span> s, <span class="t">CancellationToken</span> ct) =&gt;
+{
+    <span class="c">// Optimistic concurrency: replay current state, validate, append.</span>
+    <span class="k">var</span> order = <span class="k">await</span> s.<span class="t">Events</span>.<span class="fn">AggregateStreamAsync</span>&lt;<span class="t">Order</span>&gt;(id, token: ct);
+    <span class="k">if</span> (order is <span class="k">null</span>)            <span class="k">return</span> <span class="t">Results</span>.<span class="fn">NotFound</span>();
+    <span class="k">if</span> (order.<span class="t">Status</span> != <span class="s">"Pending"</span>) <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Conflict</span>();
+
+    s.<span class="t">Events</span>.<span class="fn">Append</span>(id, <span class="k">new</span> <span class="t">PaymentAuthorised</span>(id, req.<span class="t">PaymentId</span>));
+    <span class="k">await</span> s.<span class="fn">SaveChangesAsync</span>(ct);
+    <span class="k">return</span> <span class="t">Results</span>.<span class="fn">NoContent</span>();
+});
+
+app.<span class="fn">MapGet</span>(<span class="s">"/orders/{id:guid}"</span>, <span class="k">async</span> (<span class="t">Guid</span> id, <span class="t">IQuerySession</span> s) =&gt;
+    (<span class="k">await</span> s.<span class="fn">LoadAsync</span>&lt;<span class="t">OrderSummary</span>&gt;(id)) <span class="k">is</span> { } o ? <span class="t">Results</span>.<span class="fn">Ok</span>(o) : <span class="t">Results</span>.<span class="fn">NotFound</span>());
+
+app.<span class="fn">Run</span>();</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Events are past-tense facts</div>
+          <p>Name events in the past tense: <code>OrderPlaced</code>, <code>PaymentAuthorised</code>, never <code>PlaceOrder</code> or <code>AuthorisePayment</code> (those are <em>commands</em>). The distinction is load-bearing: a command can be rejected, an event cannot. Once written, the event is the fact. The verb-tense rule is the first place naming drift shows up.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Inline vs async projections</div>
+          <p>Marten lets you mark a projection <code>Inline</code> (updated in the same transaction as the event append) or <code>Async</code> (updated by a background daemon). Inline gives you read-your-writes consistency at the cost of write throughput. Async gives you scale at the cost of staleness. <strong>Inline for the projection that powers the same user's next screen, async for everything else</strong> — search indexes, reporting tables, audit trails.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Optimistic concurrency on the stream</div>
+          <p>Two commands arrive for the same order at the same time. Both load state, both validate, both try to append. Without concurrency control, both succeed and the second one's "validation against current state" was actually against stale state. Marten's <code>AppendExpectedVersion</code> handles it: the append fails if the stream has moved since you read it, and you re-execute the command against fresh state.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Don't event-source everything</div>
+          <p>The customer's order history? Event-source. The list of countries? Don't. The recommendation cache? Don't. <strong>Event sourcing earns its keep where the history is the business.</strong> A reference data table that changes once a quarter is just a table. Mixing event-sourced aggregates with plain document storage in the same Marten database is normal and recommended.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Replay is your debugging tool</div>
+          <p>A bug in the projection? Reset the read model, replay the stream, you get the corrected state. A new requirement needs a new view? Write a new projection, run it from event 0, you get the new view from the dawn of time. <em>This is the operational superpower of event sourcing</em>, and the reason teams who get past the learning curve never want to go back.</p>
+        </div>
+
+        <div class="pull">"A CRUD migration is a one-way trip. An event-sourced migration is a function you rerun until it's right."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Technology</th>
+              <th>Storage</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Marten + Postgres<span class="sub">.NET</span></th>
+              <td>Postgres event table</td>
+              <td>Same DB as projections · transactional · idiomatic C#</td>
+              <td><strong>$30 – $1k</strong> Postgres</td>
+              <td>One DB to operate</td>
+              <td><span class="verdict good">Default for .NET teams</span></td>
+            </tr>
+            <tr>
+              <th>EventStoreDB<span class="sub">purpose-built</span></th>
+              <td>Append-only log + streams</td>
+              <td>Highest throughput · subscriptions built in · projections engine</td>
+              <td><strong>$200 – $5k</strong> self-host or Cloud</td>
+              <td>Second cluster to operate</td>
+              <td><span class="verdict good">When throughput &gt; Postgres can handle</span></td>
+            </tr>
+            <tr>
+              <th>Cosmos DB Change Feed<span class="sub">events from CRUD</span></th>
+              <td>Cosmos containers</td>
+              <td>Built-in CDC · global distribution · serverless tier</td>
+              <td><strong>$24+</strong> per 400 RU/s</td>
+              <td>Azure-managed</td>
+              <td><span class="verdict warn">CRUD with events; not full ES</span></td>
+            </tr>
+            <tr>
+              <th>Kafka as event store<span class="sub">log</span></th>
+              <td>Kafka topics</td>
+              <td>Massive throughput · ecosystem · Kafka Streams projections</td>
+              <td><strong>$300 – $10k</strong> MSK / Confluent</td>
+              <td>Heavy ops; consumer-group complexity</td>
+              <td><span class="verdict warn">For analytics-shaped ES, not aggregates</span></td>
+            </tr>
+            <tr>
+              <th>Akka.NET event-sourced actors<span class="sub">actor model</span></th>
+              <td>Akka.Persistence</td>
+              <td>Actor concurrency · location-transparent · high write rates</td>
+              <td><strong>$200+</strong> self-host</td>
+              <td>Akka cluster ops</td>
+              <td><span class="verdict warn">When actor model fits the domain</span></td>
+            </tr>
+            <tr>
+              <th>CRUD + audit table<span class="sub">"event sourcing lite"</span></th>
+              <td>SQL audit table</td>
+              <td>Zero new tech</td>
+              <td>—</td>
+              <td>Audit drifts from truth within weeks</td>
+              <td><span class="verdict bad">Don't call this event sourcing. It isn't.</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Domain where history IS the business</h5>
+            <p>Finance, healthcare, supply chain, legal. Event-source the aggregates. The audit log isn't a feature — it's the database.</p>
+          </div>
+          <div class="cell">
+            <h5>.NET on Postgres, &lt;10k events/sec</h5>
+            <p>Marten. One database, transactional projections, snapshot support. The lowest-friction onramp in the ecosystem.</p>
+          </div>
+          <div class="cell">
+            <h5>&gt;10k events/sec or polyglot</h5>
+            <p>EventStoreDB. Purpose-built, language-neutral, built-in subscriptions and projections. The operational cost is the price of the throughput.</p>
+          </div>
+          <div class="cell">
+            <h5>Read-heavy domain with many shapes</h5>
+            <p>Pair ES with CQRS aggressively. Build a projection per query shape. Don't try to make one normalised SQL schema serve every view.</p>
+          </div>
+          <div class="cell">
+            <h5>CRUD domain with audit requirement</h5>
+            <p>Don't event-source. Use change data capture (<a href="change-data-capture.html">Chapter 17</a>) or temporal tables. ES is overkill for "we need to know who changed what."</p>
+          </div>
+          <div class="cell">
+            <h5>Greenfield app, undecided</h5>
+            <p>Start with a modular monolith (<a href="monolith-vs-microservices.html">Chapter 12</a>) and CRUD. Add ES only to the aggregates where history is asked of you by name. Mixed models are normal.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — event-sourcing the whole system.</strong> Treating event sourcing as an architecture, not a tactic, leaks the learning curve into every team. Reserve it for the aggregates whose history is asked of you by the business.</p>
+        <p><strong>Two — using events as messages.</strong> An event is a fact about <em>one aggregate</em>. A cross-aggregate message is a different artefact and belongs on a broker, not in the event store. Conflating the two is the most common shape-bug in early ES designs.</p>
+        <p><strong>Three — never planning for event versioning.</strong> The first event-schema change comes within six months. Without an upcaster strategy from day one, you'll be writing migration scripts that "rewrite the past" — and getting the audit trail wrong.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="monolith-vs-microservices.html">
+          <div class="label">Chapter 12</div>
+          <div class="ttl">Monolith vs microservices</div>
+        </a>
+        <a class="next-fwd" href="bloom-filters.html">
+          <div class="label">Chapter 14</div>
+          <div class="ttl">Bloom filters →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 13 · Event Sourcing &amp; CQRS · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

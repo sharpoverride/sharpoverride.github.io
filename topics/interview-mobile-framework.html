@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Mobile System Design Interview Framework · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive interview">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#interviews">Interviews</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Mobile SD framework</span>
+    </div>
+    <nav><a href="interview-behavioral.html">← Prev</a><a href="interview-design-airbnb.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Interview <b>framework</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~12 min</b></span>
+        <span>Stack <b>iOS · Android · sync · offline-first</b></span>
+      </div>
+      <h1>Mobile is <span class="ital">different</span>.</h1>
+      <p class="lede">Backend system design assumes infinite RAM, infinite connectivity, infinite background time. Mobile system design assumes none of that. Battery, intermittent network, app lifecycle, store review — every constraint flips. The framework adapts.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The big differences</h5><p>Offline-first by default. Background-execution is rationed. Push notifications are the wake-up mechanism. App-store updates take days.</p></div>
+      <div><h5>The framework</h5><p>(1) Scope. (2) Estimate (storage, battery, network). (3) Local DB schema. (4) Sync protocol. (5) UI + state mgmt. (6) Offline / failure modes.</p></div>
+      <div><h5>Tech you'll touch</h5>
+        <div><span class="pill on">SQLite/Room/Core Data</span><span class="pill on">URLSession</span><span class="pill on">WorkManager/BGTaskScheduler</span><span class="pill">Sync protocol</span></div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#diff">What makes mobile different</a></li>
+        <li><a href="#framework">The 6-step adaptation</a></li>
+        <li><a href="#sync">Sync is the hard part</a></li>
+        <li><a href="#anti">Anti-patterns</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="diff">
+        <h2 class="section"><span class="num">01</span>What makes mobile <span class="ital">different</span>.</h2>
+        <div class="prose">
+          <p><strong>Network is unreliable.</strong> Trains, tunnels, elevators, planes. The app must keep working. <strong>Battery is finite.</strong> Spinning the radio costs real watts. <strong>Background is rationed.</strong> iOS will suspend you; Android will kill you under memory pressure. <strong>Storage is limited.</strong> Not infinite cloud; a few GB you share with photos.</p>
+          <p>The framework changes accordingly. Local DB isn't a cache — it's the source of truth for offline. Sync isn't an afterthought — it's the architecture. Lifecycle isn't a polite suggestion — it's the operating system's policy you live under.</p>
+        </div>
+        <div class="pull">"Backend system design assumes the network. Mobile system design assumes the network might not be there."</div>
+      </section>
+
+      <section class="dd-section" id="framework">
+        <h2 class="section"><span class="num">02</span>The 6-step <span class="ital">adaptation</span>.</h2>
+
+        <h3 class="sub">Step 1 — Scope</h3>
+        <div class="prose">
+          <p>Same as backend: pin features, users, platforms. <strong>iOS only? Android only? Both?</strong> The answer changes the design (cross-platform vs native). <em>Tablet support, watch support, foldables</em> are scope-cuts.</p>
+        </div>
+
+        <h3 class="sub">Step 2 — Mobile-specific estimation</h3>
+        <table class="matrix">
+          <thead><tr><th>Quantity</th><th>Why it matters</th></tr></thead>
+          <tbody>
+            <tr><th>Local DB size</th><td>2 GB is a lot of phone storage</td></tr>
+            <tr><th>Sync payload size</th><td>Battery and bandwidth, especially cellular</td></tr>
+            <tr><th>Push notification rate</th><td>Per-user, per-day; affects wake costs</td></tr>
+            <tr><th>Cold-start time</th><td>Critical for engagement; aim &lt;2s</td></tr>
+            <tr><th>App binary size</th><td>Store download limits, install rate</td></tr>
+          </tbody>
+        </table>
+
+        <h3 class="sub">Step 3 — Local DB schema</h3>
+        <div class="prose">
+          <p>The phone has a SQLite DB (Room on Android, Core Data / SwiftData / GRDB on iOS). <strong>Design it like a real database</strong>: indexes for the queries your UI does, denormalisation where the joins are too slow on mobile CPUs. The schema lives <em>locally</em>; it doesn't have to match the server's exactly.</p>
+        </div>
+
+        <h3 class="sub">Step 4 — Sync protocol</h3>
+        <div class="prose">
+          <p>How do client and server reconcile state? The hard subsystem. Bidirectional, idempotent, conflict-aware. See section 3.</p>
+        </div>
+
+        <h3 class="sub">Step 5 — UI + state management</h3>
+        <div class="prose">
+          <p>Single source of truth (the local DB). Reactive layer (Compose / SwiftUI / Redux-like). <strong>The UI binds to local data; sync happens underneath.</strong> Optimistic updates: mutate locally first, send to server, reconcile on response.</p>
+        </div>
+
+        <h3 class="sub">Step 6 — Offline / failure modes</h3>
+        <div class="prose">
+          <p>What does the user see when offline? Read works (from local DB). Writes queue (in an outbox table on-device). <strong>"Stale data" indicator if data is older than X.</strong> Reconnection drains the outbox; conflicts surface to the user.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="sync">
+        <h2 class="section"><span class="num">03</span>Sync is the <span class="ital">hard part</span>.</h2>
+
+        <h3 class="sub">Delta sync, not full sync</h3>
+        <div class="prose">
+          <p>"Fetch everything" works once; doesn't work daily. <strong>Track a sync token (timestamp or sequence number)</strong>; server returns only changes since the token. Saves bandwidth, battery, time.</p>
+        </div>
+
+        <h3 class="sub">Bidirectional with conflict resolution</h3>
+        <div class="prose">
+          <p>Both client and server can have made changes. <strong>Last-write-wins is the simplest; sometimes wrong</strong> (see <a href="geographic-distribution.html">geographic distribution chapter</a>). Per-field LWW. CRDTs for collaborative apps. User-prompt resolution for the rare collisions.</p>
+        </div>
+
+        <h3 class="sub">Background sync windows</h3>
+        <div class="prose">
+          <p>iOS: BGAppRefreshTask, ~30s every ~6 hours. Android: WorkManager with constraints (charging, Wi-Fi). <strong>You don't control when sync happens</strong>; you describe the constraints, the OS schedules.</p>
+        </div>
+
+        <h3 class="sub">Push as the wake signal</h3>
+        <div class="prose">
+          <p>Server has new data → silent push notification → OS wakes app briefly → sync runs → UI updated when app opens. <strong>Silent push is rationed too</strong> (iOS will deliver only some); use it as a hint, not a contract.</p>
+        </div>
+
+        <h3 class="sub">Outbox for writes</h3>
+        <div class="prose">
+          <p>Pending writes go into a local outbox table. On connectivity, drain in order with idempotency keys. <strong>Same outbox pattern as backend</strong> (see <a href="change-data-capture.html">CDC chapter</a>), applied client-side.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="anti">
+        <h2 class="section"><span class="num">04</span><span class="ital">Anti-patterns</span>.</h2>
+        <div class="callout"><div class="ctag">No offline mode</div><p>The interviewer expects you to handle it. A backend-shaped answer ("call the API on tap, show spinner, retry") is a fail.</p></div>
+        <div class="callout"><div class="ctag">Polling instead of push</div><p>Polling drains battery. Use push. If push isn't possible, poll on app foreground only, not in background.</p></div>
+        <div class="callout"><div class="ctag">No optimistic UI</div><p>User taps, sees spinner, waits for server. Mobile users abandon. Mutate locally; reconcile on response.</p></div>
+        <div class="callout"><div class="ctag">Treating the local DB as a cache</div><p>If it's a cache, you'll re-fetch on every cold start; battery dies. <strong>Local DB is the truth.</strong> Sync is the freshener.</p></div>
+        <div class="callout"><div class="ctag">Forgetting app store update lag</div><p>You can't roll back a buggy version like a server. Feature flag dangerous changes; server-side kill switch is the actual emergency control.</p></div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">05</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Read-heavy app (news, social)</h5><p>Local DB + delta sync. Cache aggressively. Pre-fetch on Wi-Fi.</p></div>
+          <div class="cell"><h5>Collaborative app (notes, docs)</h5><p>CRDT-based sync. Server is convergence point, not source of truth. Real-time channel for low-latency sync.</p></div>
+          <div class="cell"><h5>Messaging</h5><p>WebSocket / long-poll when foregrounded; push when backgrounded. Local outbox for unsent messages.</p></div>
+          <div class="cell"><h5>Native vs cross-platform</h5><p>React Native / Flutter / KMP if the team is small and the UI is straightforward. Native if the platform-specific UX or performance matters.</p></div>
+          <div class="cell"><h5>Need real offline-first</h5><p>Local-first stack: Realm, Couchbase Mobile, Cloud Firestore offline, custom SQLite + sync. The trick is consistent sync semantics.</p></div>
+          <div class="cell"><h5>Watch / wearable</h5><p>Even more constrained. Sync paired phone, not server directly. Cache aggressively; expect bursts of connectivity.</p></div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="interview-behavioral.html"><div class="label">Prev</div><div class="ttl">Behavioral</div></a>
+        <a class="next-fwd" href="interview-design-airbnb.html"><div class="label">Next</div><div class="ttl">Design Airbnb →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Interview · Mobile framework · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

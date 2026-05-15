@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Stock Exchange Architecture · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Stock exchange</span>
+    </div>
+    <nav><a href="fundamental-frontend-system-design.html">← Prev</a><a href="fundamental-distributed-systems.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★★★</b></span>
+        <span>Read <b>~13 min</b></span>
+        <span>Stack <b>Matching engine · disruptor · LMAX · FIX</b></span>
+      </div>
+      <h1>Microseconds <span class="ital">cost</span> money.</h1>
+      <p class="lede">A stock exchange is the canonical low-latency system: process millions of orders per second, match them deterministically, broadcast results to thousands of market participants — all in single-digit microseconds. The LMAX Disruptor paper is the most-cited piece of architectural folklore in this space.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The constraints</h5><p>Deterministic matching. Sub-microsecond latency. Millions of orders/sec. Audit log of every event. Fair ordering (don't favour high-frequency traders).</p></div>
+      <div><h5>The architectural moves</h5><p>Single-threaded matching engine. Lock-free queues (Disruptor). Pre-allocated everything. Kernel bypass for network I/O. Co-location at the exchange.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">Why micros matter</a></li>
+      <li><a href="#core">The matching engine</a></li>
+      <li><a href="#disruptor">LMAX Disruptor</a></li>
+      <li><a href="#network">The network path</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why micros <span class="ital">matter</span>.</h2>
+        <div class="prose">
+          <p>A high-frequency trading firm's profit depends on hitting the market before its competitors. <strong>If you're 100 μs slower, you eat their dust on price-improving orders.</strong> The exchange itself is the arena; participants pay for co-location (their server racks next to the matching engine) and direct fibre links. The exchange's job is fairness: each order's time-of-arrival is the only thing that should affect outcome.</p>
+          <p>The systems-design question: build a matcher that's deterministic, fast, fair, and audit-grade durable. The architectural answer turns out to be unusually old-school — single-threaded, lock-free, RAM-resident.</p>
+        </div>
+        <div class="pull">"In a stock exchange, sequential is the new parallel."</div>
+      </section>
+
+      <section class="dd-section" id="core">
+        <h2 class="section"><span class="num">02</span>The matching <span class="ital">engine</span>.</h2>
+
+        <h3 class="sub">Order book</h3>
+        <div class="prose">
+          <p>Per-symbol: two priority queues. Bids (descending price). Asks (ascending price). <strong>An incoming order is matched against the opposite side while prices cross</strong>; the unmatched remainder sits on the book at its price/time.</p>
+        </div>
+
+        <h3 class="sub">Price-time priority</h3>
+        <div class="prose">
+          <p>Best price first; for orders at the same price, earliest first. <strong>Time ordering is what makes the exchange fair.</strong> If two HFT firms send orders 1 μs apart, the earlier one fills first.</p>
+        </div>
+
+        <h3 class="sub">Single-threaded by design</h3>
+        <div class="prose">
+          <p>Multi-threading introduces non-determinism. Two threads matching in parallel can produce different orderings depending on scheduling. <strong>The matching engine is single-threaded</strong> — deterministic, replay-able, simpler. Throughput is high because per-order processing is microseconds; sequential throughput is millions of orders per second.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="disruptor">
+        <h2 class="section"><span class="num">03</span>LMAX <span class="ital">Disruptor</span>.</h2>
+        <div class="prose">
+          <p>LMAX was a UK exchange whose 2010 paper named the pattern. <strong>The Disruptor is a lock-free ring buffer</strong>: producers and consumers coordinate via cache-line-aware sequence counters. No locks, no garbage collection (pre-allocated objects), CPU-cache-friendly.</p>
+        </div>
+
+        <h3 class="sub">The pipeline</h3>
+        <table class="matrix"><thead><tr><th>Stage</th><th>What it does</th></tr></thead><tbody>
+          <tr><th>Receiver</th><td>Network → deserialise → enqueue</td></tr>
+          <tr><th>Journaller</th><td>Write to durable log (for replay / audit)</td></tr>
+          <tr><th>Replicator</th><td>Send to standby replica</td></tr>
+          <tr><th>Unmarshaller</th><td>Decode message</td></tr>
+          <tr><th>Business logic</th><td>Match against order book</td></tr>
+          <tr><th>Marshaller</th><td>Encode response</td></tr>
+          <tr><th>Publisher</th><td>Send to subscribers</td></tr>
+        </tbody></table>
+
+        <div class="prose">
+          <p>Each stage is single-threaded; they communicate through ring buffers. <strong>The whole pipeline runs entirely in CPU cache once warmed.</strong> Per-order latency: ~1 μs through the entire chain.</p>
+        </div>
+
+        <h3 class="sub">Determinism enables replay</h3>
+        <div class="prose">
+          <p>The journaller writes every input event. <strong>If the matching engine crashes, replay the events from the log; you get exactly the same order book state.</strong> No "fuzz" because there's no concurrency. The audit log <em>is</em> the database.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="network">
+        <h2 class="section"><span class="num">04</span>The network <span class="ital">path</span>.</h2>
+
+        <h3 class="sub">Kernel bypass</h3>
+        <div class="prose">
+          <p>Normal socket I/O goes through the kernel: syscalls, TCP stack, copies. <strong>Each layer adds microseconds.</strong> Stock exchanges use kernel bypass (Solarflare OpenOnload, DPDK, RDMA) where the NIC writes packets directly into userspace memory. Latency: ~5 μs instead of ~50 μs.</p>
+        </div>
+
+        <h3 class="sub">FIX protocol</h3>
+        <div class="prose">
+          <p>Financial Information eXchange. The standard message format for orders. ASCII-based originally; modern FIX uses FAST or SBE (Simple Binary Encoding) for performance. <strong>Encode in microseconds; transmit in microseconds; decode in microseconds.</strong></p>
+        </div>
+
+        <h3 class="sub">Multicast for market data</h3>
+        <div class="prose">
+          <p>The exchange publishes order-book updates to thousands of subscribers. <strong>Unicast doesn't scale (N copies of every update).</strong> UDP multicast: send once, the network duplicates. Plus a gap-fill TCP channel for clients who miss a packet.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">05</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Building anything HFT-shaped</h5><p>Disruptor pattern. Single-threaded matching. Pre-allocated objects. Kernel bypass. Co-locate physically.</p></div>
+          <div class="cell"><h5>Crypto exchange (lower latency tolerance)</h5><p>You can get away with multi-threaded if you serialise carefully. Most crypto exchanges are in millisecond-territory, not microsecond.</p></div>
+          <div class="cell"><h5>Order book in your app (matching, not exchange)</h5><p>Same data structure (two priority queues). Concurrency is fine; you don't have HFT fairness requirements.</p></div>
+          <div class="cell"><h5>Replication / disaster recovery</h5><p>Replay the event log on the standby. Standby is "warm" — it has applied every event but doesn't matchings. On failover, it picks up where the primary left off.</p></div>
+          <div class="cell"><h5>Multicast on commodity cloud</h5><p>Doesn't work — major clouds don't support multicast natively. Either run on bare-metal or use overlay multicast (XDP, custom UDP fanout).</p></div>
+          <div class="cell"><h5>Low-latency without being an exchange</h5><p>Ad bidding, real-time analytics, gaming servers. The Disruptor pattern transfers. The kernel-bypass story doesn't unless you really need it.</p></div>
+        </div>
+        <div class="pull">"The architecture is unusual not because finance is hard, but because microseconds are real money."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-frontend-system-design.html"><div class="label">Prev</div><div class="ttl">Frontend SD</div></a>
+        <a class="next-fwd" href="fundamental-distributed-systems.html"><div class="label">Next</div><div class="ttl">Distributed systems →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Stock exchange · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

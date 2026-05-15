@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Database Sharding &amp; Partitioning · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">07 · Database Sharding &amp; Partitioning</span>
+    </div>
+    <nav>
+      <a href="consistent-hashing.html">← Prev</a>
+      <a href="idempotency-keys.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>07</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~16 min</b></span>
+        <span>Stack <b>EF Core · Postgres · Citus · Vitess · Cosmos DB</b></span>
+      </div>
+      <h1>Shard once. <span class="ital">Reshard</span> never.</h1>
+      <p class="lede">A single Postgres can hold more than you think and less than you'll need. The honest version of <em>range vs. hash vs. directory</em>, plus the resharding move that Figma made famous — wired to EF Core, not whiteboard.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>The write path is the wall. Reads scale with replicas; writes scale with shards. <em>One leader, finite IOPS.</em></p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Pick a sharding scheme you can <em>live with for 5 years</em>, not one that's clever today. The cost of resharding is the cost of the system you replace, not the system you have.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">EF Core</span>
+          <span class="pill on">Postgres 16</span>
+          <span class="pill">Citus</span>
+          <span class="pill">Vitess</span>
+          <span class="pill">Cosmos DB</span>
+          <span class="pill">Azure SQL</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#wall">The single-leader wall</a></li>
+        <li><a href="#schemes">Three sharding schemes</a></li>
+        <li><a href="#reshard">The resharding problem</a></li>
+        <li><a href="#dotnet">EF Core shard router</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="wall">
+        <h2 class="section"><span class="num">01</span>The single-leader <span class="ital">wall</span>.</h2>
+        <div class="prose">
+          <p>Cloudflare runs 55M requests-per-second on 15 Postgres clusters. Figma served 4M users on Postgres alone before they sharded. Most teams shard a year too early because a graph in a conference slide scared them. Some shard a year too late because they trusted that same graph.</p>
+          <p>The wall has a shape. <strong>Read traffic scales linearly with replicas</strong> — add a follower, double your read capacity, your data is at most a second stale. <strong>Write traffic does not.</strong> Every transaction goes through one leader, and one leader has finite IOPS, finite WAL bandwidth, and one CPU core for the commit path. <em>That is the wall.</em> Before you hit it, you don't need sharding. After you hit it, no amount of caching saves you.</p>
+        </div>
+
+        <div class="pull">"You can buy your way out of the read problem with a bigger instance. The write problem you have to solve."</div>
+
+        <div class="prose">
+          <p>Concrete numbers. A db.r6g.16xlarge on Aurora Postgres (64 vCPU, 512 GB RAM, $9.5k/mo) sustains ~40,000 simple transactions per second on a well-tuned workload before write latency degrades. Azure SQL Hyperscale Business Critical at 80 vCPU pushes ~30,000 TPS at ~$22k/mo. Past that number, you don't get bigger boxes — you get more boxes, and you split the data across them. That split is what sharding is.</p>
+          <p>Before we go further: <em>partitioning</em> and <em>sharding</em> are not the same thing. Partitioning splits one table inside one database. Sharding splits one database into many databases. The first is a Postgres feature you should use whenever you have a table over 100M rows. The second is an architecture you should adopt only when you have no choice.</p>
+        </div>
+      </section>
+
+      <!-- 2 schemes -->
+      <section class="dd-section" id="schemes">
+        <h2 class="section"><span class="num">02</span>Three <span class="ital">schemes</span>.</h2>
+
+        <div class="prose">
+          <p>Three ways to decide which row goes to which shard. Each is a different tradeoff between query patterns, rebalancing pain, and how often you have to think about it.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 420" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="da" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a1814"/></marker>
+              <marker id="dao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 01 · RANGE &middot; HASH &middot; DIRECTORY</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g font-family="JetBrains Mono" font-size="11" letter-spacing="0.12em" fill="#8a8478">
+              <text x="60"  y="68">RANGE</text>
+              <text x="460" y="68">HASH</text>
+              <text x="860" y="68">DIRECTORY</text>
+            </g>
+
+            <!-- RANGE -->
+            <g transform="translate(60, 90)">
+              <rect x="0"   y="0"  width="320" height="36" fill="#1a1814"/>
+              <text x="160" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">USER_ID 0 .. 100M</text>
+              <rect x="0"   y="60" width="78"  height="34" fill="#c2410c"/>
+              <rect x="82"  y="60" width="78"  height="34" fill="#c2410c"/>
+              <rect x="164" y="60" width="78"  height="34" fill="#c2410c"/>
+              <rect x="246" y="60" width="78"  height="34" fill="#c2410c"/>
+              <g font-family="JetBrains Mono" font-size="9" fill="#f1ece1" text-anchor="middle">
+                <text x="39"  y="78">0..25M</text>
+                <text x="39"  y="89">SHARD A</text>
+                <text x="121" y="78">25..50M</text>
+                <text x="121" y="89">SHARD B</text>
+                <text x="203" y="78">50..75M</text>
+                <text x="203" y="89">SHARD C</text>
+                <text x="285" y="78">75..100M</text>
+                <text x="285" y="89">SHARD D</text>
+              </g>
+              <line x1="160" y1="36" x2="160" y2="58" stroke="#1a1814" stroke-width="1.5" marker-end="url(#da)"/>
+              <g font-family="IBM Plex Sans" font-size="12" fill="#1a1814">
+                <text x="0" y="130">+ range scans cheap (one shard)</text>
+                <text x="0" y="148">+ trivial to reason about</text>
+                <text x="0" y="166" fill="#c2410c">− hot shards: latest users skew</text>
+                <text x="0" y="184" fill="#c2410c">− manual splits / merges</text>
+              </g>
+            </g>
+
+            <!-- HASH -->
+            <g transform="translate(460, 90)">
+              <rect x="0"   y="0"  width="320" height="36" fill="#1a1814"/>
+              <text x="160" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">hash(USER_ID) % 4</text>
+              <rect x="0"   y="60" width="78"  height="34" fill="#c2410c"/>
+              <rect x="82"  y="60" width="78"  height="34" fill="#c2410c"/>
+              <rect x="164" y="60" width="78"  height="34" fill="#c2410c"/>
+              <rect x="246" y="60" width="78"  height="34" fill="#c2410c"/>
+              <g font-family="JetBrains Mono" font-size="9" fill="#f1ece1" text-anchor="middle">
+                <text x="39"  y="78">≡ 0</text>
+                <text x="39"  y="89">SHARD A</text>
+                <text x="121" y="78">≡ 1</text>
+                <text x="121" y="89">SHARD B</text>
+                <text x="203" y="78">≡ 2</text>
+                <text x="203" y="89">SHARD C</text>
+                <text x="285" y="78">≡ 3</text>
+                <text x="285" y="89">SHARD D</text>
+              </g>
+              <line x1="80"  y1="36" x2="39"  y2="58" stroke="#c2410c" stroke-width="1.5" marker-end="url(#dao)"/>
+              <line x1="160" y1="36" x2="160" y2="58" stroke="#c2410c" stroke-width="1.5" marker-end="url(#dao)"/>
+              <line x1="240" y1="36" x2="285" y2="58" stroke="#c2410c" stroke-width="1.5" marker-end="url(#dao)"/>
+              <g font-family="IBM Plex Sans" font-size="12" fill="#1a1814">
+                <text x="0" y="130">+ even distribution, no hot shards</text>
+                <text x="0" y="148">+ pre-allocate by hash space</text>
+                <text x="0" y="166" fill="#c2410c">− range scans hit every shard</text>
+                <text x="0" y="184" fill="#c2410c">− naive modulo rebalances all keys</text>
+              </g>
+            </g>
+
+            <!-- DIRECTORY -->
+            <g transform="translate(860, 90)">
+              <rect x="0"   y="0"  width="260" height="36" fill="#1a1814"/>
+              <text x="130" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">LOOKUP SERVICE</text>
+              <rect x="0"   y="60" width="60" height="34" fill="#c2410c"/>
+              <rect x="64"  y="60" width="60" height="34" fill="#c2410c"/>
+              <rect x="128" y="60" width="60" height="34" fill="#c2410c"/>
+              <rect x="192" y="60" width="60" height="34" fill="#c2410c"/>
+              <g font-family="JetBrains Mono" font-size="9" fill="#f1ece1" text-anchor="middle">
+                <text x="30"  y="83">SHARD A</text>
+                <text x="94"  y="83">SHARD B</text>
+                <text x="158" y="83">SHARD C</text>
+                <text x="222" y="83">SHARD D</text>
+              </g>
+              <line x1="50"  y1="36" x2="30"  y2="58" stroke="#1a1814" stroke-width="1.5" marker-end="url(#da)"/>
+              <line x1="130" y1="36" x2="94"  y2="58" stroke="#1a1814" stroke-width="1.5" marker-end="url(#da)"/>
+              <line x1="210" y1="36" x2="158" y2="58" stroke="#1a1814" stroke-width="1.5" marker-end="url(#da)"/>
+              <line x1="230" y1="36" x2="222" y2="58" stroke="#1a1814" stroke-width="1.5" marker-end="url(#da)"/>
+              <g font-family="IBM Plex Sans" font-size="12" fill="#1a1814">
+                <text x="0" y="130">+ move tenants individually</text>
+                <text x="0" y="148">+ free choice of placement</text>
+                <text x="0" y="166" fill="#c2410c">− one extra hop per query</text>
+                <text x="0" y="184" fill="#c2410c">− directory itself must be HA</text>
+              </g>
+            </g>
+
+            <line x1="20" y1="320" x2="1180" y2="320" stroke="#1a1814" stroke-width="1" stroke-dasharray="3 3"/>
+            <text x="20" y="350" font-family="Instrument Serif" font-style="italic" font-size="20" fill="#1a1814">"Range is what you start with. Hash is what you grow into. Directory is what you reach for when you need per-tenant control."</text>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 01</span><span>Three shard-key schemes, side by side. The pros and cons travel with you for the lifetime of the system.</span></div>
+        </div>
+
+        <h3 class="sub">Range sharding</h3>
+        <div class="prose">
+          <p>Pick a column, slice it into ranges, send each range to a shard. <strong>Range scans are cheap</strong> — a query for <code>user_id BETWEEN 1000 AND 2000</code> hits exactly one shard. This is what Postgres native partitioning does. It's also what every "I'll just add a shard column" first attempt ends up looking like.</p>
+          <p>The failure mode is famous. If your shard key correlates with time — auto-incrementing IDs, timestamps, anything monotonic — <em>the newest shard takes all the write traffic</em>. Twitter learned this with their first sharding pass. Discord learned it before they moved to Cassandra. The fix is to choose a key that isn't time-correlated, or to accept that you'll be splitting the hottest shard every quarter.</p>
+        </div>
+
+        <h3 class="sub">Hash sharding</h3>
+        <div class="prose">
+          <p>Pick a column, hash it, take the result modulo the shard count. Even distribution by design. <strong>This is the default choice for OLTP workloads.</strong> Cosmos DB uses it. DynamoDB uses it. Vitess uses it. Almost every internally-developed sharded system at FAANG uses it.</p>
+          <p>The cost: range queries become scatter-gather. <code>WHERE created_at BETWEEN ... AND ...</code> visits every shard. The other cost — and this is the one that sinks teams — is that <strong>naive modulo hashing rebalances every key when you add a shard</strong>. Go from 4 shards to 5, and ~80% of your keys move. <em>This is the chapter on consistent hashing</em> — go read it if you haven't, then come back.</p>
+        </div>
+
+        <h3 class="sub">Directory sharding</h3>
+        <div class="prose">
+          <p>Maintain a lookup table: <em>tenant 42 lives on shard B</em>. Shopify's per-pod isolation, Slack's per-workspace sharding, Notion's per-workspace sharding. The pattern is "one customer never spans two shards, and we move customers individually when one gets too big."</p>
+          <p>You pay for it with a directory lookup on every request — typically cached in the application, refreshed on miss. The win is that you can <strong>move a single tenant</strong> from a hot shard to a cold one in minutes, without touching anyone else's data. For multi-tenant SaaS this is usually the right answer.</p>
+        </div>
+      </section>
+
+      <!-- 3 reshard -->
+      <section class="dd-section" id="reshard">
+        <h2 class="section"><span class="num">03</span>The resharding <span class="ital">problem</span>.</h2>
+        <div class="prose">
+          <p>Picking a shard scheme is the easy part. <strong>Surviving the day you have to add shards is the hard part.</strong> Three approaches that work in production, in increasing order of investment.</p>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 1100 220" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="ra" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="22" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. 02 · DUAL-WRITE RESHARDING (FIGMA'S MOVE)</text>
+            <line x1="20" y1="32" x2="1080" y2="32" stroke="#1a1814" stroke-width="1"/>
+
+            <g font-family="JetBrains Mono" font-size="9" fill="#f1ece1" text-anchor="middle">
+              <rect x="20"  y="60" width="180" height="44" fill="#1a1814"/>
+              <text x="110" y="80">APP (writes both)</text>
+              <text x="110" y="94" font-size="8">old shard + new shard</text>
+
+              <rect x="240" y="50" width="160" height="30" fill="#c2410c"/>
+              <text x="320" y="69">SHARD A · OLD</text>
+
+              <rect x="240" y="90" width="160" height="30" fill="#c2410c"/>
+              <text x="320" y="109">SHARD B · NEW</text>
+
+              <rect x="450" y="60" width="180" height="44" fill="#1a1814"/>
+              <text x="540" y="80">BACKFILL JOB</text>
+              <text x="540" y="94" font-size="8">copy historical rows</text>
+
+              <rect x="680" y="60" width="180" height="44" fill="#1a1814"/>
+              <text x="770" y="80">VERIFIER</text>
+              <text x="770" y="94" font-size="8">diff old vs new</text>
+
+              <rect x="900" y="60" width="180" height="44" fill="#c2410c"/>
+              <text x="990" y="80">CUTOVER</text>
+              <text x="990" y="94" font-size="8">stop writing old</text>
+            </g>
+
+            <line x1="200" y1="65"  x2="238" y2="65"  stroke="#c2410c" stroke-width="1.5" marker-end="url(#ra)"/>
+            <line x1="200" y1="105" x2="238" y2="105" stroke="#c2410c" stroke-width="1.5" marker-end="url(#ra)"/>
+            <line x1="400" y1="82"  x2="448" y2="82"  stroke="#1a1814" stroke-width="1.5" marker-end="url(#ra)"/>
+            <line x1="630" y1="82"  x2="678" y2="82"  stroke="#1a1814" stroke-width="1.5" marker-end="url(#ra)"/>
+            <line x1="860" y1="82"  x2="898" y2="82"  stroke="#1a1814" stroke-width="1.5" marker-end="url(#ra)"/>
+
+            <text x="20" y="180" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">1. dual-write live · 2. backfill old · 3. verify · 4. cut reads · 5. stop writing old · 6. drop old</text>
+          </svg>
+          <div class="cap"><b>Six steps.</b> No downtime, no data loss, two months of careful work. The verifier step is the one nobody plans for and everyone needs.</div>
+        </div>
+
+        <h3 class="sub">Pre-shard to virtual partitions</h3>
+        <div class="prose">
+          <p>The cheapest move is to pick a large number of <strong>logical</strong> shards up front and map them to fewer <strong>physical</strong> shards. Pre-allocate 1,024 logical shards across 4 physical machines (256 each). When you outgrow that, add a fifth machine and move 200 logical shards onto it. The application uses the logical shard ID; the mapping changes underneath.</p>
+          <p>This is what Vitess, Citus, and Cosmos DB all do. <em>You should do it too</em> on day one, before you have any data. The cost is zero, and you've bought yourself the option not to reshard for the lifetime of the system.</p>
+        </div>
+
+        <h3 class="sub">Online dual-write (Figma's move)</h3>
+        <div class="prose">
+          <p>When pre-sharding wasn't done — and most systems weren't pre-sharded — the standard move is dual-write. The application writes every change to <em>both</em> the old shard and the new shard. A backfill job copies historical rows in batches, idempotently. A verifier reads from both sides and compares. When the dual-write window is clean and the verifier finds zero diffs, you flip reads to the new shard, then flip off the old write. Figma's <em>"How we scaled Postgres"</em> writeup is the canonical version. Two months end to end, zero downtime.</p>
+          <p><strong>The thing nobody plans for: the verifier.</strong> A backfill that "looks complete" is the most expensive bug in a sharded system. You need a daemon that reads a sample of rows from old, reads the corresponding rows from new, and pages you when they disagree. Run it for the full dual-write window.</p>
+        </div>
+
+        <h3 class="sub">Just use a sharded database</h3>
+        <div class="prose">
+          <p>Citus on Postgres or Vitess on MySQL turn sharding from an application problem into a database problem. You write SQL with a shard key; the gateway routes. Add a worker; it rebalances. This is the path Stripe, Slack, GitHub, and Quora ended up on. <em>If you're starting fresh in 2026, this is the answer.</em></p>
+        </div>
+
+        <div class="pull">"Most teams who say they sharded actually directory-sharded. Most teams who think they hash-sharded actually mod-sharded. The labels are sloppy. The bills are not."</div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">.NET</span>.</h2>
+        <div class="prose">
+          <p>If you're not on Citus / Cosmos DB / Vitess and you have to roll application-level sharding, here's the pattern that wears well. A <code>ShardRouter</code> picks the shard from a key, an <code>IDbContextFactory&lt;TenantDbContext&gt;</code> per shard hands out connections, and a small middleware enriches every request with its tenant — so EF Core lookups route automatically. Consistent hashing under the hood, so adding shards moves O(K/N) keys instead of O(K).</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">ShardRouter.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Microsoft.EntityFrameworkCore.SqlServer</span>
+<span class="c">// dotnet add package Microsoft.EntityFrameworkCore.Design</span>
+<span class="k">using</span> <span class="t">System.Collections.Concurrent</span>;
+<span class="k">using</span> <span class="t">System.Security.Cryptography</span>;
+<span class="k">using</span> <span class="t">System.Text</span>;
+<span class="k">using</span> <span class="t">Microsoft.EntityFrameworkCore</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Sharding</span>;
+
+<span class="k">public sealed record</span> <span class="t">ShardDescriptor</span>(<span class="k">string</span> <span class="t">Id</span>, <span class="k">string</span> <span class="t">ConnectionString</span>);
+
+<span class="k">public interface</span> <span class="t">IShardRouter</span>
+{
+    <span class="t">ShardDescriptor</span> <span class="fn">Pick</span>(<span class="k">string</span> tenantKey);
+    <span class="t">IReadOnlyList</span>&lt;<span class="t">ShardDescriptor</span>&gt; <span class="t">All</span> { <span class="k">get</span>; }
+}
+
+<span class="c">// Consistent-hash ring with 200 virtual nodes per shard.</span>
+<span class="c">// Adding a shard moves ~1/N of keys, not all of them.</span>
+<span class="k">public sealed class</span> <span class="t">ConsistentHashShardRouter</span> : <span class="t">IShardRouter</span>
+{
+    <span class="k">private readonly</span> <span class="t">SortedDictionary</span>&lt;<span class="k">uint</span>, <span class="t">ShardDescriptor</span>&gt; _ring = <span class="k">new</span>();
+    <span class="k">private readonly</span> <span class="k">uint</span>[] _sortedKeys;
+    <span class="k">private const</span> <span class="k">int</span> <span class="t">VirtualNodes</span> = <span class="n">200</span>;
+
+    <span class="k">public</span> <span class="fn">ConsistentHashShardRouter</span>(<span class="t">IEnumerable</span>&lt;<span class="t">ShardDescriptor</span>&gt; shards)
+    {
+        <span class="t">All</span> = shards.<span class="fn">ToArray</span>();
+        <span class="k">if</span> (<span class="t">All</span>.<span class="t">Count</span> == <span class="n">0</span>)
+            <span class="k">throw new</span> <span class="t">ArgumentException</span>(<span class="s">"At least one shard required."</span>);
+
+        <span class="k">foreach</span> (<span class="k">var</span> shard <span class="k">in</span> <span class="t">All</span>)
+            <span class="k">for</span> (<span class="k">var</span> v = <span class="n">0</span>; v &lt; <span class="t">VirtualNodes</span>; v++)
+                _ring[<span class="fn">Hash</span>($<span class="s">"{shard.Id}#{v}"</span>)] = shard;
+
+        _sortedKeys = _ring.<span class="t">Keys</span>.<span class="fn">ToArray</span>();
+    }
+
+    <span class="k">public</span> <span class="t">IReadOnlyList</span>&lt;<span class="t">ShardDescriptor</span>&gt; <span class="t">All</span> { <span class="k">get</span>; }
+
+    <span class="k">public</span> <span class="t">ShardDescriptor</span> <span class="fn">Pick</span>(<span class="k">string</span> tenantKey)
+    {
+        <span class="k">if</span> (<span class="k">string</span>.<span class="fn">IsNullOrWhiteSpace</span>(tenantKey))
+            <span class="k">throw new</span> <span class="t">ArgumentException</span>(<span class="s">"tenantKey is required."</span>);
+
+        <span class="k">var</span> h = <span class="fn">Hash</span>(tenantKey);
+        <span class="k">var</span> idx = <span class="t">Array</span>.<span class="fn">BinarySearch</span>(_sortedKeys, h);
+        <span class="k">if</span> (idx &lt; <span class="n">0</span>) idx = ~idx;
+        <span class="k">if</span> (idx == _sortedKeys.<span class="t">Length</span>) idx = <span class="n">0</span>;
+        <span class="k">return</span> _ring[_sortedKeys[idx]];
+    }
+
+    <span class="k">private static</span> <span class="k">uint</span> <span class="fn">Hash</span>(<span class="k">string</span> input)
+    {
+        <span class="k">var</span> bytes = <span class="t">MD5</span>.<span class="fn">HashData</span>(<span class="t">Encoding</span>.<span class="t">UTF8</span>.<span class="fn">GetBytes</span>(input));
+        <span class="k">return</span> <span class="t">BitConverter</span>.<span class="fn">ToUInt32</span>(bytes, <span class="n">0</span>);
+    }
+}
+
+<span class="c">// Hands out an EF Core context bound to the right shard.</span>
+<span class="k">public sealed class</span> <span class="t">TenantDbContextFactory</span>
+{
+    <span class="k">private readonly</span> <span class="t">IShardRouter</span> _router;
+    <span class="k">private readonly</span> <span class="t">ConcurrentDictionary</span>&lt;<span class="k">string</span>, <span class="t">DbContextOptions</span>&lt;<span class="t">TenantDbContext</span>&gt;&gt; _opts = <span class="k">new</span>();
+
+    <span class="k">public</span> <span class="fn">TenantDbContextFactory</span>(<span class="t">IShardRouter</span> router) =&gt; _router = router;
+
+    <span class="k">public</span> <span class="t">TenantDbContext</span> <span class="fn">For</span>(<span class="k">string</span> tenantKey)
+    {
+        <span class="k">var</span> shard = _router.<span class="fn">Pick</span>(tenantKey);
+        <span class="k">var</span> opts = _opts.<span class="fn">GetOrAdd</span>(shard.<span class="t">Id</span>, _ =&gt;
+            <span class="k">new</span> <span class="t">DbContextOptionsBuilder</span>&lt;<span class="t">TenantDbContext</span>&gt;()
+                .<span class="fn">UseSqlServer</span>(shard.<span class="t">ConnectionString</span>, sql =&gt;
+                {
+                    sql.<span class="fn">EnableRetryOnFailure</span>(maxRetryCount: <span class="n">3</span>);
+                    sql.<span class="fn">CommandTimeout</span>(<span class="n">15</span>);
+                })
+                .<span class="fn">Options</span>);
+        <span class="k">return new</span> <span class="t">TenantDbContext</span>(opts);
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Now the minimal API side — middleware reads the tenant header, picks the shard, and stuffs the right <code>DbContext</code> into the request scope:</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">Program.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+<span class="c">// Wire up shards from configuration (rotate via Key Vault, hot reload via IOptionsMonitor).</span>
+<span class="k">var</span> shards = builder.<span class="t">Configuration</span>
+    .<span class="fn">GetSection</span>(<span class="s">"Shards"</span>)
+    .<span class="fn">Get</span>&lt;<span class="t">ShardDescriptor</span>[]&gt;()
+    ?? <span class="k">throw new</span> <span class="t">InvalidOperationException</span>(<span class="s">"Shards section missing."</span>);
+
+builder.<span class="t">Services</span>.<span class="fn">AddSingleton</span>&lt;<span class="t">IShardRouter</span>&gt;(<span class="k">new</span> <span class="t">ConsistentHashShardRouter</span>(shards));
+builder.<span class="t">Services</span>.<span class="fn">AddSingleton</span>&lt;<span class="t">TenantDbContextFactory</span>&gt;();
+builder.<span class="t">Services</span>.<span class="fn">AddScoped</span>(sp =&gt;
+{
+    <span class="k">var</span> http   = sp.<span class="fn">GetRequiredService</span>&lt;<span class="t">IHttpContextAccessor</span>&gt;().<span class="t">HttpContext</span>!;
+    <span class="k">var</span> tenant = http.<span class="t">Request</span>.<span class="t">Headers</span>[<span class="s">"X-Tenant"</span>].<span class="fn">ToString</span>();
+    <span class="k">if</span> (<span class="k">string</span>.<span class="fn">IsNullOrEmpty</span>(tenant))
+        <span class="k">throw new</span> <span class="t">UnauthorizedAccessException</span>(<span class="s">"Missing X-Tenant header."</span>);
+    <span class="k">return</span> sp.<span class="fn">GetRequiredService</span>&lt;<span class="t">TenantDbContextFactory</span>&gt;().<span class="fn">For</span>(tenant);
+});
+builder.<span class="t">Services</span>.<span class="fn">AddHttpContextAccessor</span>();
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+
+app.<span class="fn">MapGet</span>(<span class="s">"/orders/{id:guid}"</span>, <span class="k">async</span> (<span class="t">Guid</span> id, <span class="t">TenantDbContext</span> db, <span class="t">CancellationToken</span> ct) =&gt;
+{
+    <span class="k">var</span> order = <span class="k">await</span> db.<span class="t">Orders</span>.<span class="fn">FindAsync</span>(<span class="k">new object</span>[] { id }, ct);
+    <span class="k">return</span> order <span class="k">is null</span> ? <span class="t">Results</span>.<span class="fn">NotFound</span>() : <span class="t">Results</span>.<span class="fn">Ok</span>(order);
+});
+
+app.<span class="fn">MapPost</span>(<span class="s">"/orders"</span>, <span class="k">async</span> (<span class="t">Order</span> input, <span class="t">TenantDbContext</span> db, <span class="t">CancellationToken</span> ct) =&gt;
+{
+    db.<span class="t">Orders</span>.<span class="fn">Add</span>(input);
+    <span class="k">await</span> db.<span class="fn">SaveChangesAsync</span>(ct);
+    <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Created</span>($<span class="s">"/orders/{input.Id}"</span>, input);
+});
+
+app.<span class="fn">Run</span>();</pre>
+        </div>
+
+        <div class="prose">
+          <p>Every request resolves a <code>TenantDbContext</code> bound to the right shard. The application code looks like it's hitting one database. The router does the work. Migrations run per-shard with <code>dotnet ef database update --connection "$EACH"</code> in CI — boring, scriptable, and the only sane way to keep shards in lockstep.</p>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Virtual nodes save you from rebalance hell</div>
+          <p>The ring uses <code>VirtualNodes = 200</code> per physical shard. Without virtual nodes, adding shard #5 moves a single contiguous arc — wildly unbalanced. With 200 vnodes, the new shard claims 200 small slices spread around the ring, each pulling a fraction of one existing shard's range. The variance drops from "one shard takes 40% of new load" to under 5%.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">DbContextOptions are cached per shard, not per request</div>
+          <p>The <code>ConcurrentDictionary</code> in the factory caches a single options bag per shard ID. EF Core reuses it across requests, the underlying ADO.NET connection pool handles concurrency. <strong>Never new up <code>DbContextOptionsBuilder</code> per request</strong> — it bypasses the EF model cache and you'll pay model-build cost (50–200 ms) on every call.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Cross-shard queries are a smell</div>
+          <p>If a feature requires fan-out to every shard, that feature belongs in a read replica, an OLAP store, or an Elasticsearch index. The whole point of sharding is that <em>each query touches one shard</em>. Anything else is OLAP traffic wearing OLTP clothes.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Migrations need to be per-shard, not application-startup</div>
+          <p>The instinct to call <code>db.Database.Migrate()</code> in <code>Program.cs</code> dies the moment you have ten shards. Run migrations <em>out-of-band</em>, ideally as a deploy step that iterates shards in parallel with bounded concurrency. Track per-shard migration history so a failure halfway through doesn't leave you in a mixed state.</p>
+        </div>
+
+        <div class="prose">
+          <p>A second snippet — the migration runner you'd actually ship. Hosted service, parallel up to 4, per-shard retry, structured logging, fails the deploy on any single-shard failure:</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">ShardMigrationRunner.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">using</span> <span class="t">Microsoft.EntityFrameworkCore</span>;
+<span class="k">using</span> <span class="t">Microsoft.Extensions.Hosting</span>;
+<span class="k">using</span> <span class="t">Microsoft.Extensions.Logging</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Sharding</span>;
+
+<span class="k">public sealed class</span> <span class="t">ShardMigrationRunner</span> : <span class="t">IHostedService</span>
+{
+    <span class="k">private readonly</span> <span class="t">IShardRouter</span> _router;
+    <span class="k">private readonly</span> <span class="t">TenantDbContextFactory</span> _factory;
+    <span class="k">private readonly</span> <span class="t">ILogger</span>&lt;<span class="t">ShardMigrationRunner</span>&gt; _log;
+    <span class="k">private readonly</span> <span class="t">IHostApplicationLifetime</span> _lifetime;
+
+    <span class="k">public</span> <span class="fn">ShardMigrationRunner</span>(
+        <span class="t">IShardRouter</span> router,
+        <span class="t">TenantDbContextFactory</span> factory,
+        <span class="t">ILogger</span>&lt;<span class="t">ShardMigrationRunner</span>&gt; log,
+        <span class="t">IHostApplicationLifetime</span> lifetime)
+    {
+        _router = router;
+        _factory = factory;
+        _log = log;
+        _lifetime = lifetime;
+    }
+
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">StartAsync</span>(<span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">using var</span> sem = <span class="k">new</span> <span class="t">SemaphoreSlim</span>(<span class="n">4</span>);
+        <span class="k">var</span> failed = <span class="k">new</span> <span class="t">List</span>&lt;<span class="k">string</span>&gt;();
+
+        <span class="k">var</span> tasks = _router.<span class="t">All</span>.<span class="fn">Select</span>(<span class="k">async</span> shard =&gt;
+        {
+            <span class="k">await</span> sem.<span class="fn">WaitAsync</span>(ct);
+            <span class="k">try</span>
+            {
+                <span class="k">using var</span> db = _factory.<span class="fn">For</span>(shard.<span class="t">Id</span>); <span class="c">// any tenant key on this shard works</span>
+                _log.<span class="fn">LogInformation</span>(<span class="s">"Migrating shard {Shard}"</span>, shard.<span class="t">Id</span>);
+                <span class="k">await</span> db.<span class="t">Database</span>.<span class="fn">MigrateAsync</span>(ct);
+                _log.<span class="fn">LogInformation</span>(<span class="s">"Shard {Shard} done"</span>, shard.<span class="t">Id</span>);
+            }
+            <span class="k">catch</span> (<span class="t">Exception</span> ex)
+            {
+                _log.<span class="fn">LogError</span>(ex, <span class="s">"Shard {Shard} migration failed"</span>, shard.<span class="t">Id</span>);
+                <span class="k">lock</span> (failed) failed.<span class="fn">Add</span>(shard.<span class="t">Id</span>);
+            }
+            <span class="k">finally</span> { sem.<span class="fn">Release</span>(); }
+        });
+
+        <span class="k">await</span> <span class="t">Task</span>.<span class="fn">WhenAll</span>(tasks);
+
+        <span class="k">if</span> (failed.<span class="t">Count</span> &gt; <span class="n">0</span>)
+        {
+            _log.<span class="fn">LogCritical</span>(<span class="s">"Migration failed on {Count} shards: {List}"</span>,
+                failed.<span class="t">Count</span>, <span class="k">string</span>.<span class="fn">Join</span>(<span class="s">","</span>, failed));
+            _lifetime.<span class="fn">StopApplication</span>(); <span class="c">// fail fast — orchestrator will not flip the rollout</span>
+        }
+    }
+
+    <span class="k">public</span> <span class="t">Task</span> <span class="fn">StopAsync</span>(<span class="t">CancellationToken</span> ct) =&gt; <span class="t">Task</span>.<span class="t">CompletedTask</span>;
+}</pre>
+        </div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Technology</th>
+              <th>Primary fit</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Single Postgres + replicas<span class="sub">vertical scale</span></th>
+              <td>&lt;30k write TPS</td>
+              <td>One thing to operate · standard SQL · pgvector / partitioning included</td>
+              <td><strong>$200 – $9.5k</strong> Aurora r6g</td>
+              <td>Lowest possible</td>
+              <td><span class="verdict good">Stay here as long as you can</span></td>
+            </tr>
+            <tr>
+              <th>Citus (Postgres extension)<span class="sub">distributed Postgres</span></th>
+              <td>OLTP · multi-tenant</td>
+              <td>Shard key on a column · still real Postgres · coordinator routes</td>
+              <td><strong>$500 – $8k</strong> Azure Cosmos for Postgres</td>
+              <td>Low · runs as managed service</td>
+              <td><span class="verdict good">Default for new sharded systems on Postgres</span></td>
+            </tr>
+            <tr>
+              <th>Vitess<span class="sub">MySQL gateway</span></th>
+              <td>Massive OLTP · MySQL shop</td>
+              <td>Online resharding built-in · used by YouTube, Slack, GitHub · 2.49B users at scale</td>
+              <td><strong>$0 OSS</strong> · ops bill is real</td>
+              <td>High · DBA team minimum</td>
+              <td><span class="verdict warn">Worth it past 10TB / multi-region MySQL</span></td>
+            </tr>
+            <tr>
+              <th>Cosmos DB<span class="sub">SaaS partitioned NoSQL</span></th>
+              <td>Multi-region writes · spiky load</td>
+              <td>Built-in partition keys · 5 consistency levels · no DBA</td>
+              <td><strong>$24 – $50k+</strong> RU-based</td>
+              <td>Minimal · vendor handles all</td>
+              <td><span class="verdict warn">Great if you embrace its data model; expensive at constant high load</span></td>
+            </tr>
+            <tr>
+              <th>Azure SQL elastic pools<span class="sub">per-tenant DBs</span></th>
+              <td>SaaS · &lt;5k tenants</td>
+              <td>One database per tenant · easy moves · familiar SQL</td>
+              <td><strong>$300 – $5k</strong> per pool (eDTU)</td>
+              <td>Medium · pool sizing is the art</td>
+              <td><span class="verdict warn">Good for B2B SaaS; gets weird past 5k tenants</span></td>
+            </tr>
+            <tr>
+              <th>Manual EF Core sharding<span class="sub">DIY router</span></th>
+              <td>Forced into existing DB</td>
+              <td>Full control · no vendor</td>
+              <td><strong>$0</strong> + engineer-years</td>
+              <td>You own everything</td>
+              <td><span class="verdict bad">Only if Citus / Vitess truly don't fit</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Under 100M rows, 5k TPS</h5>
+            <p>One Postgres. Maybe read replicas. Stop reading articles about sharding and ship features.</p>
+          </div>
+          <div class="cell">
+            <h5>B2B SaaS, hundreds of tenants</h5>
+            <p>Directory shard by tenant. Citus on Postgres or one DB per tenant in an Azure SQL pool. Move noisy neighbours individually.</p>
+          </div>
+          <div class="cell">
+            <h5>Multi-region writes, low ops headcount</h5>
+            <p>Cosmos DB or Spanner. You're buying out of running the cluster. Budget for the RU bill — it's the real number.</p>
+          </div>
+          <div class="cell">
+            <h5>Massive MySQL · YouTube-like scale</h5>
+            <p>Vitess. Nothing else has the online-resharding maturity. You will pay for an SRE team.</p>
+          </div>
+          <div class="cell">
+            <h5>Greenfield .NET, 30k+ TPS expected</h5>
+            <p>Citus on Postgres + Marten if you need event sourcing. Shard key on the natural tenant column. Pre-allocate 1,024 logical shards.</p>
+          </div>
+          <div class="cell">
+            <h5>Already in trouble, must reshard</h5>
+            <p>Dual-write, backfill, verify, cut over. Two months minimum. Build the verifier on day one — it's the only thing that catches the bug that costs you the migration.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="pull">"The cheapest shard is the one you didn't add. The second cheapest is the one you pre-allocated three years ago and forgot about."</div>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — sharding by something that isn't your access pattern.</strong> If 90% of queries are by <code>user_id</code> and you shard by <code>created_at</code>, every query is scatter-gather. Pick the shard key that matches the hot read path.</p>
+        <p><strong>Two — believing the database will resharding itself.</strong> Cosmos DB and Citus are good. They are not "fire-and-forget for the next decade." Pre-allocate logical shards and watch hot-partition metrics like a hawk.</p>
+        <p><strong>Three — running migrations from app startup.</strong> One shard times out, the whole rollout halts, you have a mixed-version production cluster. Out-of-band, parallel, idempotent. Always.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="consistent-hashing.html">
+          <div class="label">Chapter 06</div>
+          <div class="ttl">Consistent hashing</div>
+        </a>
+        <a class="next-fwd" href="idempotency-keys.html">
+          <div class="label">Chapter 08</div>
+          <div class="ttl">Idempotency keys →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 07 · Database Sharding &amp; Partitioning · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

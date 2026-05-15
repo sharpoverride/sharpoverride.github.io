@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>API Design Best Practices · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">API design</span>
+    </div>
+    <nav><a href="fundamental-url-walkthrough.html">← Prev</a><a href="fundamental-api-versioning.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>REST · JSON · OpenAPI · idempotency</b></span>
+      </div>
+      <h1>The conventions that <span class="ital">save</span> a year.</h1>
+      <p class="lede">Public APIs live for a decade. The shape you ship is the shape you maintain. Get the conventions right at the start — resource naming, errors, pagination, idempotency, versioning — and the next five teams that integrate with you will thank you. Get them wrong and you'll be writing migration guides forever.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The dozen conventions</h5><p>Plural resources. Verbs in HTTP, not in URLs. Use status codes. Pagination is cursor-based. Errors are structured. Idempotency keys on writes. ISO timestamps. UUIDs. OpenAPI spec. Versioning by URL or header. Rate limits in headers. Webhooks signed.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#resources">Resources &amp; verbs</a></li>
+      <li><a href="#errors">Status codes &amp; error bodies</a></li>
+      <li><a href="#pagination">Pagination</a></li>
+      <li><a href="#idempotency">Idempotency</a></li>
+      <li><a href="#docs">Docs &amp; spec</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="resources">
+        <h2 class="section"><span class="num">01</span>Resources &amp; <span class="ital">verbs</span>.</h2>
+        <div class="prose">
+          <p>Resources are <strong>plural nouns</strong>: <code>/users</code>, <code>/orders</code>, <code>/charges</code>. Verbs live in the HTTP method, not the URL. <code>POST /charges</code> creates a charge; <code>GET /charges/{id}</code> reads one; <code>DELETE /charges/{id}</code> deletes. <em>"POST /createCharge" is the smell of an API designer who hasn't read the standards.</em></p>
+          <p>Sub-resources for relationships: <code>GET /users/{id}/orders</code>. Limit depth to two; deeper hierarchies are a pain to evolve. <strong>Actions that don't fit CRUD</strong>: use a verb sub-resource. <code>POST /orders/{id}/cancel</code>, <code>POST /charges/{id}/refund</code>. Better than <code>PATCH</code> with a magic body field.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="errors">
+        <h2 class="section"><span class="num">02</span>Status codes &amp; <span class="ital">error bodies</span>.</h2>
+        <table class="matrix"><thead><tr><th>Code</th><th>Use</th></tr></thead><tbody>
+          <tr><th>200</th><td>OK with body (read or update)</td></tr>
+          <tr><th>201 Created</th><td>POST that created a resource — include Location header</td></tr>
+          <tr><th>204 No Content</th><td>Success, no body</td></tr>
+          <tr><th>400 Bad Request</th><td>Malformed input</td></tr>
+          <tr><th>401 Unauthorized</th><td>No / invalid auth</td></tr>
+          <tr><th>403 Forbidden</th><td>Authed but not allowed</td></tr>
+          <tr><th>404 Not Found</th><td>Resource doesn't exist</td></tr>
+          <tr><th>409 Conflict</th><td>State conflict (duplicate key, idempotency mismatch)</td></tr>
+          <tr><th>422 Unprocessable</th><td>Valid JSON, invalid semantics</td></tr>
+          <tr><th>429 Too Many Requests</th><td>Rate-limited; include Retry-After</td></tr>
+          <tr><th>500</th><td>Server bug</td></tr>
+          <tr><th>503 Service Unavailable</th><td>Overload or maintenance; Retry-After</td></tr>
+        </tbody></table>
+        <div class="prose">
+          <p>Error body shape — structured, not a string:</p>
+        </div>
+        <div class="code"><div class="head"><span><span class="lang">json</span> &nbsp; <span class="file">standard error</span></span><div class="dots"><span></span><span></span><span></span></div></div>
+<pre>{
+  <span class="s">"error"</span>: {
+    <span class="s">"code"</span>: <span class="s">"insufficient_funds"</span>,
+    <span class="s">"message"</span>: <span class="s">"Card has insufficient funds for this charge."</span>,
+    <span class="s">"docs_url"</span>: <span class="s">"https://docs.example.com/errors/insufficient_funds"</span>,
+    <span class="s">"request_id"</span>: <span class="s">"req_7c4a92"</span>
+  }
+}</pre></div>
+        <div class="prose">
+          <p><strong>Code is the stable identifier</strong> — clients switch on it. Message is human-readable, can change. Request ID lets support trace.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="pagination">
+        <h2 class="section"><span class="num">03</span><span class="ital">Pagination</span>.</h2>
+        <div class="prose">
+          <p><strong>Cursor-based, not offset.</strong> <code>?limit=20&amp;cursor=eyJpZCI6Li4ufQ</code>. The cursor is an opaque opaque-to-client base64 of "where we left off." <em>Offset pagination breaks on inserts (a new row at position 0 shifts everything; client sees duplicates on the next page).</em> Cursors are stable.</p>
+          <p>Response includes <code>next_cursor</code> and <code>has_more</code>. Bonus: hypertext links (HATEOAS) — <code>{ "next": "/charges?cursor=..." }</code>. Some clients use them; most don't; cheap to include.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="idempotency">
+        <h2 class="section"><span class="num">04</span><span class="ital">Idempotency</span>.</h2>
+        <div class="prose">
+          <p>Mutating POSTs should accept an <code>Idempotency-Key</code> header. The server stores the key + the response; a retry with the same key returns the cached response without re-executing the side effect. <strong>For payments, this isn't a feature; it's a requirement.</strong> See <a href="idempotency-keys.html">idempotency-keys chapter</a>.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="docs">
+        <h2 class="section"><span class="num">05</span>Docs &amp; <span class="ital">spec</span>.</h2>
+        <div class="prose">
+          <p>OpenAPI 3.x. Generated from code or hand-written; the SDKs are generated from <em>it</em>. <strong>The spec is the contract</strong>; if it doesn't match the implementation, fix one or the other. CI lints for breaking changes against the previous version.</p>
+          <p>Examples, examples, examples. Each endpoint in the docs needs at least one full <code>curl</code> example with realistic payload. Engineers integrate by copying examples; the docs are the API in disguise.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">06</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Public API for customers</h5><p>REST, JSON, OpenAPI, semantic versioning. Documented. Cursors. Idempotency on writes. The boring correct.</p></div>
+          <div class="cell"><h5>Internal service-to-service</h5><p>gRPC if both sides are yours. REST if the boundary is the org. See <a href="grpc-rest-graphql.html">gRPC vs REST vs GraphQL</a>.</p></div>
+          <div class="cell"><h5>BFF for mobile / web</h5><p>GraphQL fits. Per-screen-shaped responses; client picks fields.</p></div>
+          <div class="cell"><h5>Long-running operations</h5><p>Return 202 Accepted with a status URL the client polls. Or use webhooks.</p></div>
+          <div class="cell"><h5>Bulk operations</h5><p>Either accept arrays (most common) or expose a separate batch endpoint with its own rate limits.</p></div>
+          <div class="cell"><h5>You inherited a bad API</h5><p>Don't rewrite. New version alongside; route old endpoints to a compat layer; deprecate over years. See <a href="fundamental-api-versioning.html">API versioning</a>.</p></div>
+        </div>
+        <div class="pull">"The conventions exist because every shop that didn't follow them rewrote their API in year three."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-url-walkthrough.html"><div class="label">Prev</div><div class="ttl">URL walkthrough</div></a>
+        <a class="next-fwd" href="fundamental-api-versioning.html"><div class="label">Next</div><div class="ttl">API versioning →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · API design · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

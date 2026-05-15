@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Mobile Architecture · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Mobile architecture</span>
+    </div>
+    <nav><a href="fundamental-timsort.html">← Prev</a><a href="fundamental-scale-microservices.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~11 min</b></span>
+        <span>Stack <b>Native · cross-platform · MVVM · Clean</b></span>
+      </div>
+      <h1>The app is a <span class="ital">constrained</span> client.</h1>
+      <p class="lede">Mobile architecture is what happens when the client owns state, the network is unreliable, the OS rations CPU, and the user can install the update next month or never. The interview framework (see <a href="interview-mobile-framework.html">Mobile SD framework</a>) covers what to say in 45 minutes; this chapter is what to actually build.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The non-negotiables</h5><p>Local DB. Sync protocol. Lifecycle handling. App-store-aware feature flags. Crash reporting.</p></div>
+      <div><h5>The patterns</h5><p>MVVM or unidirectional data flow. Clean / hexagonal layering. Repository pattern over the DB. Coroutines / async/await over callbacks.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#layers">The layers</a></li>
+      <li><a href="#state">State &amp; persistence</a></li>
+      <li><a href="#network">Network</a></li>
+      <li><a href="#lifecycle">Lifecycle</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="layers">
+        <h2 class="section"><span class="num">01</span>The <span class="ital">layers</span>.</h2>
+        <div class="prose">
+          <p>Modern mobile apps converge on three layers regardless of platform. <strong>UI layer</strong> (SwiftUI / Compose / React Native screens). <strong>Domain layer</strong> (use cases, business logic, framework-free). <strong>Data layer</strong> (repositories, local DB, network clients).</p>
+          <p>UI subscribes to streams from the domain layer; mutations flow down. The domain layer is testable without a simulator. The data layer hides the network/DB split — callers ask the repository, not the API.</p>
+        </div>
+        <div class="pull">"Mobile is the only client tier where the architecture is also a survival strategy."</div>
+      </section>
+
+      <section class="dd-section" id="state">
+        <h2 class="section"><span class="num">02</span>State &amp; <span class="ital">persistence</span>.</h2>
+
+        <h3 class="sub">Single source of truth: the local DB</h3>
+        <div class="prose">
+          <p>SQLite (Room on Android, GRDB / SwiftData / Core Data on iOS). <strong>Don't treat it as a cache; treat it as the truth.</strong> The UI reads from the DB; sync writes to the DB; the network is the freshener. This is the offline-first pattern, applied as a default rather than a special case.</p>
+        </div>
+
+        <h3 class="sub">Reactive flow</h3>
+        <div class="prose">
+          <p>The DB is observed. Compose has Flow; SwiftUI has Combine / Observation; React Native has React Query subscriptions. When the DB row changes, the UI updates. The data-modification path doesn't have to explicitly tell the UI; the reactive plumbing handles it.</p>
+        </div>
+
+        <h3 class="sub">Optimistic mutations</h3>
+        <div class="prose">
+          <p>User taps "like." Update local DB immediately; UI reflects. Send the API call in the background. On success, mark the row as confirmed. On failure, revert (with a toast). <strong>Mobile users perceive latency below 100ms as instant; anything above feels broken.</strong></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="network">
+        <h2 class="section"><span class="num">03</span><span class="ital">Network</span>.</h2>
+
+        <h3 class="sub">Repository abstraction</h3>
+        <div class="prose">
+          <p>Callers ask the repository for data. Repository decides: serve from local DB? Refresh from network? Pull both and merge? <strong>The UI doesn't know.</strong> Standard pattern; underused by teams that ship "loading spinner everywhere" UX.</p>
+        </div>
+
+        <h3 class="sub">Retries built in</h3>
+        <div class="prose">
+          <p>The network drops mid-request. The library (URLSession with backgroundConfiguration, Retrofit + OkHttp interceptor, Ktor with retry plugin) retries automatically with exponential backoff. <strong>Idempotency keys on mutations</strong>; the retry isn't a double-charge.</p>
+        </div>
+
+        <h3 class="sub">Background sync windows</h3>
+        <div class="prose">
+          <p>iOS: BGAppRefreshTask (~30s every several hours). Android: WorkManager (constraint-driven). <strong>You don't decide when sync runs; the OS does.</strong> Express constraints (charging, unmetered network); the OS schedules.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="lifecycle">
+        <h2 class="section"><span class="num">04</span><span class="ital">Lifecycle</span>.</h2>
+
+        <h3 class="sub">The states</h3>
+        <div class="prose">
+          <p>Active → backgrounded → suspended → terminated. Plus "killed by OS due to memory pressure." Plus "phone rebooted." <strong>Don't assume your process lives between two foregrounds.</strong> State must survive across process death.</p>
+        </div>
+
+        <h3 class="sub">State restoration</h3>
+        <div class="prose">
+          <p>User returns to your app after a week. The UI should look like they left it. <strong>Save view state (scroll position, form input, selected tabs) to disk on backgrounding</strong>; restore on cold launch. SwiftUI <code>@SceneStorage</code>; Compose <code>rememberSaveable</code>; framework-specific patterns.</p>
+        </div>
+
+        <h3 class="sub">Push notifications as the wake signal</h3>
+        <div class="prose">
+          <p>Backend has news; can't poll. Send a push. <strong>Silent push (data-only) lets the app fetch data without showing a notification</strong>; iOS rations these; treat as best-effort hints, not delivery guarantees.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">05</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Native iOS + Android</h5><p>SwiftUI + Compose. Two codebases, two best-in-class experiences. The right pick for performance-critical or platform-feature-heavy apps.</p></div>
+          <div class="cell"><h5>One team, two platforms</h5><p>Kotlin Multiplatform (KMP) shares business logic; native UI per platform. Or Flutter / React Native for shared UI too — accept some platform polish loss.</p></div>
+          <div class="cell"><h5>Heavy real-time / multiplayer</h5><p>WebSocket or QUIC for the live channel. Local DB for offline. Same shape as the Slack/WhatsApp story but client-side.</p></div>
+          <div class="cell"><h5>Offline-first product</h5><p>CRDT-based sync (Yjs, Automerge), or a custom delta-sync protocol. Server is the convergence point.</p></div>
+          <div class="cell"><h5>Crash reporting / observability</h5><p>Sentry, Firebase Crashlytics, Bugsnag. Don't ship without one; mobile crashes are silent unless you're listening.</p></div>
+          <div class="cell"><h5>Force update / kill switch</h5><p>Server-side feature flag for every consequential client behaviour. App store update lag is real; the kill switch is your emergency control.</p></div>
+        </div>
+        <div class="pull">"Mobile architecture is server architecture's rules — written by someone who has never been to your data center."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-timsort.html"><div class="label">Prev</div><div class="ttl">Timsort</div></a>
+        <a class="next-fwd" href="fundamental-scale-microservices.html"><div class="label">Next</div><div class="ttl">Scale microservices →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Mobile architecture · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

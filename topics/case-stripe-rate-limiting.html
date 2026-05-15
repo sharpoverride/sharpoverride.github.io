@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Stripe — Four rate limiters · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#cases">Case Studies</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Stripe</span>
+    </div>
+    <nav>
+      <a href="case-figma-postgres.html">← Prev case</a>
+      <a href="case-netflix-chaos.html">Next case →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Year <b>2017 → 2024</b></span>
+        <span>Scale <b>1B+ daily requests</b></span>
+        <span>Stack <b>Redis + Lua · 4 distinct limiters</b></span>
+      </div>
+      <h1>Four rate limiters, <span class="ital">one</span> request.</h1>
+      <p class="lede">Stripe runs four different rate-limiters on every incoming API call. Each protects against a different failure mode. The public blog post from 2017 is the most-cited rate-limiting design in the industry — and the only one where the limit values are calibrated for cardholders.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>What runs on every request</h5>
+        <p>(1) Per-user request rate, (2) per-user concurrency, (3) fleet-wide overall, (4) per-endpoint backstop. Each can independently refuse the request.</p>
+      </div>
+      <div>
+        <h5>Why four</h5>
+        <p>Each protects a different resource: customer fairness, downstream concurrency, total fleet capacity, hot-endpoint protection. <em>One limiter is too coarse to be useful at this scale.</em></p>
+      </div>
+      <div>
+        <h5>Where it runs</h5>
+        <p>Redis with Lua scripts. Atomic, low-latency, surviveable for a global API gateway. Sub-millisecond p99 on the limit check.</p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The payment-API problem</a></li>
+        <li><a href="#before">The naive limiter</a></li>
+        <li><a href="#break">Three failure modes one limiter misses</a></li>
+        <li><a href="#after">The four-layer design</a></li>
+        <li><a href="#numbers">The numbers</a></li>
+        <li><a href="#lessons">Lessons</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The payment-API <span class="ital">problem</span>.</h2>
+        <div class="prose">
+          <p>Stripe's API is the company. Slow it down by 50ms across the board and the merchants notice. Take it down for two minutes and the news writes about it. <strong>The job of the rate limiter isn't "be fair"; it's "survive everything in the wild while still being fair."</strong> A misbehaving integration that loops POSTing charges. A merchant during their Black Friday sale that suddenly sends 100× their normal load. A scraper trying to enumerate customers. A new partner that didn't read the docs.</p>
+          <p>One rate limit ("100 requests per second per user") is too coarse. It protects the global fleet from one bad user; it does nothing to protect Stripe from <em>thousands</em> of users each doing 99 RPS. And it doesn't differentiate "100 RPS of <code>GET /charges</code>" from "100 RPS of <code>POST /charges</code>." <strong>The cost to Stripe of those two patterns differs by a factor of 100</strong>: reads hit a cache, writes hit a payment processor.</p>
+        </div>
+
+        <div class="pull">"Rate limiting is the only feature you ship that customers hate, and you ship anyway, because the alternative is everyone hating you instead."</div>
+      </section>
+
+      <section class="dd-section" id="before">
+        <h2 class="section"><span class="num">02</span>The naive <span class="ital">limiter</span>.</h2>
+        <div class="prose">
+          <p>The starting point everyone reaches first: a token bucket per user, in Redis, refilled at a fixed rate. The API gateway calls <code>INCR user:requests:&lt;id&gt;</code>, checks the count against a limit, decides allow/deny. This is the example you'll find in every "build a rate limiter" tutorial. It works at small scale. <strong>It misses three problems that show up at Stripe scale.</strong></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="break">
+        <h2 class="section"><span class="num">03</span>Three failure modes <span class="ital">one</span> limiter misses.</h2>
+
+        <h3 class="sub">Failure mode 1 — long-running requests</h3>
+        <div class="prose">
+          <p>A user is "within their RPS limit" but every request they make takes 30 seconds — they're calling a slow endpoint, or their requests get queued behind a slow downstream. <strong>The user is consuming a server thread for 30 seconds at a time</strong>; ten of them in flight monopolises ten threads regardless of RPS. The limiter that counts requests-per-second is blind to concurrent in-flight requests.</p>
+        </div>
+
+        <h3 class="sub">Failure mode 2 — many users, one global cap</h3>
+        <div class="prose">
+          <p>10,000 users at 99 RPS each = ~1M RPS globally. Even if each user is "well behaved", the fleet can be overwhelmed. <strong>The limiter that's per-user has no notion of total capacity</strong>; nothing throttles a sudden synchronised burst across many users (e.g. when Stripe publishes a new feature and every integration starts polling for it).</p>
+        </div>
+
+        <h3 class="sub">Failure mode 3 — uneven endpoint costs</h3>
+        <div class="prose">
+          <p><code>GET /customers/cus_X</code> costs Stripe ~1ms of CPU. <code>POST /charges</code> costs ~200ms, touches a payment network, and consumes external partner credit. <strong>"100 RPS" of one is fine; "100 RPS" of the other is an incident.</strong> The limiter that's blind to endpoint can't price the difference.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="after">
+        <h2 class="section"><span class="num">04</span>The four-layer <span class="ital">design</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 460" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="srla" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · FOUR LIMITERS, ONE REQUEST</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 70)">
+              <rect x="0"   y="0" width="120" height="60" fill="#1a1814"/>
+              <text x="60"  y="34" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">REQUEST</text>
+
+              <g>
+                <rect x="180" y="0"  width="180" height="60" fill="#c2410c"/>
+                <text x="270" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">1 · PER-USER RATE</text>
+                <text x="270" y="40" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">100 RPS, token bucket</text>
+                <text x="270" y="52" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">→ fairness</text>
+              </g>
+              <g>
+                <rect x="380" y="0"  width="180" height="60" fill="#c2410c"/>
+                <text x="470" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">2 · CONCURRENCY</text>
+                <text x="470" y="40" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">20 in-flight / user</text>
+                <text x="470" y="52" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">→ thread hogging</text>
+              </g>
+              <g>
+                <rect x="580" y="0"  width="180" height="60" fill="#1a1814"/>
+                <text x="670" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">3 · GLOBAL CAP</text>
+                <text x="670" y="40" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">fleet RPS budget</text>
+                <text x="670" y="52" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">→ shed load</text>
+              </g>
+              <g>
+                <rect x="780" y="0"  width="180" height="60" fill="#1a1814"/>
+                <text x="870" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">4 · PER-ENDPOINT</text>
+                <text x="870" y="40" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">backstop / route</text>
+                <text x="870" y="52" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">→ hot endpoint</text>
+              </g>
+              <g>
+                <rect x="980" y="0" width="180" height="60" fill="#c2410c"/>
+                <text x="1070" y="34" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">EXECUTE</text>
+              </g>
+
+              <line x1="120" y1="30" x2="178" y2="30" stroke="#c2410c" stroke-width="2" marker-end="url(#srla)"/>
+              <line x1="360" y1="30" x2="378" y2="30" stroke="#c2410c" stroke-width="2" marker-end="url(#srla)"/>
+              <line x1="560" y1="30" x2="578" y2="30" stroke="#c2410c" stroke-width="2" marker-end="url(#srla)"/>
+              <line x1="760" y1="30" x2="778" y2="30" stroke="#c2410c" stroke-width="2" marker-end="url(#srla)"/>
+              <line x1="960" y1="30" x2="978" y2="30" stroke="#c2410c" stroke-width="2" marker-end="url(#srla)"/>
+            </g>
+
+            <g transform="translate(40, 180)">
+              <text x="0" y="20" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Each stage runs in Redis with a single Lua script.</text>
+              <text x="0" y="50" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Total budget: ~1ms p99 added to the request.</text>
+              <text x="0" y="70" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Any one of the four can return 429. The header tells you which.</text>
+
+              <line x1="0" y1="100" x2="1100" y2="100" stroke="#1a1814" stroke-width="1" stroke-dasharray="3 3"/>
+
+              <text x="0" y="135" font-family="JetBrains Mono" font-size="11" fill="#c2410c">429 RESPONSE</text>
+              <text x="0" y="158" font-family="JetBrains Mono" font-size="11" fill="#1a1814">Retry-After: 1</text>
+              <text x="0" y="178" font-family="JetBrains Mono" font-size="11" fill="#1a1814">X-RateLimit-Limit: 100</text>
+              <text x="0" y="198" font-family="JetBrains Mono" font-size="11" fill="#1a1814">X-RateLimit-Remaining: 0</text>
+              <text x="0" y="218" font-family="JetBrains Mono" font-size="11" fill="#1a1814">X-RateLimit-Bucket: user.rate     ← tells the caller which limiter</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>The four limiters run in series in the gateway. Each is cheap; the combination is what makes the API both fair and survivable.</span></div>
+        </div>
+
+        <h3 class="sub">Limiter 1: per-user request rate</h3>
+        <div class="prose">
+          <p>Token bucket per user, refilled at the user's RPS limit, burst capacity of 5–10×. <strong>Implemented as a 5-line Lua script on Redis</strong> for atomicity. This is the limiter every tutorial covers and the one users actually see most. The published default for Stripe is ~100 RPS per account, raised on request for high-volume merchants.</p>
+        </div>
+
+        <h3 class="sub">Limiter 2: per-user concurrency</h3>
+        <div class="prose">
+          <p>A counter incremented on request start, decremented on response. If concurrent in-flight requests for one user exceed (typically) 20, new requests are refused. <em>This is the limiter that catches the "30-second requests at 1 RPS" pattern</em>: rate is fine, concurrency is melting. Redis stores the counter; a TTL ensures it self-heals if the decrement is lost.</p>
+        </div>
+
+        <h3 class="sub">Limiter 3: global fleet cap</h3>
+        <div class="prose">
+          <p>A counter for total fleet RPS, refreshed periodically against a budget. If the fleet is at 95% of capacity, the limiter starts <strong>load shedding</strong> — typically priority-aware: failing low-priority traffic (background polling, dashboard refreshes) before mission-critical traffic (charges). <em>This is the protection that prevents a coordinated traffic surge from melting Stripe.</em></p>
+        </div>
+
+        <h3 class="sub">Limiter 4: per-endpoint backstop</h3>
+        <div class="prose">
+          <p>Each endpoint has its own absolute ceiling, regardless of who's calling. <code>POST /charges</code> might be capped at fleet-wide 10k RPS — high but finite. <strong>The backstop prevents a single endpoint from absorbing the global budget</strong>, which would otherwise cause one feature's spike to starve everything else.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">numbers</span>.</h2>
+
+        <table class="matrix">
+          <thead>
+            <tr><th>Property</th><th>Value</th></tr>
+          </thead>
+          <tbody>
+            <tr><th>Default user RPS</th><td>100 (configurable up)</td></tr>
+            <tr><th>Default user concurrency</th><td>20 in-flight</td></tr>
+            <tr><th>Latency added by limiters</th><td>&lt;1ms p99</td></tr>
+            <tr><th>Limiters per request</th><td>4 (typical)</td></tr>
+            <tr><th>Redis cluster size</th><td>Multiple, regional</td></tr>
+            <tr><th>Bucket implementation</th><td>Token bucket + Lua atomic</td></tr>
+            <tr><th>Response code</th><td>429 + <code>Retry-After</code></td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">06</span>The <span class="ital">lessons</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">One limiter is not enough</div>
+          <p>Rate, concurrency, fleet, endpoint — each catches what the others miss. Adding any one of the missing three to a single-limiter system measurably improves resilience for a day's work of code. <strong>Adopt them in order: rate first, then concurrency, then fleet, then per-endpoint.</strong></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Lua scripts on Redis are the right primitive</div>
+          <p>Token bucket logic must be atomic — check, decrement, decide — without a network round-trip per step. Redis Lua scripts run on the Redis server atomically; this is the only standard primitive that meets the latency and consistency requirements. <em>You'll see this implementation everywhere</em>; Stripe didn't invent it but they made it famous.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Tell the caller which limiter they hit</div>
+          <p>The <code>X-RateLimit-Bucket</code> response header naming the limiter is the difference between "your client is broken" and "you need to retry differently." A client hitting limit 1 (rate) can back off; a client hitting limit 2 (concurrency) needs to reduce parallelism, not slow down. <strong>The diagnostic header is a customer-experience feature</strong>, not a debug aid.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Priority-aware shedding</div>
+          <p>When you're over global capacity, drop traffic by class — let merchant charge requests succeed; drop the dashboard's polling. This requires the request to carry a priority tag from the client. <em>Without priorities, "shed load" means "make the most important things fail too."</em></p>
+        </div>
+
+        <div class="pull">"You can't talk a customer out of a 429. You can give them a header that tells them which 429 they got."</div>
+
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-figma-postgres.html">
+          <div class="label">Prev case</div>
+          <div class="ttl">Figma — Postgres</div>
+        </a>
+        <a class="next-fwd" href="case-netflix-chaos.html">
+          <div class="label">Next case</div>
+          <div class="ttl">Netflix — Chaos engineering →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Case Study · Stripe · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

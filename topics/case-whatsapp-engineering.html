@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>WhatsApp — 50B msgs/day · 32 engineers · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#cases">Case Studies</a><span class="sep">/</span>
+      <span style="color:var(--ink);">WhatsApp eng</span>
+    </div>
+    <nav><a href="case-apple-pay.html">← Prev</a><a href="../system-design.html">Index →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Year <b>2014 (pre-acquisition)</b></span>
+        <span>Scale <b>50B msgs/day · 32 engineers</b></span>
+        <span>Stack <b>Erlang · FreeBSD · single-purpose hardware</b></span>
+      </div>
+      <h1>Thirty-two engineers. <span class="ital">Fifty billion</span> messages.</h1>
+      <p class="lede">WhatsApp's pre-acquisition engineering team was famously tiny. The architectural choice was famously old-school: Erlang on FreeBSD, vertically scaled, no microservices, no cloud, no JS. The lessons are mostly about discipline and constraint.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The numbers</h5><p>~32 engineers. ~450M MAU. ~50B msgs/day. ~12 servers. ~$1M MRR per engineer.</p></div>
+      <div><h5>The choices</h5><p>Erlang for concurrency. FreeBSD for kernel tuning. Single chat-server process per active million users. No build pipeline; live system patches.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#why-erlang">Why Erlang</a></li>
+      <li><a href="#why-bsd">Why FreeBSD</a></li>
+      <li><a href="#engineering">The engineering culture</a></li>
+      <li><a href="#numbers">The numbers</a></li>
+      <li><a href="#lessons">Lessons</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="why-erlang">
+        <h2 class="section"><span class="num">01</span>Why <span class="ital">Erlang</span>.</h2>
+        <div class="prose">
+          <p>Erlang/OTP was built for telecoms: high-concurrency, fault-tolerant, soft-real-time. <strong>Each user's session is a lightweight Erlang process</strong> (few KB stack). One server can hold a million processes. The supervisor-tree model makes "let it crash and restart" the standard error-handling pattern.</p>
+          <p>The fit with chat: a user = a process, a message = a message, the language's native primitives are the application's domain. The amount of glue code WhatsApp needed was minimal.</p>
+        </div>
+        <div class="pull">"Erlang was a 30-year-old language with the perfect concurrency primitives for chat. It just took someone to notice."</div>
+      </section>
+
+      <section class="dd-section" id="why-bsd">
+        <h2 class="section"><span class="num">02</span>Why <span class="ital">FreeBSD</span>.</h2>
+        <div class="prose">
+          <p>FreeBSD's network stack and kqueue were better tuned than Linux's epoll for the WhatsApp workload at the time. <strong>The team patched the kernel for their needs</strong> — TCP stack, socket allocator, scheduler. Each server held ~1M concurrent connections, on hardware that other companies would've thought needed 100.</p>
+          <p>The lesson isn't "use FreeBSD." It's <em>"vertical scale on tuned hardware is undervalued in the cloud era."</em> The cost of one giant carefully-tuned machine is often less than a fleet of un-tuned ones.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="engineering">
+        <h2 class="section"><span class="num">03</span>The engineering <span class="ital">culture</span>.</h2>
+
+        <div class="callout"><div class="ctag">No microservices</div><p>One Erlang application, one binary. The "service" boundary was the supervisor tree inside the application. Cross-service RPC was inter-process Erlang messaging — local and cheap.</p></div>
+        <div class="callout"><div class="ctag">Live code reload</div><p>Erlang's hot-code reload feature was used in production. Deploy a fix without restarting the server. <em>This is how WhatsApp avoided "deploy windows"</em>; the server kept running through thousands of code updates.</p></div>
+        <div class="callout"><div class="ctag">No JIRA, no standups, no architecture committee</div><p>The team was tiny enough that communication was face-to-face. No process overhead. <em>Don't generalise this to a 500-engineer org</em>; it worked because of the specific shape of the team.</p></div>
+        <div class="callout"><div class="ctag">Owning the stack</div><p>The engineers wrote Erlang, tuned the kernel, ordered the hardware, racked the servers. <strong>End-to-end ownership.</strong> Hard to staff at scale; brutally effective at small scale.</p></div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">numbers</span>.</h2>
+        <table class="matrix"><thead><tr><th>Metric (~2014)</th><th>Value</th></tr></thead><tbody>
+          <tr><th>MAU</th><td>~450M</td></tr>
+          <tr><th>Messages / day</th><td>~50B</td></tr>
+          <tr><th>Engineers</th><td>~32</td></tr>
+          <tr><th>Servers</th><td>~12 (chat-handling)</td></tr>
+          <tr><th>Concurrent connections per server</th><td>~1M</td></tr>
+          <tr><th>Language</th><td>Erlang/OTP</td></tr>
+          <tr><th>OS</th><td>FreeBSD (custom-patched)</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">lessons</span>.</h2>
+        <div class="callout"><div class="ctag">Match the language to the domain</div><p>Chat is a concurrency problem. Erlang is a concurrency language. The fit was perfect. <em>For most apps, the domain doesn't have such a sharp fit; pick boring tech.</em> But when it does, pay attention.</p></div>
+        <div class="callout"><div class="ctag">Vertical scale, well-tuned, is cheap</div><p>The cloud era pushes you toward "many small commodity instances." WhatsApp's "few big tuned instances" was 10× cheaper for the workload. The optimisation requires ownership; the cloud takes it from you.</p></div>
+        <div class="callout"><div class="ctag">Smaller teams move faster, up to a limit</div><p>32 engineers couldn't build a hundred features in parallel. They built one feature very well. The constraint forced focus.</p></div>
+        <div class="callout"><div class="ctag">Not all of this scales</div><p>WhatsApp got acquired and grew the team to thousands. Live code reload, no-process culture, owning the rack — most don't survive scale. <em>The era of "32 engineers, 50B msgs/day" is the era you can't reproduce by hiring.</em></p></div>
+        <div class="pull">"WhatsApp's engineering was the right shape for its scale. Bigger scale needs different shape."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-apple-pay.html"><div class="label">Prev</div><div class="ttl">Apple Pay</div></a>
+        <a class="next-fwd" href="../system-design.html"><div class="label">All cases</div><div class="ttl">Back to index →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Case · WhatsApp engineering · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

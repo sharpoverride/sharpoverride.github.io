@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>System Design Interview — Framework · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive interview">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#interviews">Interviews</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Framework</span>
+    </div>
+    <nav>
+      <a href="../system-design.html">← Index</a>
+      <a href="interview-design-whatsapp.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Interview <b>walkthrough</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~12 min</b></span>
+        <span>Stack <b>The 6-step approach to any "Design X"</b></span>
+      </div>
+      <h1>Six steps. <span class="ital">Forty-five</span> minutes.</h1>
+      <p class="lede">The system design interview tests one skill: can you structure a complex problem under time pressure. The framework below is what works — used by candidates who pass at Google, Meta, AWS, Stripe. It's not a script; it's a scaffold that buys you time to think.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The six steps</h5>
+        <p>(1) Clarify, (2) Estimate, (3) High-level design, (4) Deep dive 2–3 components, (5) Scale &amp; bottlenecks, (6) Tradeoffs &amp; questions.</p>
+      </div>
+      <div>
+        <h5>The biggest mistake</h5>
+        <p>Skipping step 1. Most candidates dive into the architecture; the interviewer was waiting for clarifying questions and now has to feed them context.</p>
+      </div>
+      <div>
+        <h5>Time allocation (45 min)</h5>
+        <p>5 · 5 · 10 · 15 · 5 · 5 minutes per step. Adjust if the interviewer pushes you into a specific area.</p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#step1">Step 1 — Clarify</a></li>
+        <li><a href="#step2">Step 2 — Estimate</a></li>
+        <li><a href="#step3">Step 3 — High-level design</a></li>
+        <li><a href="#step4">Step 4 — Deep dive</a></li>
+        <li><a href="#step5">Step 5 — Scale &amp; bottlenecks</a></li>
+        <li><a href="#step6">Step 6 — Tradeoffs &amp; questions</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="step1">
+        <h2 class="section"><span class="num">01</span><span class="ital">Clarify</span>.</h2>
+        <div class="prose">
+          <p>"Design Twitter" is not a problem statement. It's a prompt. <strong>Your first move is to convert the prompt into a problem statement with quantified scope.</strong> The interviewer has a specific design in mind, but they want to see whether you can extract it.</p>
+          <p>Ask three groups of questions:</p>
+        </div>
+
+        <h3 class="sub">Functional scope</h3>
+        <div class="prose">
+          <p>What are the core flows? <em>"For Twitter: post a tweet, view home timeline, follow/unfollow, search? Or just the first two?"</em> Pin down a small set of features. <strong>Two or three is enough for a 45-minute interview.</strong> Cut things ruthlessly — direct messages, ads, notifications. Re-confirm: "so we're designing tweet posting and timeline read; anything else?"</p>
+        </div>
+
+        <h3 class="sub">Non-functional scope</h3>
+        <div class="prose">
+          <p>How many users? Read/write ratio? Latency target? Consistency? <em>"500M DAU, read-heavy (100:1), home-timeline p99 &lt; 200ms, eventual consistency on the timeline is fine."</em> <strong>These numbers drive every architectural choice that follows.</strong> Don't guess — ask, or propose and confirm.</p>
+        </div>
+
+        <h3 class="sub">Constraints</h3>
+        <div class="prose">
+          <p>Budget? Geographic distribution? Mobile vs web? Storage retention? <em>"We're a startup; multi-region is out of scope for v1; we're targeting USA only first."</em> Constraints simplify the design; surfacing them is a signal of seniority.</p>
+        </div>
+
+        <div class="pull">"The first five minutes are spent making the problem smaller. The remaining forty solve the smaller problem."</div>
+      </section>
+
+      <section class="dd-section" id="step2">
+        <h2 class="section"><span class="num">02</span><span class="ital">Estimate</span>.</h2>
+
+        <div class="prose">
+          <p>Back-of-envelope numbers that anchor every architectural decision. The interviewer wants to see you can convert "500M DAU" into "QPS, storage, bandwidth". <strong>The actual numbers matter less than the math being defensible.</strong></p>
+        </div>
+
+        <h3 class="sub">The standard quantities</h3>
+
+        <table class="matrix">
+          <thead>
+            <tr><th>Quantity</th><th>For Twitter example</th><th>How to compute</th></tr>
+          </thead>
+          <tbody>
+            <tr><th>DAU</th><td>500M</td><td>given</td></tr>
+            <tr><th>Writes / day (tweets)</th><td>~500M</td><td>1 tweet/user/day avg</td></tr>
+            <tr><th>Writes / sec</th><td>~6k</td><td>500M / 86400</td></tr>
+            <tr><th>Reads / sec</th><td>~600k</td><td>writes × 100 (R/W ratio)</td></tr>
+            <tr><th>Avg tweet size</th><td>~1 KB</td><td>280 char + metadata</td></tr>
+            <tr><th>Tweet storage / day</th><td>~500 GB</td><td>500M × 1 KB</td></tr>
+            <tr><th>Storage / year</th><td>~180 TB</td><td>500 GB × 365</td></tr>
+          </tbody>
+        </table>
+
+        <div class="prose">
+          <p>These numbers tell you: <strong>you cannot serve home timelines by querying the tweet store on every read</strong> (~600k QPS against a database is brutal). You need a precomputed feed cache. <em>That decision is forced by the math, not by style.</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="step3">
+        <h2 class="section"><span class="num">03</span>High-level <span class="ital">design</span>.</h2>
+
+        <div class="prose">
+          <p>Big picture, 4–8 boxes, draw on the whiteboard. <strong>Don't draw before you've named the boxes</strong>; thinking about which boxes you need is the design.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 280" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="ifma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · TWITTER, HIGH-LEVEL</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0"   y="0"  width="140" height="50" fill="#1a1814"/>
+              <text x="70"  y="30" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CLIENT</text>
+
+              <rect x="180" y="0"  width="140" height="50" fill="#c2410c"/>
+              <text x="250" y="30" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">API GATEWAY</text>
+
+              <rect x="360" y="-40" width="140" height="50" fill="#1a1814"/>
+              <text x="430" y="-10" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">TWEET WRITE SVC</text>
+
+              <rect x="360" y="50" width="140" height="50" fill="#1a1814"/>
+              <text x="430" y="80" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">TIMELINE READ SVC</text>
+
+              <rect x="540" y="-40" width="140" height="50" fill="#c2410c"/>
+              <text x="610" y="-10" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">TWEET STORE</text>
+
+              <rect x="540" y="50" width="140" height="50" fill="#c2410c"/>
+              <text x="610" y="80" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">TIMELINE CACHE</text>
+
+              <rect x="720" y="0"  width="140" height="50" fill="#1a1814"/>
+              <text x="790" y="30" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">FANOUT WORKER</text>
+
+              <line x1="140" y1="25" x2="178" y2="25" stroke="#c2410c" stroke-width="2" marker-end="url(#ifma)"/>
+              <line x1="320" y1="20" x2="358" y2="-15" stroke="#c2410c" stroke-width="1.5" marker-end="url(#ifma)"/>
+              <line x1="320" y1="30" x2="358" y2="75"  stroke="#c2410c" stroke-width="1.5" marker-end="url(#ifma)"/>
+              <line x1="500" y1="-15" x2="538" y2="-15" stroke="#c2410c" stroke-width="2" marker-end="url(#ifma)"/>
+              <line x1="500" y1="-10" x2="720" y2="20"  stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#ifma)"/>
+              <line x1="790" y1="50"  x2="610" y2="48"  stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#ifma)"/>
+              <line x1="500" y1="75"  x2="538" y2="75"  stroke="#c2410c" stroke-width="2" marker-end="url(#ifma)"/>
+            </g>
+
+            <text x="40" y="240" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">"Write tweet → store → fanout into followers' timeline caches. Read pulls from cache."</text>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>One slide, six boxes, clear data flow. Each box can be deep-dived in step 4.</span></div>
+        </div>
+
+        <h3 class="sub">Talk through the data flow</h3>
+        <div class="prose">
+          <p>"User posts a tweet. The write service persists to the tweet store. A fanout worker writes the tweet ID into the cache for each follower's timeline. On read, the timeline service fetches the cache for the user, then loads the tweets from the store." <strong>Five sentences. Done.</strong> The interviewer now knows your design; they'll pick what to deep-dive next.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="step4">
+        <h2 class="section"><span class="num">04</span>Deep <span class="ital">dive</span>.</h2>
+
+        <div class="prose">
+          <p>The longest step. Pick 2–3 components and explain them in detail. <strong>Let the interviewer steer.</strong> "Which part would you like me to dig into?" is the magic phrase.</p>
+        </div>
+
+        <h3 class="sub">Common deep-dive areas</h3>
+        <div class="prose">
+          <p><strong>The data model</strong> — schema for the central entity. <strong>The hot path</strong> — exactly how a read happens, what's cached where. <strong>The hard component</strong> — the one with non-trivial tradeoffs (fanout for celebrity tweets, geo-aware routing, eventual consistency reconciliation). <strong>A specific subsystem</strong> the interviewer's team owns (search, recommendations, ranking).</p>
+          <p>For each, narrate: <em>what's the data, what's the API, what's the storage, what's the cache, what's the failure mode, what's the scale knob.</em></p>
+        </div>
+
+        <h3 class="sub">Walk through specific scenarios</h3>
+        <div class="prose">
+          <p>"What happens when a user with 100M followers tweets?" <em>"Fanout into 100M caches would be huge. We pull-on-read for high-fanout users: their tweets are stored normally, but reads merge the celebrity tweets with the cached timeline at request time."</em> Concrete scenarios beat abstract architecture every time.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="step5">
+        <h2 class="section"><span class="num">05</span>Scale &amp; <span class="ital">bottlenecks</span>.</h2>
+        <div class="prose">
+          <p>"How does this scale to 5 billion users?" Don't panic. Walk through the bottlenecks in order: <em>the write path, the read path, the storage, the cache.</em></p>
+        </div>
+
+        <h3 class="sub">The scaling toolkit</h3>
+        <div class="prose">
+          <p><strong>Caching</strong> for read amplification. <strong>Sharding</strong> for write scaling. <strong>Read replicas</strong> for read scaling. <strong>CDN</strong> for static. <strong>Async / queue</strong> for offloading work. <strong>Geographic distribution</strong> for latency. <strong>Cell architecture</strong> for blast radius.</p>
+          <p>Don't just list these — apply them. "We'd shard the tweet store by user-id; reads would be served from the user's shard, plus a fanout cache." Each scaling move has a cost; surface it: "sharding by user-id means cross-user joins become app-side."</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="step6">
+        <h2 class="section"><span class="num">06</span>Tradeoffs &amp; <span class="ital">questions</span>.</h2>
+        <div class="prose">
+          <p>Wrap up by naming 2–3 explicit tradeoffs you made and one open question.</p>
+          <p><strong>"I chose eventual consistency for the timeline; this means a freshly-posted tweet may not appear in followers' feeds for a few seconds. The alternative — strong consistency — would require synchronous fanout, which doesn't scale at 100M follower counts."</strong></p>
+          <p>And: <em>"One thing I didn't address: how would we rank the timeline? I'd treat that as a separate ML ranking layer between the cache and the response, but the design would change depending on whether we want real-time signals."</em></p>
+          <p><strong>Naming tradeoffs explicitly is the signal of senior thinking</strong>; it shows you know what you didn't do, and why.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Things to mention in any interview, on any topic</div>
+          <p><strong>Idempotency</strong>: how do we handle retries. <strong>Monitoring</strong>: what metrics matter. <strong>Failure</strong>: what happens when X dies. <strong>Cost</strong>: cite a specific dollar number if you can. <strong>Security</strong>: auth, rate-limiting, abuse. <em>You don't need all five; you need to surface 2–3 unprompted.</em></p>
+        </div>
+
+        <div class="pull">"The framework is a clock you can run yourself. The interviewer just has to listen."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="../system-design.html">
+          <div class="label">Index</div>
+          <div class="ttl">All interviews</div>
+        </a>
+        <a class="next-fwd" href="interview-design-whatsapp.html">
+          <div class="label">First walkthrough</div>
+          <div class="ttl">Design WhatsApp →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Interview · Framework · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

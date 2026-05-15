@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>MCP — Model Context Protocol · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive ai">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#ai">AI</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">MCP</span>
+    </div>
+    <nav>
+      <a href="ai-agents.html">← Prev</a>
+      <a href="ai-llm-concepts.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>AI <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~11 min</b></span>
+        <span>Stack <b>JSON-RPC · stdio / SSE · tools, resources, prompts</b></span>
+      </div>
+      <h1>The <span class="ital">USB-C</span> of LLM context.</h1>
+      <p class="lede">Model Context Protocol (MCP) is Anthropic's 2024 specification for how AI applications connect to data sources and tools. One protocol; many clients; many servers. A growing ecosystem of MCP servers gives any MCP-aware LLM client immediate access to a wide variety of capabilities — without each integration being bespoke.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem</h5>
+        <p>Every AI app reinvents how it talks to GitHub, Slack, your filesystem, your database. The integration code is N × M (N apps × M data sources). MCP makes it N + M.</p>
+      </div>
+      <div>
+        <h5>The shape</h5>
+        <p>Client (the AI app, e.g. Claude Desktop, Cursor, ChatGPT clients) speaks MCP to one or more servers. Each server exposes tools, resources, and prompts. JSON-RPC over stdio or HTTP/SSE.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">MCP spec</span>
+          <span class="pill on">JSON-RPC 2.0</span>
+          <span class="pill on">Tools / resources / prompts</span>
+          <span class="pill">Anthropic SDK</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The N × M problem</a></li>
+        <li><a href="#shape">Client, server, primitives</a></li>
+        <li><a href="#wire">The wire protocol</a></li>
+        <li><a href="#dotnet">Building an MCP server</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The N × M <span class="ital">problem</span>.</h2>
+        <div class="prose">
+          <p>Every AI client wants to talk to your tools. Claude Desktop wants GitHub access; so do Cursor, Continue, Cline, ChatGPT's desktop app, your in-house chatbot. <strong>Each app currently writes its own GitHub integration.</strong> Now imagine the matrix: N AI clients × M tools = N×M integrations.</p>
+          <p>MCP is the standard. Build one MCP server for GitHub; <em>every MCP-aware client can use it.</em> Build one Slack server; same. Build one for your internal CRM; ditto. <strong>The integration cost goes from N×M to N+M.</strong> This is the same play LSP made for IDEs (one language server, many editors); the same play USB-C made for cables.</p>
+        </div>
+
+        <div class="pull">"MCP is what tool calling looks like when you stop writing it inside each AI app."</div>
+      </section>
+
+      <section class="dd-section" id="shape">
+        <h2 class="section"><span class="num">02</span>Client, server, <span class="ital">primitives</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 340" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="mca" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · ONE CLIENT, MANY SERVERS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0"   y="60" width="180" height="60" fill="#c2410c"/>
+              <text x="90"  y="90" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">MCP CLIENT</text>
+              <text x="90"  y="106" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">(Claude Desktop, Cursor…)</text>
+
+              <g fill="#1a1814">
+                <rect x="280" y="-10" width="180" height="40"/>
+                <rect x="280" y="40"  width="180" height="40"/>
+                <rect x="280" y="90"  width="180" height="40"/>
+                <rect x="280" y="140" width="180" height="40"/>
+                <rect x="280" y="190" width="180" height="40"/>
+              </g>
+              <g font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">
+                <text x="370" y="14">GitHub server</text>
+                <text x="370" y="64">Slack server</text>
+                <text x="370" y="114">Filesystem server</text>
+                <text x="370" y="164">Postgres server</text>
+                <text x="370" y="214">Custom server</text>
+              </g>
+
+              <line x1="180" y1="80" x2="278" y2="10"  stroke="#c2410c" stroke-width="1.5" marker-end="url(#mca)"/>
+              <line x1="180" y1="85" x2="278" y2="60"  stroke="#c2410c" stroke-width="1.5" marker-end="url(#mca)"/>
+              <line x1="180" y1="90" x2="278" y2="110" stroke="#c2410c" stroke-width="1.5" marker-end="url(#mca)"/>
+              <line x1="180" y1="95" x2="278" y2="160" stroke="#c2410c" stroke-width="1.5" marker-end="url(#mca)"/>
+              <line x1="180" y1="100" x2="278" y2="210" stroke="#c2410c" stroke-width="1.5" marker-end="url(#mca)"/>
+
+              <text x="540" y="20"  font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Each server exposes:</text>
+              <text x="540" y="46"  font-family="JetBrains Mono" font-size="10" fill="#c2410c">tools/</text>
+              <text x="620" y="46"  font-family="IBM Plex Sans" font-size="11" fill="#1a1814">callable functions</text>
+              <text x="540" y="68"  font-family="JetBrains Mono" font-size="10" fill="#c2410c">resources/</text>
+              <text x="620" y="68"  font-family="IBM Plex Sans" font-size="11" fill="#1a1814">readable URIs (files, rows)</text>
+              <text x="540" y="90"  font-family="JetBrains Mono" font-size="10" fill="#c2410c">prompts/</text>
+              <text x="620" y="90"  font-family="IBM Plex Sans" font-size="11" fill="#1a1814">reusable prompt templates</text>
+
+              <text x="540" y="150" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">"The LLM picks; the client mediates; the server executes."</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>One AI client speaks MCP to many servers concurrently. Each server is a separate process with its own permissions and tool set.</span></div>
+        </div>
+
+        <h3 class="sub">Three primitives</h3>
+        <div class="prose">
+          <p><strong>Tools</strong>: callable functions. The LLM can invoke them. Same shape as the agent tool-calling pattern from <a href="ai-agents.html">the agents chapter</a> — name, description, JSON-schema parameters. <strong>Resources</strong>: readable data with stable URIs. A file on disk, a row in a database, a Confluence page. The client can present these to the user or to the LLM as context. <strong>Prompts</strong>: reusable prompt templates the server publishes. The client surfaces them as commands ("@Repo summarise this PR").</p>
+        </div>
+
+        <h3 class="sub">Server scope and trust</h3>
+        <div class="prose">
+          <p>Each MCP server is a separate process. <strong>Permissions are scoped per server</strong>: the GitHub server can do GitHub things; the filesystem server can read files; neither can do the other's job. <em>Compromise of one server doesn't compromise the others.</em> The client decides which servers to load, often per-project or per-conversation.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="wire">
+        <h2 class="section"><span class="num">03</span>The wire <span class="ital">protocol</span>.</h2>
+
+        <h3 class="sub">JSON-RPC 2.0 over stdio or SSE</h3>
+        <div class="prose">
+          <p>Messages are JSON-RPC requests and responses. Two transports: <strong>stdio</strong> (the server is a local subprocess; the client writes JSON-RPC to its stdin, reads responses from stdout) — the default for local servers. <strong>SSE / HTTP</strong> (the server is a remote service over HTTP, the client uses Server-Sent Events) — for cross-network servers.</p>
+        </div>
+
+        <h3 class="sub">The handshake</h3>
+        <div class="prose">
+          <p>Client sends <code>initialize</code>; server responds with its capabilities (which tools/resources/prompts it provides). Client then sends <code>tools/list</code>, <code>resources/list</code>, <code>prompts/list</code> as needed. <strong>Tool calls are <code>tools/call</code> with the tool name and arguments</strong>; the server invokes the tool, returns the result.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">json</span> &nbsp; <span class="file">a tool/call wire frame</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre>{
+  <span class="s">"jsonrpc"</span>: <span class="s">"2.0"</span>,
+  <span class="s">"id"</span>: <span class="n">42</span>,
+  <span class="s">"method"</span>: <span class="s">"tools/call"</span>,
+  <span class="s">"params"</span>: {
+    <span class="s">"name"</span>: <span class="s">"github_create_issue"</span>,
+    <span class="s">"arguments"</span>: {
+      <span class="s">"repo"</span>: <span class="s">"acme/website"</span>,
+      <span class="s">"title"</span>: <span class="s">"Banner not rendering on Safari"</span>,
+      <span class="s">"body"</span>: <span class="s">"Steps to reproduce..."</span>
+    }
+  }
+}</pre>
+        </div>
+      </section>
+
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>Building an <span class="ital">MCP server</span>.</h2>
+
+        <div class="prose">
+          <p>The official Anthropic SDKs are Python and TypeScript; community SDKs exist in .NET, Go, Rust. A minimal MCP server in C# (using the community ModelContextProtocol.NET package):</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">MyMcpServer.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package ModelContextProtocol</span>
+<span class="k">using</span> <span class="t">ModelContextProtocol.Server</span>;
+<span class="k">using</span> <span class="t">System.ComponentModel</span>;
+
+[<span class="at">McpServerToolType</span>]
+<span class="k">public static class</span> <span class="t">GitHubTools</span>
+{
+    [<span class="at">McpServerTool</span>, <span class="at">Description</span>(<span class="s">"Search for issues in a GitHub repo by query string."</span>)]
+    <span class="k">public static async</span> <span class="t">Task</span>&lt;<span class="t">SearchResult</span>&gt; <span class="fn">SearchIssues</span>(
+        [<span class="at">Description</span>(<span class="s">"owner/repo, e.g. acme/website"</span>)] <span class="k">string</span> repo,
+        [<span class="at">Description</span>(<span class="s">"Search query, GitHub search syntax"</span>)] <span class="k">string</span> query,
+        [<span class="at">Description</span>(<span class="s">"Max results, default 10"</span>)] <span class="k">int</span> limit = <span class="n">10</span>)
+    {
+        <span class="k">var</span> client = <span class="k">new</span> <span class="t">GitHubClient</span>(<span class="t">Environment</span>.<span class="fn">GetEnvironmentVariable</span>(<span class="s">"GITHUB_TOKEN"</span>)!);
+        <span class="k">return await</span> client.<span class="fn">SearchIssuesAsync</span>(repo, query, limit);
+    }
+
+    [<span class="at">McpServerTool</span>, <span class="at">Description</span>(<span class="s">"Open a new GitHub issue."</span>)]
+    <span class="k">public static async</span> <span class="t">Task</span>&lt;<span class="k">string</span>&gt; <span class="fn">CreateIssue</span>(
+        [<span class="at">Description</span>(<span class="s">"owner/repo"</span>)] <span class="k">string</span> repo,
+        [<span class="at">Description</span>(<span class="s">"Issue title"</span>)] <span class="k">string</span> title,
+        [<span class="at">Description</span>(<span class="s">"Issue body in markdown"</span>)] <span class="k">string</span> body)
+    {
+        <span class="k">var</span> client = <span class="k">new</span> <span class="t">GitHubClient</span>(<span class="t">Environment</span>.<span class="fn">GetEnvironmentVariable</span>(<span class="s">"GITHUB_TOKEN"</span>)!);
+        <span class="k">var</span> url = <span class="k">await</span> client.<span class="fn">CreateIssueAsync</span>(repo, title, body);
+        <span class="k">return</span> $<span class="s">"Created: {url}"</span>;
+    }
+}
+
+<span class="c">// Program.cs — the server is a stdio-loop. The host harness handles JSON-RPC.</span>
+<span class="k">var</span> builder = <span class="t">Host</span>.<span class="fn">CreateApplicationBuilder</span>(args);
+builder.<span class="t">Services</span>
+    .<span class="fn">AddMcpServer</span>()
+    .<span class="fn">WithStdioServerTransport</span>()
+    .<span class="fn">WithToolsFromAssembly</span>();
+<span class="k">await</span> builder.<span class="fn">Build</span>().<span class="fn">RunAsync</span>();</pre>
+        </div>
+
+        <h3 class="sub">Configuring a client to use it</h3>
+        <div class="prose">
+          <p>Claude Desktop, Cursor, etc. take a JSON config that lists MCP servers — the command to launch and environment variables. Once configured, the LLM in the client can see and call the server's tools.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">json</span> &nbsp; <span class="file">claude_desktop_config.json</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre>{
+  <span class="s">"mcpServers"</span>: {
+    <span class="s">"github"</span>: {
+      <span class="s">"command"</span>: <span class="s">"dotnet"</span>,
+      <span class="s">"args"</span>: [<span class="s">"run"</span>, <span class="s">"--project"</span>, <span class="s">"C:/repos/mcp-github-server"</span>],
+      <span class="s">"env"</span>: { <span class="s">"GITHUB_TOKEN"</span>: <span class="s">"ghp_..."</span> }
+    },
+    <span class="s">"postgres"</span>: {
+      <span class="s">"command"</span>: <span class="s">"npx"</span>,
+      <span class="s">"args"</span>: [<span class="s">"-y"</span>, <span class="s">"@modelcontextprotocol/server-postgres"</span>,
+               <span class="s">"postgresql://localhost/mydb"</span>]
+    }
+  }
+}</pre>
+        </div>
+      </section>
+
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">stdio servers run with your privileges</div>
+          <p>A local MCP server inherits your user's file-system access, env vars, and credentials. <strong>Treat MCP server source like any code you run</strong>; an MCP server can be malicious. Only install from sources you trust.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Tool descriptions are prompts</div>
+          <p>The model picks tools based on their descriptions. <strong>Spend time on the descriptions.</strong> "Searches for files" is bad; "Lists files in a directory, supports glob patterns, returns up to 100 results sorted by mtime" is good. The model's tool-use quality depends on this directly.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Resources let you expose data without tools</div>
+          <p>If you want the LLM to read your knowledge base, a <em>resource</em> with stable URIs is better than a "search_kb" tool. The client lists resources, the user can pin one, the LLM gets the content as context. <strong>Resources are first-class; many clients let the user pin them as @-mentions.</strong></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">SSE servers for cross-host</div>
+          <p>For servers that aren't on the user's machine — a cloud service, a remote DB — the SSE transport runs over HTTPS. <strong>Add auth at the HTTP layer</strong>; MCP itself doesn't define authentication beyond what the transport provides.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">The ecosystem is exploding</div>
+          <p>By mid-2025, hundreds of MCP servers existed — GitHub, GitLab, Slack, Notion, Jira, Postgres, SQLite, Google Drive, Sentry, Datadog. <em>Before you write one, search the registry.</em> The official server catalog is at <a href="https://github.com/modelcontextprotocol/servers">github.com/modelcontextprotocol/servers</a>.</p>
+        </div>
+
+        <div class="pull">"MCP isn't a model. It's the pluggable connector for everything around the model."</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">06</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Building an AI client / desktop app</h5>
+            <p>Adopt MCP. You get the entire ecosystem of servers for free. Don't roll your own tool plumbing.</p>
+          </div>
+          <div class="cell">
+            <h5>Exposing your SaaS to AI agents</h5>
+            <p>Ship an MCP server. Any MCP-aware client (Claude Desktop, Cursor, ChatGPT clients) becomes a potential UI for your product.</p>
+          </div>
+          <div class="cell">
+            <h5>Internal tools for your team</h5>
+            <p>Write a local MCP server. Co-workers install it in Claude Desktop; the LLM can query your CRM, internal docs, build system.</p>
+          </div>
+          <div class="cell">
+            <h5>Server-side agent platform</h5>
+            <p>MCP works inside server agents too — Anthropic's SDK has client support. The agent can connect to MCP servers and use their tools.</p>
+          </div>
+          <div class="cell">
+            <h5>Existing OpenAPI / gRPC service</h5>
+            <p>Don't replace; wrap. A thin MCP server around your existing API exposes the right subset to LLMs with descriptions tuned for them.</p>
+          </div>
+          <div class="cell">
+            <h5>Quick one-off tool</h5>
+            <p>Skip MCP, use the LLM provider's native function-calling. MCP is for things you'll share across multiple AI apps.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="ai-agents.html">
+          <div class="label">Prev</div>
+          <div class="ttl">AI Agents</div>
+        </a>
+        <a class="next-fwd" href="ai-llm-concepts.html">
+          <div class="label">Next</div>
+          <div class="ttl">LLM Concepts →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>AI · MCP · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

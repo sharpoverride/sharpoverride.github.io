@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Amazon Dynamo — White paper · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive paper">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#papers">White Papers</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Dynamo</span>
+    </div>
+    <nav>
+      <a href="../system-design.html">← Index</a>
+      <a href="paper-spanner.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>White <b>paper</b></span>
+        <span>Year <b>2007</b></span>
+        <span>Authors <b>DeCandia et al., Amazon</b></span>
+        <span>Stack <b>Consistent hashing · vector clocks · sloppy quorum</b></span>
+      </div>
+      <h1>The paper that <span class="ital">birthed</span> NoSQL.</h1>
+      <p class="lede">"Dynamo: Amazon's Highly Available Key-value Store" (SOSP 2007). The shopping-cart store that ran Amazon's checkout. Influenced Cassandra, Riak, Voldemort, and the entire eventually-consistent NoSQL category. The contributions are still relevant; the operational compromises are the warning label.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem it solved</h5>
+        <p>Amazon's shopping cart must be writable even during partitions. "Add to cart" can never fail. <strong>Choose availability + partition tolerance; give up linearisability.</strong></p>
+      </div>
+      <div>
+        <h5>The five techniques</h5>
+        <p>(1) Consistent hashing. (2) Sloppy quorum + hinted handoff. (3) Vector clocks for versioning. (4) Merkle trees for anti-entropy. (5) Gossip for membership.</p>
+      </div>
+      <div>
+        <h5>What it influenced</h5>
+        <p>Cassandra (most directly). Riak (almost a literal implementation). DynamoDB (Amazon's own managed version — different code, same philosophy).</p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The shopping-cart problem</a></li>
+        <li><a href="#ideas">The five core ideas</a></li>
+        <li><a href="#tradeoffs">The CAP choice</a></li>
+        <li><a href="#legacy">What it influenced</a></li>
+        <li><a href="#today">What still applies in 2026</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The shopping-cart <span class="ital">problem</span>.</h2>
+        <div class="prose">
+          <p>By 2006, Amazon was running on relational databases with vertical scaling. The cracks showed in the checkout path: a database partition (network split) or replica failover would cause "Add to cart" to fail. <strong>For Amazon, every failed cart write is lost revenue</strong> — measurably, immediately. The team needed a store that would accept writes even during partitions, and reconcile inconsistencies later.</p>
+          <p>The Dynamo paper formalises that tradeoff. <em>"In the trade-off between consistency and availability, our customers demand the highest level of availability."</em> The cart store can accept conflicting writes from different replicas, return success to the user, and reconcile during reads (or by background repair). The customer sees "added"; the system promises eventual convergence.</p>
+        </div>
+
+        <div class="pull">"The decision to be available, even at the cost of consistency, was made before the architecture was."</div>
+      </section>
+
+      <section class="dd-section" id="ideas">
+        <h2 class="section"><span class="num">02</span>The five core <span class="ital">ideas</span>.</h2>
+
+        <h3 class="sub">Consistent hashing for partitioning</h3>
+        <div class="prose">
+          <p>The cluster is a ring; data is placed by hash of key onto the ring; each node owns a range. <strong>Adding or removing a node moves only ~1/N of the data</strong>, not the whole dataset. Virtual nodes (each physical node owns many ring positions) smooth load imbalances. <em>This is the technique every modern partitioning system uses</em> — see <a href="consistent-hashing.html">the consistent-hashing deep dive</a> for the math.</p>
+        </div>
+
+        <h3 class="sub">Sloppy quorum + hinted handoff</h3>
+        <div class="prose">
+          <p>A strict quorum write requires <em>W</em> replicas to acknowledge. If one of the original <em>N</em> replicas is down, a strict system blocks. <strong>Dynamo's sloppy quorum</strong>: if the intended replica is unreachable, write to the next-available node and store a "hint" that it belongs to the intended one. When the intended replica recovers, the holder hands off the data. <em>This is what makes Dynamo writable during partitions</em>: a write can always find <em>some</em> healthy node.</p>
+        </div>
+
+        <h3 class="sub">Vector clocks for versioning</h3>
+        <div class="prose">
+          <p>Two replicas accept concurrent writes for the same key. On read, the client sees both versions. Which is the latest? <strong>Vector clocks</strong>: each replica tags its writes with a per-replica counter; concurrent writes have non-comparable clocks. The client must reconcile — typically by merging (cart: union both sets of items). <em>This is the mechanism behind "eventually consistent with client-side reconciliation."</em></p>
+        </div>
+
+        <h3 class="sub">Merkle trees for anti-entropy</h3>
+        <div class="prose">
+          <p>Two replicas drift over time. To detect and repair: each replica builds a Merkle tree over its key range; replicas exchange tree roots; mismatches trigger drill-down to find the diverged keys; repair shipping only the missing data. <strong>The Merkle tree compresses "what do you have that I don't" into log(N) network exchanges.</strong></p>
+        </div>
+
+        <h3 class="sub">Gossip protocol for membership</h3>
+        <div class="prose">
+          <p>How does a node learn that a peer joined or left the cluster? <strong>Gossip</strong>: each node periodically swaps membership state with a random peer. Information spreads epidemic-style; in O(log N) rounds, the cluster converges on a consistent view. <em>No central coordinator; every node is equal.</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">03</span>The CAP <span class="ital">choice</span>.</h2>
+        <div class="prose">
+          <p>Dynamo's tuning is exposed: <strong>N (replicas), R (read quorum), W (write quorum)</strong>. The customer picks. For "always-writable, eventually-consistent": <code>N=3, R=2, W=1</code>. For "strong consistency on reads": <code>R+W &gt; N</code>. <em>The same database, different consistency, by config.</em></p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 280" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · R + W > N MAKES READ-AFTER-WRITE WORK</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(60, 80)">
+              <circle cx="60"  cy="60" r="36" fill="#1a1814"/>
+              <text x="60"  y="63" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">N=3</text>
+
+              <circle cx="240" cy="20" r="22" fill="#c2410c"/>
+              <text x="240" y="23" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">W=2</text>
+
+              <circle cx="240" cy="100" r="22" fill="#c2410c"/>
+              <text x="240" y="103" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">R=2</text>
+
+              <text x="320" y="20"  font-family="IBM Plex Sans" font-size="12" fill="#1a1814">writes wait for 2 acks</text>
+              <text x="320" y="100" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">reads consult 2 replicas</text>
+
+              <text x="320" y="160" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#c2410c">2 + 2 &gt; 3 → at least one read sees the write</text>
+
+              <text x="60" y="180" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#1a1814">overlap</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>With N=3, R=2, W=2: the read and write quorums must overlap on at least one replica. That overlap is what gives read-your-writes.</span></div>
+        </div>
+
+        <div class="prose">
+          <p>The Dynamo design says: <strong>let the application decide.</strong> The cart picks low-latency, high-availability (W=1, R=2); a "view the latest order" path picks stronger consistency (W=2, R=2). The database is a knob, not a fixed posture.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="legacy">
+        <h2 class="section"><span class="num">04</span>What it <span class="ital">influenced</span>.</h2>
+
+        <table class="matrix">
+          <thead>
+            <tr><th>System</th><th>What it took from Dynamo</th><th>What it changed</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Cassandra</th>
+              <td>Consistent hashing, gossip, tunable consistency</td>
+              <td>Wider data model (column family), per-query consistency level</td>
+            </tr>
+            <tr>
+              <th>Riak</th>
+              <td>Nearly the whole paper, as Erlang</td>
+              <td>Pluggable backends, CRDT data types</td>
+            </tr>
+            <tr>
+              <th>Voldemort</th>
+              <td>Same key-value model</td>
+              <td>LinkedIn's own; later abandoned</td>
+            </tr>
+            <tr>
+              <th>DynamoDB</th>
+              <td>Brand and philosophy</td>
+              <td>Different internals (B-tree storage, single-master per partition, stronger consistency by default)</td>
+            </tr>
+            <tr>
+              <th>ScyllaDB</th>
+              <td>Cassandra protocol → Dynamo lineage</td>
+              <td>C++ shard-per-core (see <a href="case-discord-cassandra.html">Discord case study</a>)</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="prose">
+          <p>The interesting note: <strong>Amazon doesn't run Dynamo today.</strong> They run DynamoDB, which has different internals — single-master per partition, strong consistency by default, no vector clocks. <em>The paper's ideas won; Dynamo-the-system was retired internally before most people heard of it.</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="today">
+        <h2 class="section"><span class="num">05</span>What still applies in <span class="ital">2026</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Consistent hashing is universal</div>
+          <p>Every modern distributed system that partitions by key uses a variant. The technique generalised; the specific Dynamo implementation is one of many. See the <a href="consistent-hashing.html">consistent-hashing chapter</a>.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Tunable consistency is mostly a misfeature</div>
+          <p>The "let the application decide" promise turned out to be too much rope. <strong>Most applications can't reason about R/W/N tradeoffs</strong>; they pick badly. Modern databases (DynamoDB, Cosmos DB) ship with strong default consistency and let you weaken it explicitly — opposite default. The Dynamo paper's flexibility became its operational hazard.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Vector clocks lost to CRDTs</div>
+          <p>Vector clocks require the client to reconcile. Engineers got this wrong. <strong>CRDTs encode the reconciliation in the data type</strong>; the merge is automatic. For counters, sets, maps, CRDTs are the better answer (Riak adopted them; modern systems start with them).</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Sloppy quorum + hinted handoff still in production</div>
+          <p>Cassandra and Riak still use this. <em>"Always writable" is a real property</em>; payments-shaped workloads (where lost writes are intolerable) still benefit. The mechanism is the same Dynamo described.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Gossip protocols are everywhere</div>
+          <p>Consul, Cassandra, Akka cluster, HashiCorp Serf. The "no central coordinator" property is still desirable; the mechanics are the Dynamo recipe.</p>
+        </div>
+
+        <div class="pull">"Dynamo isn't a database you run. It's a vocabulary the field uses."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="../system-design.html">
+          <div class="label">Index</div>
+          <div class="ttl">All papers</div>
+        </a>
+        <a class="next-fwd" href="paper-spanner.html">
+          <div class="label">Next paper</div>
+          <div class="ttl">Google Spanner →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Paper · Amazon Dynamo · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

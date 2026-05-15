@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Change Data Capture &amp; Outbox · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">17 · CDC &amp; Outbox</span>
+    </div>
+    <nav>
+      <a href="leader-election.html">← Prev</a>
+      <a href="search-architecture.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>17</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~14 min</b></span>
+        <span>Stack <b>Debezium · Azure SQL CDC · EF Core outbox · Kafka Connect</b></span>
+      </div>
+      <h1>One write. One <span class="ital">truth</span>. One stream.</h1>
+      <p class="lede">Dual-writes are how silent data drift starts. The outbox stops the drift by making the broker write transactional with the database write. Change data capture goes further: tail the database's write-ahead log and skip the outbox entirely.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>"Save the row, then publish the event" is two writes. <em>One can succeed and the other can fail.</em> The database and the broker disagree forever.</p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Pick one source of truth — the database — and derive the event stream from it. Either via an outbox table written in the same transaction, or via CDC tailing the WAL. <strong>Never two writes pretending to be one.</strong></p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Debezium</span>
+          <span class="pill on">Azure SQL CDC</span>
+          <span class="pill on">EF Core outbox</span>
+          <span class="pill on">Kafka Connect</span>
+          <span class="pill">Cosmos Change Feed</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why dual-write is broken</a></li>
+        <li><a href="#core">Outbox and CDC, side by side</a></li>
+        <li><a href="#deeper">Ordering, schema, replay</a></li>
+        <li><a href="#dotnet">In EF Core</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why dual-write is <span class="ital">broken</span>.</h2>
+        <div class="prose">
+          <p>The naive pattern is the most common production bug. Save the order to the database. Publish <code>OrderPlaced</code> to Kafka. Two operations, two systems, no shared transaction. <strong>The pod crashes between them.</strong> The order is in the database. The event was never published. Downstream services — inventory, shipping, recommendations — never hear about it. The data is silently inconsistent.</p>
+          <p>The other ordering is no better: publish first, then save. Now the event is on Kafka, downstreams react, but the database write failed. <em>Phantom event.</em> Inventory decremented stock for an order that was never created. Either ordering produces drift; neither ordering is acceptable; both are shipped routinely as "best effort". The fix is to remove the "two writes" entirely.</p>
+        </div>
+
+        <div class="pull">"Two systems with two writes is not a transaction. It's a coin flip with reputation damage on the tails side."</div>
+      </section>
+
+      <!-- 2 core -->
+      <section class="dd-section" id="core">
+        <h2 class="section"><span class="num">02</span>Outbox <span class="ital">and</span> CDC.</h2>
+
+        <div class="prose">
+          <p>Two patterns. Both rest on the same insight: <strong>one transaction, one source of truth.</strong> The difference is who tails the source.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 500" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="cdca" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 18 · TWO ROUTES FROM A ROW TO A TOPIC</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- Outbox -->
+            <g transform="translate(20, 70)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">Transactional Outbox</text>
+
+              <rect x="0"   y="40" width="120" height="50" fill="#1a1814"/>
+              <text x="60"  y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">APP</text>
+              <text x="60"  y="80" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.6">SaveChangesAsync</text>
+
+              <rect x="160" y="20" width="220" height="90" fill="#c2410c"/>
+              <text x="270" y="42" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">SQL TRANSACTION</text>
+              <text x="270" y="60" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">INSERT Orders ...</text>
+              <text x="270" y="76" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">INSERT OutboxMessages ...</text>
+              <text x="270" y="98" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">one COMMIT, two rows</text>
+
+              <rect x="420" y="40" width="140" height="50" fill="#1a1814"/>
+              <text x="490" y="60" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">DISPATCHER</text>
+              <text x="490" y="76" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.6">poll · publish · mark sent</text>
+
+              <rect x="600" y="40" width="120" height="50" fill="#c2410c"/>
+              <text x="660" y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">BROKER</text>
+
+              <line x1="120" y1="65" x2="158" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#cdca)"/>
+              <line x1="380" y1="65" x2="418" y2="65" stroke="#c2410c" stroke-width="2" stroke-dasharray="3 3" marker-end="url(#cdca)"/>
+              <line x1="560" y1="65" x2="598" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#cdca)"/>
+
+              <text x="800" y="60" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Dispatcher polls every N seconds.</text>
+              <text x="800" y="80" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Marks rows as dispatched after broker ack.</text>
+              <text x="800" y="100" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">App owns the outbox table.</text>
+            </g>
+
+            <line x1="20" y1="200" x2="1180" y2="200" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+            <!-- CDC -->
+            <g transform="translate(20, 220)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">Change Data Capture (Debezium)</text>
+
+              <rect x="0"   y="40" width="120" height="50" fill="#1a1814"/>
+              <text x="60"  y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">APP</text>
+              <text x="60"  y="80" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.6">SaveChangesAsync</text>
+
+              <rect x="160" y="20" width="220" height="90" fill="#c2410c"/>
+              <text x="270" y="42" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">SQL TRANSACTION</text>
+              <text x="270" y="60" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">INSERT Orders ...</text>
+              <text x="270" y="76" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">(no outbox table)</text>
+              <text x="270" y="98" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">WAL captures the change</text>
+
+              <rect x="420" y="40" width="140" height="50" fill="#1a1814"/>
+              <text x="490" y="60" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">DEBEZIUM</text>
+              <text x="490" y="76" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.6">reads WAL · streams</text>
+
+              <rect x="600" y="40" width="120" height="50" fill="#c2410c"/>
+              <text x="660" y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">KAFKA</text>
+
+              <line x1="120" y1="65" x2="158" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#cdca)"/>
+              <path d="M380 65 C 400 130, 420 130, 420 65" fill="none" stroke="#c2410c" stroke-width="2" stroke-dasharray="3 3" marker-end="url(#cdca)"/>
+              <text x="400" y="138" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#c2410c">tail WAL</text>
+              <line x1="560" y1="65" x2="598" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#cdca)"/>
+
+              <text x="800" y="60" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">App doesn't know events exist.</text>
+              <text x="800" y="80" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">DB's WAL is the stream.</text>
+              <text x="800" y="100" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">Schema = table shape.</text>
+            </g>
+
+            <line x1="20" y1="380" x2="1180" y2="380" stroke="#1a1814" stroke-width="1" stroke-dasharray="3 3"/>
+            <text x="20" y="412" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">"The outbox lets the app speak. CDC lets the schema speak."</text>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 18</span><span>Outbox keeps the event shape under app control. CDC streams the raw row shape — closer to the truth, further from the contract.</span></div>
+        </div>
+
+        <h3 class="sub">Outbox keeps events at the right abstraction</h3>
+        <div class="prose">
+          <p>An <code>OrderPlaced</code> event has fields the app chose to publish. A WAL change event has every column of the <code>Orders</code> table, including internal ones (<code>SyncToken</code>, <code>RowVersion</code>, etc.). The outbox event is the <strong>contract</strong>; the WAL event is the <strong>schema</strong>. Most domains want the contract — the published event shouldn't change when an internal column is added or renamed. The outbox is the right pattern.</p>
+        </div>
+
+        <h3 class="sub">CDC wins when you can't change the app</h3>
+        <div class="prose">
+          <p>Legacy app, can't add an outbox table, can't deploy a dispatcher. CDC tails the database without the app's knowledge. It also wins when <strong>multiple consumers need different views of the same change</strong> — let Debezium populate a Kafka topic of raw row changes, and let downstream services map each change into the abstraction they need. <em>It's a one-to-many fan-out where the source of truth was always the schema.</em></p>
+        </div>
+
+        <h3 class="sub">Outbox + CDC is the rare-but-real third option</h3>
+        <div class="prose">
+          <p>Write to the outbox table as part of your transaction. Let CDC pick the outbox table up from the WAL. You get the contract control of the outbox <em>and</em> the no-dispatcher operational simplicity of CDC. Debezium has explicit support for this — the "outbox event router" SMT (single message transform) reads the outbox columns and emits events in the right shape on the right topic. <strong>This is the pattern Shopify, Wayfair, and others have published as "the one we settled on."</strong></p>
+        </div>
+      </section>
+
+      <!-- 3 deeper -->
+      <section class="dd-section" id="deeper">
+        <h2 class="section"><span class="num">03</span>Ordering, schema, <span class="ital">replay</span>.</h2>
+
+        <h3 class="sub">Per-aggregate ordering, not global</h3>
+        <div class="prose">
+          <p>CDC streams in transaction order at the database level. Kafka partitions break that ordering — events for the same <code>order_id</code> go to the same partition (via key hashing), but events across <code>order_id</code>s can be reordered relative to each other on the consumer side. <strong>The consumer's contract is per-key ordering, not global.</strong> Design downstream handlers accordingly: an <code>OrderShipped</code> for order 7 can land before <code>OrderConfirmed</code> for order 9, but never before <code>OrderConfirmed</code> for order 7.</p>
+        </div>
+
+        <h3 class="sub">Schema evolution is the elephant</h3>
+        <div class="prose">
+          <p>CDC streams the table's schema. Add a column, every consumer sees a new field. Drop a column, consumers fail to deserialise. <strong>Use the Confluent schema registry or equivalent</strong>, evolve schemas additively (Avro forward-compat), and version your consumers. The outbox pattern has the same problem at the application level — but the app controls the timing and can ship the producer change before the consumer change.</p>
+        </div>
+
+        <h3 class="sub">Initial snapshot + ongoing tail</h3>
+        <div class="prose">
+          <p>Debezium starts with a snapshot: lock the table briefly, read every row, emit each as a "create" event, then switch to tailing the WAL from the matching log position. The snapshot is the slow part — for a 1 TB table, hours. Plan the rollout: snapshot in low-traffic windows, parallelise across tables, monitor the <code>snapshot.mode</code> and pick <code>initial_only</code>, <code>schema_only</code>, or <code>when_needed</code> based on whether existing data needs to be ingested.</p>
+        </div>
+
+        <h3 class="sub">Replay is the killer feature, and the killer footgun</h3>
+        <div class="prose">
+          <p>CDC topics on Kafka can be replayed from offset 0. A new consumer comes online, replays the full history, builds its state from scratch. This is glorious for projections (<a href="event-sourcing-cqrs.html">Chapter 13</a>) and disastrous for side-effects — replay your <code>OrderPlaced</code> consumer and you'll send three years of refund emails. <strong>Make consumers idempotent</strong> (<a href="idempotency-keys.html">Chapter 08</a>), or gate them behind a "replay-safe" flag for non-idempotent operations.</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">EF Core</span>.</h2>
+
+        <div class="prose">
+          <p>The outbox in EF Core is a table + an <code>ISaveChangesInterceptor</code> that captures the events emitted during a SaveChanges and inserts them into the table inside the same transaction. A separate hosted service polls the table, publishes to the broker, and marks rows dispatched.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">OutboxInterceptor.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">using</span> <span class="t">Microsoft.EntityFrameworkCore</span>;
+<span class="k">using</span> <span class="t">Microsoft.EntityFrameworkCore.Diagnostics</span>;
+<span class="k">using</span> <span class="t">System.Text.Json</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Outbox</span>;
+
+<span class="k">public sealed class</span> <span class="t">OutboxMessage</span>
+{
+    <span class="k">public</span> <span class="t">Guid</span> <span class="t">Id</span> { <span class="k">get</span>; <span class="k">set</span>; } = <span class="t">Guid</span>.<span class="fn">NewGuid</span>();
+    <span class="k">public</span> <span class="k">string</span> <span class="t">Type</span>   { <span class="k">get</span>; <span class="k">set</span>; } = <span class="s">""</span>;
+    <span class="k">public</span> <span class="k">string</span> <span class="t">Payload</span>{ <span class="k">get</span>; <span class="k">set</span>; } = <span class="s">""</span>;
+    <span class="k">public</span> <span class="t">DateTimeOffset</span> <span class="t">OccurredAt</span> { <span class="k">get</span>; <span class="k">set</span>; } = <span class="t">DateTimeOffset</span>.<span class="t">UtcNow</span>;
+    <span class="k">public</span> <span class="t">DateTimeOffset</span>? <span class="t">DispatchedAt</span> { <span class="k">get</span>; <span class="k">set</span>; }
+}
+
+<span class="c">// Any aggregate that wants to emit events implements this — internal to the bounded context.</span>
+<span class="k">public interface</span> <span class="t">IHasDomainEvents</span>
+{
+    <span class="t">ICollection</span>&lt;<span class="k">object</span>&gt; <span class="t">DomainEvents</span> { <span class="k">get</span>; }
+}
+
+<span class="c">// Interceptor — captures DomainEvents on every SaveChanges and writes them to the outbox.</span>
+<span class="k">public sealed class</span> <span class="t">OutboxInterceptor</span> : <span class="t">SaveChangesInterceptor</span>
+{
+    <span class="k">public override</span> <span class="t">ValueTask</span>&lt;<span class="t">InterceptionResult</span>&lt;<span class="k">int</span>&gt;&gt; <span class="fn">SavingChangesAsync</span>(
+        <span class="t">DbContextEventData</span> data, <span class="t">InterceptionResult</span>&lt;<span class="k">int</span>&gt; r, <span class="t">CancellationToken</span> ct = <span class="k">default</span>)
+    {
+        <span class="k">var</span> ctx = data.<span class="t">Context</span>!;
+
+        <span class="k">var</span> events = ctx.<span class="t">ChangeTracker</span>.<span class="t">Entries</span>&lt;<span class="t">IHasDomainEvents</span>&gt;()
+            .<span class="fn">SelectMany</span>(e =&gt; e.<span class="t">Entity</span>.<span class="t">DomainEvents</span>)
+            .<span class="fn">ToList</span>();
+
+        <span class="k">foreach</span> (<span class="k">var</span> ev <span class="k">in</span> events)
+        {
+            ctx.<span class="fn">Add</span>(<span class="k">new</span> <span class="t">OutboxMessage</span>
+            {
+                <span class="t">Type</span>    = ev.<span class="t">GetType</span>().<span class="t">FullName</span>!,
+                <span class="t">Payload</span> = <span class="t">JsonSerializer</span>.<span class="fn">Serialize</span>(ev, ev.<span class="t">GetType</span>())
+            });
+        }
+
+        <span class="c">// Clear after capture so re-entrancy doesn't double-write.</span>
+        <span class="k">foreach</span> (<span class="k">var</span> e <span class="k">in</span> ctx.<span class="t">ChangeTracker</span>.<span class="t">Entries</span>&lt;<span class="t">IHasDomainEvents</span>&gt;())
+            e.<span class="t">Entity</span>.<span class="t">DomainEvents</span>.<span class="fn">Clear</span>();
+
+        <span class="k">return</span> <span class="k">base</span>.<span class="fn">SavingChangesAsync</span>(data, r, ct);
+    }
+}
+
+<span class="c">// Hosted dispatcher — polls the outbox and publishes. Single instance per env (leader-elect — see Ch. 16).</span>
+<span class="k">public sealed class</span> <span class="t">OutboxDispatcher</span> : <span class="t">BackgroundService</span>
+{
+    <span class="k">private readonly</span> <span class="t">IServiceProvider</span> _sp;
+    <span class="k">private readonly</span> <span class="t">IPublishEndpoint</span> _bus;
+    <span class="k">private readonly</span> <span class="t">ILogger</span>&lt;<span class="t">OutboxDispatcher</span>&gt; _log;
+
+    <span class="k">public</span> <span class="fn">OutboxDispatcher</span>(<span class="t">IServiceProvider</span> sp, <span class="t">IPublishEndpoint</span> bus,
+        <span class="t">ILogger</span>&lt;<span class="t">OutboxDispatcher</span>&gt; log)
+    { _sp = sp; _bus = bus; _log = log; }
+
+    <span class="k">protected override async</span> <span class="t">Task</span> <span class="fn">ExecuteAsync</span>(<span class="t">CancellationToken</span> stop)
+    {
+        <span class="k">while</span> (!stop.<span class="t">IsCancellationRequested</span>)
+        {
+            <span class="k">try</span>
+            {
+                <span class="k">using var</span> scope = _sp.<span class="fn">CreateScope</span>();
+                <span class="k">var</span> db = scope.<span class="t">ServiceProvider</span>.<span class="fn">GetRequiredService</span>&lt;<span class="t">AppDbContext</span>&gt;();
+
+                <span class="k">var</span> batch = <span class="k">await</span> db.<span class="t">Set</span>&lt;<span class="t">OutboxMessage</span>&gt;()
+                    .<span class="fn">Where</span>(m =&gt; m.<span class="t">DispatchedAt</span> == <span class="k">null</span>)
+                    .<span class="fn">OrderBy</span>(m =&gt; m.<span class="t">OccurredAt</span>)
+                    .<span class="fn">Take</span>(<span class="n">100</span>)
+                    .<span class="fn">ToListAsync</span>(stop);
+
+                <span class="k">foreach</span> (<span class="k">var</span> m <span class="k">in</span> batch)
+                {
+                    <span class="k">var</span> type = <span class="t">Type</span>.<span class="fn">GetType</span>(m.<span class="t">Type</span>)
+                        ?? <span class="k">throw new</span> <span class="t">InvalidOperationException</span>($<span class="s">"unknown type {m.Type}"</span>);
+                    <span class="k">var</span> ev = <span class="t">JsonSerializer</span>.<span class="fn">Deserialize</span>(m.<span class="t">Payload</span>, type)!;
+
+                    <span class="k">await</span> _bus.<span class="fn">Publish</span>(ev, type, stop);
+                    m.<span class="t">DispatchedAt</span> = <span class="t">DateTimeOffset</span>.<span class="t">UtcNow</span>;
+                }
+
+                <span class="k">if</span> (batch.<span class="t">Count</span> &gt; <span class="n">0</span>) <span class="k">await</span> db.<span class="fn">SaveChangesAsync</span>(stop);
+                <span class="k">await</span> <span class="t">Task</span>.<span class="fn">Delay</span>(<span class="t">TimeSpan</span>.<span class="fn">FromMilliseconds</span>(<span class="n">500</span>), stop);
+            }
+            <span class="k">catch</span> (<span class="t">Exception</span> ex) <span class="k">when</span> (!stop.<span class="t">IsCancellationRequested</span>)
+            {
+                _log.<span class="fn">LogError</span>(ex, <span class="s">"outbox dispatcher iteration failed"</span>);
+                <span class="k">await</span> <span class="t">Task</span>.<span class="fn">Delay</span>(<span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">2</span>), stop);
+            }
+        }
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Wire-up: register the interceptor with EF Core, register the dispatcher as a hosted service, gate it behind leader election (see <a href="leader-election.html">Chapter 16</a>) so only one pod publishes at a time.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">Program.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre>builder.<span class="t">Services</span>.<span class="fn">AddDbContext</span>&lt;<span class="t">AppDbContext</span>&gt;((sp, o) =&gt; o
+    .<span class="fn">UseSqlServer</span>(builder.<span class="t">Configuration</span>.<span class="fn">GetConnectionString</span>(<span class="s">"App"</span>))
+    .<span class="fn">AddInterceptors</span>(sp.<span class="fn">GetRequiredService</span>&lt;<span class="t">OutboxInterceptor</span>&gt;()));
+
+builder.<span class="t">Services</span>.<span class="fn">AddSingleton</span>&lt;<span class="t">OutboxInterceptor</span>&gt;();
+builder.<span class="t">Services</span>.<span class="fn">AddHostedService</span>&lt;<span class="t">OutboxDispatcher</span>&gt;();   <span class="c">// leader-elected externally</span>
+
+builder.<span class="t">Services</span>.<span class="fn">AddMassTransit</span>(x =&gt;
+    x.<span class="fn">UsingAzureServiceBus</span>((ctx, cfg) =&gt; cfg.<span class="fn">Host</span>(builder.<span class="t">Configuration</span>[<span class="s">"ServiceBus"</span>])));</pre>
+        </div>
+
+        <div class="prose">
+          <p>For the CDC route, the .NET code becomes trivial — there is none. Configure Debezium with a connector that points at your database and publishes to Kafka. The connector config is the code.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">json</span> &nbsp; <span class="file">debezium-orders-connector.json</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre>{
+  <span class="s">"name"</span>: <span class="s">"orders-cdc"</span>,
+  <span class="s">"config"</span>: {
+    <span class="s">"connector.class"</span>:        <span class="s">"io.debezium.connector.sqlserver.SqlServerConnector"</span>,
+    <span class="s">"database.hostname"</span>:       <span class="s">"sql.internal"</span>,
+    <span class="s">"database.port"</span>:           <span class="s">"1433"</span>,
+    <span class="s">"database.user"</span>:           <span class="s">"cdc"</span>,
+    <span class="s">"database.password"</span>:       <span class="s">"${file:/run/secrets/cdc:pwd}"</span>,
+    <span class="s">"database.names"</span>:          <span class="s">"OrdersDb"</span>,
+    <span class="s">"topic.prefix"</span>:            <span class="s">"orders"</span>,
+    <span class="s">"table.include.list"</span>:      <span class="s">"dbo.Orders,dbo.OrderItems"</span>,
+    <span class="s">"snapshot.mode"</span>:           <span class="s">"initial"</span>,
+    <span class="c">// Outbox-router pattern — convert outbox table rows into properly-shaped events.</span>
+    <span class="s">"transforms"</span>:              <span class="s">"outbox"</span>,
+    <span class="s">"transforms.outbox.type"</span>:   <span class="s">"io.debezium.transforms.outbox.EventRouter"</span>,
+    <span class="s">"transforms.outbox.route.topic.replacement"</span>: <span class="s">"events.${routedByValue}"</span>
+  }
+}</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Outbox dispatcher must be single-threaded per partition</div>
+          <p>Two dispatchers running concurrently will publish the same row twice. Either elect a single leader (<a href="leader-election.html">Chapter 16</a>) or claim rows with <code>UPDATE TOP(N) ... SET ClaimedBy = @pod, ClaimedAt = SYSUTCDATETIME() WHERE ClaimedBy IS NULL</code>. The claim approach avoids elections but adds SQL complexity. Either works.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Index the unsent rows</div>
+          <p>A filtered index on <code>WHERE DispatchedAt IS NULL</code> keeps the dispatcher query fast even as the outbox table grows to millions of dispatched rows. Without it, your dispatcher does a full scan every poll and the table becomes the bottleneck.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Purge dispatched rows</div>
+          <p>An outbox table is a buffer, not a journal. After dispatch + a safety window (24 hours typical, for replay or audit), delete the rows. A background job that <code>DELETE TOP(10000) FROM Outbox WHERE DispatchedAt &lt; @cutoff</code> on a schedule keeps the table small.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">CDC means privileged DB access</div>
+          <p>Debezium needs <code>REPLICATION</code> rights on Postgres, <code>VIEW SERVER STATE</code> on SQL Server, or equivalent on every DB. Security teams will ask. The mitigation is a dedicated CDC user, a tight network, and audit logging on the connector — but the access is genuinely privileged. Outbox-only deployments don't have this footprint.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Consumer idempotency is non-negotiable</div>
+          <p>Both outbox and CDC give at-least-once delivery. Every consumer must dedupe by event id (typically the row id in the outbox / the LSN in CDC). The MassTransit outbox / inbox helps; for raw consumers, a Redis SETNX on the event id is the cheap answer. <em>If your consumer isn't idempotent, "exactly-once" is a lie everyone in the room is telling.</em></p>
+        </div>
+
+        <div class="pull">"The outbox is the contract you publish. The schema is the contract the database publishes. The bug is acting like they're the same."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Technology</th>
+              <th>Style</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>EF Core outbox + dispatcher<span class="sub">app-owned</span></th>
+              <td>Outbox</td>
+              <td>App controls event shape · transactional · no DB superuser</td>
+              <td><strong>$0</strong> (lib)</td>
+              <td>One hosted service to babysit</td>
+              <td><span class="verdict good">Default for .NET</span></td>
+            </tr>
+            <tr>
+              <th>Debezium → Kafka<span class="sub">connector</span></th>
+              <td>CDC</td>
+              <td>No app changes · multi-table · multi-DB · replay</td>
+              <td><strong>$300 – $5k</strong> Kafka Connect cluster</td>
+              <td>Connect cluster + schema registry</td>
+              <td><span class="verdict good">Polyglot or legacy-app scenarios</span></td>
+            </tr>
+            <tr>
+              <th>Azure SQL CDC<span class="sub">native</span></th>
+              <td>CDC</td>
+              <td>Built into SQL · enabled per-table · CDC functions</td>
+              <td><strong>$0+</strong> (DTU/RU overhead)</td>
+              <td>Enable feature, query CDC tables</td>
+              <td><span class="verdict good">If on Azure SQL and modest scale</span></td>
+            </tr>
+            <tr>
+              <th>Postgres logical replication<span class="sub">WAL</span></th>
+              <td>CDC</td>
+              <td>Native · used by Debezium · proven</td>
+              <td><strong>$0</strong> (Postgres)</td>
+              <td>Replica slot mgmt</td>
+              <td><span class="verdict good">Underlying tech for most CDC on Postgres</span></td>
+            </tr>
+            <tr>
+              <th>Cosmos DB Change Feed<span class="sub">native</span></th>
+              <td>CDC</td>
+              <td>First-class API · scalable per-partition · serverless processor</td>
+              <td><strong>$24+</strong> per 400 RU/s</td>
+              <td>Cosmos managed</td>
+              <td><span class="verdict good">If on Cosmos, no debate</span></td>
+            </tr>
+            <tr>
+              <th>Dual-write (DB + broker)<span class="sub">naive</span></th>
+              <td>None</td>
+              <td>Simplest to draw on a whiteboard</td>
+              <td>$0</td>
+              <td>Drift incidents every quarter</td>
+              <td><span class="verdict bad">Don't. This is the bug.</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>.NET app you own, modest volume</h5>
+            <p>EF Core outbox + a hosted dispatcher. Leader-elect the dispatcher so only one pod publishes. The cheapest correct answer.</p>
+          </div>
+          <div class="cell">
+            <h5>Legacy app you can't change</h5>
+            <p>CDC via Debezium or Azure SQL CDC. The app stays untouched; the WAL becomes the stream.</p>
+          </div>
+          <div class="cell">
+            <h5>Multiple consumers, different views</h5>
+            <p>Outbox + Debezium router (or pure CDC). One source of truth, many transforms, replay safety.</p>
+          </div>
+          <div class="cell">
+            <h5>On Cosmos DB</h5>
+            <p>Change Feed. First-party, scalable, has a hosted processor library. Don't bolt a generic CDC on top.</p>
+          </div>
+          <div class="cell">
+            <h5>On Azure SQL, small scale</h5>
+            <p>Azure SQL CDC + a hosted reader that publishes to Service Bus. Lower op cost than Debezium for &lt;1k changes/sec.</p>
+          </div>
+          <div class="cell">
+            <h5>Event sourcing already</h5>
+            <p>Your event log is your CDC. Don't add a second layer. Subscribe directly to the stream (see <a href="event-sourcing-cqrs.html">Chapter 13</a>).</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — running the dispatcher in every pod.</strong> Concurrent dispatchers double-publish. Leader-elect or claim-tokens. Always one publisher per partition.</p>
+        <p><strong>Two — treating CDC events as the application event contract.</strong> CDC events have raw column shapes. Add a column for internal use and every consumer sees it. Outbox + router gives you a stable contract.</p>
+        <p><strong>Three — forgetting to retain the WAL.</strong> Debezium needs the WAL from the last committed offset. If your DB's WAL retention is shorter than your downtime, you'll resnapshot the entire database to recover. Set replication slot retention generously.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="leader-election.html">
+          <div class="label">Chapter 16</div>
+          <div class="ttl">Leader election</div>
+        </a>
+        <a class="next-fwd" href="search-architecture.html">
+          <div class="label">Chapter 18</div>
+          <div class="ttl">Search architecture →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 17 · CDC &amp; Outbox · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

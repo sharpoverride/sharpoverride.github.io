@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Scaling Microservices · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Scaling microservices</span>
+    </div>
+    <nav><a href="fundamental-mobile-architecture.html">← Prev</a><a href="../system-design.html">Index →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>BFF · aggregator · async fan-out · capability splitting</b></span>
+      </div>
+      <h1>The technique nobody calls by <span class="ital">name</span>.</h1>
+      <p class="lede">"Scale microservices" usually means one specific thing: take the synchronous fan-out, replace it with an asynchronous fan-out, and put a capability boundary in front. The fancy name is "Backend for Frontend + async aggregation"; the shape is what every team eventually arrives at.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The default problem</h5><p>The API gateway calls 12 services synchronously to render a page. Latency = sum of slowest path. One slow downstream = whole page slow.</p></div>
+      <div><h5>The technique</h5><p>BFF (purpose-built per-client API). Async fan-out. Per-capability ownership. Result: latency = max, not sum. Robustness: degraded slices, not total failure.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">The sync-fan-out trap</a></li>
+      <li><a href="#bff">BFF</a></li>
+      <li><a href="#async">Async aggregation</a></li>
+      <li><a href="#capability">Capability splitting</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The sync fan-out <span class="ital">trap</span>.</h2>
+        <div class="prose">
+          <p>Page load: gateway → 12 internal service calls in sequence (or in parallel waiting for the slowest). <strong>Latency is bounded by the slowest path</strong>; if any one service is degraded, the page is degraded. Failure of any one service = failure of the page.</p>
+          <p>This is what most "microservices are broken" complaints actually describe. The architecture isn't wrong; the synchronous fan-out is.</p>
+        </div>
+        <div class="pull">"Sum of latencies is the failure mode. Max of latencies is the goal."</div>
+      </section>
+
+      <section class="dd-section" id="bff">
+        <h2 class="section"><span class="num">02</span><span class="ital">BFF</span>.</h2>
+        <div class="prose">
+          <p>Backend for Frontend. <strong>One BFF per client (web, iOS, Android, partner API).</strong> The BFF is the only thing the client talks to. It fans out to internal services; aggregates; transforms; returns the per-client-shaped response.</p>
+          <p>Why per-client: the iOS app needs different fields, different cardinality, different error shapes than the web app. A single "API for everything" forces compromises that hurt every client. Per-client BFFs let each surface optimise.</p>
+        </div>
+
+        <h3 class="sub">The BFF's job</h3>
+        <div class="prose">
+          <p>(1) Authenticate the client. (2) Decide which internal services to call. (3) Fan out with timeouts. (4) Compose the response. (5) Cache aggressively where possible. <strong>The BFF is the client's pseudonym for "the backend"</strong>; everything behind it is invisible.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="async">
+        <h2 class="section"><span class="num">03</span>Async <span class="ital">aggregation</span>.</h2>
+
+        <h3 class="sub">Push, don't pull</h3>
+        <div class="prose">
+          <p>Instead of "fetch the user's home feed on every refresh," <strong>maintain the user's home feed as a materialised view</strong>, updated by events from upstream services. Reads become cache lookups; writes flow through queues. Same shape as Twitter's home timeline (see <a href="case-instagram-scale.html">Instagram</a> for the same pattern).</p>
+        </div>
+
+        <h3 class="sub">CQRS at the BFF</h3>
+        <div class="prose">
+          <p>Writes go through the slow path (validate, save, publish event). Reads come from a denormalised store optimised per-client-screen. <strong>The write store and read store are different shapes.</strong> Each can scale independently. See <a href="event-sourcing-cqrs.html">Event sourcing &amp; CQRS</a>.</p>
+        </div>
+
+        <h3 class="sub">Streaming responses</h3>
+        <div class="prose">
+          <p>Some sections of the page can render before others. Server streams the response (HTTP/2 push, Server Components, SSE). <strong>User sees something within 100ms even if the full payload takes 800ms.</strong> The perceived-performance win is enormous.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="capability">
+        <h2 class="section"><span class="num">04</span>Capability <span class="ital">splitting</span>.</h2>
+        <div class="prose">
+          <p>"User service" tends to grow until it does everything user-shaped. <strong>Split by capability, not by entity</strong>: identity, profile, preferences, billing, audit. Each is its own service, owned by its own team, scaled independently.</p>
+          <p>The result: a "user" is reassembled from N capability services at the BFF. <em>Each capability has its own data model, its own DB, its own deployment cadence.</em> No giant user-service monolith.</p>
+        </div>
+
+        <h3 class="sub">Service boundaries follow team boundaries</h3>
+        <div class="prose">
+          <p>Conway's law: software shape matches communication structure. <strong>Microservices with team boundaries that match service boundaries are sustainable.</strong> Microservices that span team boundaries become coordination nightmares.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">05</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Page is slow due to fan-out</h5><p>Build a BFF. Move the aggregation server-side. Pre-materialise expensive views via events.</p></div>
+          <div class="cell"><h5>One service is owned by three teams</h5><p>Split by capability. Conway's law isn't optional; rest your service boundaries on real team boundaries.</p></div>
+          <div class="cell"><h5>Two services share a database</h5><p>You don't have two services. Either merge them or split the DB. Shared DBs are the most common microservices anti-pattern.</p></div>
+          <div class="cell"><h5>Sync chain &gt; 3 hops</h5><p>Async-ify. The 4th hop is where the latency compounds beyond rescuable; queue the work; return on event.</p></div>
+          <div class="cell"><h5>GraphQL as BFF</h5><p>Valid choice (see <a href="grpc-rest-graphql.html">gRPC vs REST vs GraphQL</a>). Client picks fields; server resolves from N services with DataLoader to batch. The "single endpoint" sells the pattern to product.</p></div>
+          <div class="cell"><h5>You're back at a monolith</h5><p>Fine. Modular monolith (<a href="monolith-vs-microservices.html">monolith vs microservices</a>) is usually the right place. Most teams don't need microservices.</p></div>
+        </div>
+        <div class="pull">"You don't scale microservices by adding more services. You scale them by paying attention to the seams."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-mobile-architecture.html"><div class="label">Prev</div><div class="ttl">Mobile architecture</div></a>
+        <a class="next-fwd" href="../system-design.html"><div class="label">All fundamentals</div><div class="ttl">Back to index →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Scaling microservices · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

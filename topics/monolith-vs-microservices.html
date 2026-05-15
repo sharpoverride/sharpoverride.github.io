@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Modular Monolith vs Microservices · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">12 · Monolith vs Microservices</span>
+    </div>
+    <nav>
+      <a href="resilience-polly.html">← Prev</a>
+      <a href="event-sourcing-cqrs.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>12</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~14 min</b></span>
+        <span>Stack <b>ASP.NET Core · Modular monolith · DDD · Service mesh</b></span>
+      </div>
+      <h1>Most teams should <span class="ital">not</span> split.</h1>
+      <p class="lede">Shopify processes 30 TB per minute on a Rails monolith. Stack Overflow ran a single .NET app for a decade. The instinct to split is almost always older than the evidence that the split would help. <em>The right time to extract a service is when the modular monolith stops being modular — and not a day before.</em></p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>Distribution is a tax you pay on every line of code that crosses the boundary, every deploy, every page, every onboarding ticket. <em>The cheque clears whether or not you needed to.</em></p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Three shapes exist: single-process monolith, modular monolith, microservices. Start at the modular monolith. Extract a service only when the cost of the boundary is observably less than the cost of not having one.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">ASP.NET Core</span>
+          <span class="pill on">Modular monolith</span>
+          <span class="pill on">DDD</span>
+          <span class="pill on">Service mesh</span>
+          <span class="pill">MediatR</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The defaulted-to-split bias</a></li>
+        <li><a href="#shapes">Three shapes of an application</a></li>
+        <li><a href="#ledger">The cost ledger of a split</a></li>
+        <li><a href="#dotnet">In ASP.NET Core</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The default-to-<span class="ital">split</span> bias.</h2>
+        <div class="prose">
+          <p>The team is small. The codebase is six months old. The product hasn't shipped. Somebody draws "auth service · orders service · catalog service · notification service" on the whiteboard. Two months later the team has four repos, three Kubernetes namespaces, a saga (<a href="saga-pattern.html">Chapter 09</a>), and a permanent backlog of cross-service migrations. The product still hasn't shipped. <strong>The split was the answer to a question the team didn't have yet.</strong></p>
+          <p>Microservices solve a deployment-coupling problem. Two teams want to ship at different cadences against the same codebase, the build is twenty minutes, the test suite touches every module, a regression in checkout blocks a fix in search. That is the moment a split pays for itself. None of those problems exist at 8 engineers. <em>Splitting before they exist creates them.</em></p>
+        </div>
+
+        <div class="pull">"You can move a class between modules in an afternoon. You cannot move a row between databases without a six-week dual-write migration."</div>
+
+        <div class="prose">
+          <p>Shopify's playbook is the most-quoted because it's the most honest: they ran one Rails monolith for fifteen years, took it to <em>30 terabytes of traffic per minute</em>, and only then started extracting services. Not because the monolith couldn't take it — it could. Because the team had grown past the point where one codebase per shipping team was sustainable. <strong>Scale was the symptom; organisational coupling was the disease.</strong></p>
+        </div>
+      </section>
+
+      <!-- 2 shapes -->
+      <section class="dd-section" id="shapes">
+        <h2 class="section"><span class="num">02</span>Three <span class="ital">shapes</span>.</h2>
+
+        <div class="prose">
+          <p>The choice isn't binary. There's a useful middle: the modular monolith — one deployable, many bounded modules with explicit contracts between them. It's where most teams should live.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 500" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="ma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 11 · THREE SHAPES OF THE SAME APPLICATION</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- Single-process monolith -->
+            <g transform="translate(20, 60)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Single-process monolith</text>
+              <rect x="0"   y="30" width="340" height="120" fill="#1a1814"/>
+              <text x="170" y="60" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">ONE PROCESS · ONE DB</text>
+              <g fill="#f1ece1" font-family="JetBrains Mono" font-size="9" text-anchor="middle">
+                <rect x="20"  y="80" width="80" height="50" fill="#c2410c"/>
+                <text x="60"  y="110" fill="#f1ece1">Auth</text>
+                <rect x="120" y="80" width="80" height="50" fill="#c2410c"/>
+                <text x="160" y="110" fill="#f1ece1">Orders</text>
+                <rect x="220" y="80" width="100" height="50" fill="#c2410c"/>
+                <text x="270" y="110" fill="#f1ece1">Catalog</text>
+              </g>
+              <text x="170" y="170" font-family="IBM Plex Sans" font-size="11" text-anchor="middle" fill="#1a1814">Modules talk via direct method calls.</text>
+              <text x="170" y="184" font-family="IBM Plex Sans" font-size="11" text-anchor="middle" fill="#c2410c">No boundary. No tax. No safety net.</text>
+            </g>
+
+            <!-- Modular monolith -->
+            <g transform="translate(420, 60)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Modular monolith</text>
+              <rect x="0"   y="30" width="340" height="120" fill="#1a1814"/>
+              <text x="170" y="60" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">ONE PROCESS · BOUNDED CONTEXTS</text>
+              <g>
+                <rect x="20"  y="80" width="80" height="50" fill="#c2410c" stroke="#f1ece1" stroke-width="1" stroke-dasharray="3 2"/>
+                <text x="60"  y="110" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">Auth</text>
+                <rect x="120" y="80" width="80" height="50" fill="#c2410c" stroke="#f1ece1" stroke-width="1" stroke-dasharray="3 2"/>
+                <text x="160" y="110" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">Orders</text>
+                <rect x="220" y="80" width="100" height="50" fill="#c2410c" stroke="#f1ece1" stroke-width="1" stroke-dasharray="3 2"/>
+                <text x="270" y="110" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">Catalog</text>
+              </g>
+              <text x="170" y="170" font-family="IBM Plex Sans" font-size="11" text-anchor="middle" fill="#1a1814">Internal types, public contracts.</text>
+              <text x="170" y="184" font-family="IBM Plex Sans" font-size="11" text-anchor="middle" fill="#c2410c">One deploy. Compile-time boundaries.</text>
+            </g>
+
+            <!-- Microservices -->
+            <g transform="translate(820, 60)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Microservices</text>
+              <g>
+                <rect x="0"   y="30" width="100" height="60" fill="#1a1814"/>
+                <text x="50"  y="60" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">Auth svc</text>
+                <text x="50"  y="76" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1" opacity="0.6">+ db + ops</text>
+
+                <rect x="120" y="30" width="100" height="60" fill="#1a1814"/>
+                <text x="170" y="60" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">Orders svc</text>
+                <text x="170" y="76" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1" opacity="0.6">+ db + ops</text>
+
+                <rect x="240" y="30" width="100" height="60" fill="#1a1814"/>
+                <text x="290" y="60" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">Catalog svc</text>
+                <text x="290" y="76" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1" opacity="0.6">+ db + ops</text>
+              </g>
+
+              <line x1="100" y1="60" x2="118" y2="60" stroke="#c2410c" stroke-width="2" marker-end="url(#ma)"/>
+              <line x1="220" y1="60" x2="238" y2="60" stroke="#c2410c" stroke-width="2" marker-end="url(#ma)"/>
+
+              <text x="170" y="170" font-family="IBM Plex Sans" font-size="11" text-anchor="middle" fill="#1a1814">N processes, N databases, M teams.</text>
+              <text x="170" y="184" font-family="IBM Plex Sans" font-size="11" text-anchor="middle" fill="#c2410c">Independent deploy. Distributed cost.</text>
+            </g>
+
+            <line x1="20" y1="270" x2="1180" y2="270" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+            <g transform="translate(20, 290)">
+              <text x="0"   y="20" font-family="JetBrains Mono" font-size="11" fill="#c2410c">CROSS-MODULE CALL</text>
+              <text x="0"   y="50" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Single-process:</text>
+              <text x="220" y="50" font-family="JetBrains Mono" font-size="11" fill="#1a1814">_orders.<tspan fill="#c2410c">Place</tspan>(args)        ← method call, ~ns</text>
+
+              <text x="0"   y="76" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Modular monolith:</text>
+              <text x="220" y="76" font-family="JetBrains Mono" font-size="11" fill="#1a1814">_orders.<tspan fill="#c2410c">Place</tspan>(<tspan fill="#c2410c">PlaceOrder</tspan> req) ← contract-shaped call</text>
+
+              <text x="0"   y="102" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Microservices:</text>
+              <text x="220" y="102" font-family="JetBrains Mono" font-size="11" fill="#1a1814">await http.<tspan fill="#c2410c">PostAsync</tspan>(...)     ← network call, 1–50ms + retries</text>
+
+              <text x="0"   y="150" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">The middle shape gets you the boundary without the bill.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 11</span><span>The modular monolith keeps the contracts of microservices and the latency of a method call. Extract only when you can name the dependency on independent deploy.</span></div>
+        </div>
+
+        <h3 class="sub">What "modular" actually means in code</h3>
+        <div class="prose">
+          <p>Three things, in order of importance: (1) <strong>one project per module</strong>, each with a small <em>public</em> contract assembly and a larger <em>internal</em> implementation assembly. Other modules reference the contracts; nothing else. (2) <strong>One DbContext per module</strong>; foreign keys never cross. The orders module owns its <code>Orders</code> table; the catalog module owns its <code>Products</code> table; an order's product reference is a value <code>ProductId</code>, not a navigation property. (3) <strong>One message contract per cross-module call</strong>, even in-process. Use MediatR or a similar mediator so the call site looks the same as the eventual extraction.</p>
+          <p>That last point is the kicker. When the day comes to extract <em>orders</em> into its own service, the inside of <code>OrdersModule</code> doesn't change. The mediator dispatch becomes an HTTP call. Everything else stays. The extraction is a deployment-topology change, not a rewrite.</p>
+        </div>
+      </section>
+
+      <!-- 3 ledger -->
+      <section class="dd-section" id="ledger">
+        <h2 class="section"><span class="num">03</span>The cost <span class="ital">ledger</span>.</h2>
+        <div class="prose">
+          <p>The split adds capability. It also adds cost. The ledger is rarely written down because each item is small; the total is the production reality.</p>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 1100 320" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="22" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. 12 · WHAT EACH SPLIT BUYS YOU AND COSTS YOU</text>
+            <line x1="20" y1="32" x2="1080" y2="32" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(20, 50)">
+              <rect x="0"   y="0" width="220" height="240" fill="#c2410c"/>
+              <text x="110" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">YOU BUY</text>
+              <g font-family="IBM Plex Sans" font-size="11" fill="#f1ece1">
+                <text x="14" y="54">· independent deploy</text>
+                <text x="14" y="78">· per-service scaling</text>
+                <text x="14" y="102">· per-service tech choice</text>
+                <text x="14" y="126">· fault isolation</text>
+                <text x="14" y="150">· per-team velocity</text>
+                <text x="14" y="174">· smaller blast radius</text>
+                <text x="14" y="198">· per-team ownership</text>
+              </g>
+
+              <rect x="320" y="0" width="600" height="240" fill="#1a1814"/>
+              <text x="620" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">YOU PAY</text>
+              <g font-family="IBM Plex Sans" font-size="11" fill="#f1ece1">
+                <text x="334" y="54">· eventual consistency (sagas instead of transactions)</text>
+                <text x="334" y="78">· distributed tracing infra (OTel, Tempo, Grafana)</text>
+                <text x="334" y="102">· per-service auth, observability, secret rotation</text>
+                <text x="334" y="126">· N CI/CD pipelines, N deploy manifests, N alerts</text>
+                <text x="334" y="150">· cross-service schema drift &amp; compat tests</text>
+                <text x="334" y="174">· latency tax: 1–50ms per call × call fan-out</text>
+                <text x="334" y="198">· someone owns the platform fulltime now</text>
+              </g>
+            </g>
+
+            <text x="20" y="310" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">The ledger only balances when the &ldquo;You buy&rdquo; column names a problem you have today.</text>
+          </svg>
+          <div class="cap"><b>Two teams can't ship</b> is a real entry on the buy side. <b>It'll scale better someday</b> is not.</div>
+        </div>
+
+        <h3 class="sub">The four real reasons to split</h3>
+        <div class="prose">
+          <p><strong>One — independent deploy cadence.</strong> Two teams want to ship daily but can't because their tests are entangled. The deploy is the constraint; the split frees them.</p>
+          <p><strong>Two — different scale axis.</strong> Auth handles 100× the RPS of admin; checkout has 10× the latency budget of recommendation. One scale knob can't satisfy both; physical separation lets each scale independently.</p>
+          <p><strong>Three — different runtime requirements.</strong> The ML scoring path needs Python and a GPU node pool; the transactional path is .NET on commodity. There's no reasonable polyglot monolith here.</p>
+          <p><strong>Four — security or compliance isolation.</strong> The PCI-scoped path needs its own network segment, its own audit, its own deploy approval chain. Mixing it with non-scoped code means everything inherits PCI scope. That's expensive.</p>
+          <p>If you can name one of these clearly, extract. If you can't, you're paying the tax for nothing.</p>
+        </div>
+
+        <h3 class="sub">How to extract without breaking everything</h3>
+        <div class="prose">
+          <p>The strangler-fig pattern is the only one that consistently works: in a modular monolith, change the mediator dispatch for <em>one</em> module to call an HTTP endpoint that wraps the same module code in a new deployable. Run both — in-process and over-the-wire — behind a feature flag. Cut traffic over gradually. Delete the in-process module when 100% of calls are over the wire. <em>Do not write a new service alongside the old code and run a six-month dual-write migration.</em> That is how every "modernisation" lands two years late and 50% done.</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">ASP.NET Core</span>.</h2>
+
+        <div class="prose">
+          <p>A module's public surface is a single <code>Module.cs</code> that registers the module's services and endpoints. Cross-module calls go through MediatR. The host project knows nothing about any module's internals; it just calls <code>app.UseModule&lt;OrdersModule&gt;()</code>.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">OrdersModule/OrdersModule.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">using</span> <span class="t">MediatR</span>;
+<span class="k">using</span> <span class="t">Microsoft.AspNetCore.Builder</span>;
+<span class="k">using</span> <span class="t">Microsoft.AspNetCore.Routing</span>;
+<span class="k">using</span> <span class="t">Microsoft.EntityFrameworkCore</span>;
+<span class="k">using</span> <span class="t">Microsoft.Extensions.DependencyInjection</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Modules.Orders</span>;
+
+<span class="c">// Internal — nothing outside this assembly may reference these.</span>
+<span class="k">internal sealed class</span> <span class="t">OrdersDbContext</span> : <span class="t">DbContext</span>
+{
+    <span class="k">public</span> <span class="fn">OrdersDbContext</span>(<span class="t">DbContextOptions</span>&lt;<span class="t">OrdersDbContext</span>&gt; o) : <span class="k">base</span>(o) {}
+    <span class="k">public</span> <span class="t">DbSet</span>&lt;<span class="t">Order</span>&gt; <span class="t">Orders</span> =&gt; <span class="fn">Set</span>&lt;<span class="t">Order</span>&gt;();
+}
+
+<span class="k">internal sealed class</span> <span class="t">Order</span>
+{
+    <span class="k">public</span> <span class="t">Guid</span> <span class="t">Id</span> { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="t">Guid</span> <span class="t">ProductId</span> { <span class="k">get</span>; <span class="k">set</span>; }  <span class="c">// id only — no FK to catalog</span>
+    <span class="k">public</span> <span class="k">decimal</span> <span class="t">Amount</span> { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="k">string</span> <span class="t">Status</span> { <span class="k">get</span>; <span class="k">set</span>; } = <span class="s">"Pending"</span>;
+}
+
+<span class="c">// Public — the only types other modules see.</span>
+<span class="k">public sealed record</span> <span class="t">PlaceOrder</span>(<span class="t">Guid</span> <span class="t">ProductId</span>, <span class="k">decimal</span> <span class="t">Amount</span>) : <span class="t">IRequest</span>&lt;<span class="t">Guid</span>&gt;;
+
+<span class="k">internal sealed class</span> <span class="t">PlaceOrderHandler</span> : <span class="t">IRequestHandler</span>&lt;<span class="t">PlaceOrder</span>, <span class="t">Guid</span>&gt;
+{
+    <span class="k">private readonly</span> <span class="t">OrdersDbContext</span> _db;
+    <span class="k">private readonly</span> <span class="t">IMediator</span> _mediator;
+
+    <span class="k">public</span> <span class="fn">PlaceOrderHandler</span>(<span class="t">OrdersDbContext</span> db, <span class="t">IMediator</span> mediator)
+    { _db = db; _mediator = mediator; }
+
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">Guid</span>&gt; <span class="fn">Handle</span>(<span class="t">PlaceOrder</span> r, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="c">// Cross-module call via mediator — same call site after extraction.</span>
+        <span class="k">var</span> price = <span class="k">await</span> _mediator.<span class="fn">Send</span>(<span class="k">new</span> <span class="t">Academy</span>.<span class="t">Modules</span>.<span class="t">Catalog</span>.<span class="t">GetPrice</span>(r.<span class="t">ProductId</span>), ct);
+        <span class="k">if</span> (price != r.<span class="t">Amount</span>) <span class="k">throw new</span> <span class="t">InvalidOperationException</span>(<span class="s">"price changed"</span>);
+
+        <span class="k">var</span> order = <span class="k">new</span> <span class="t">Order</span> { <span class="t">Id</span> = <span class="t">Guid</span>.<span class="fn">NewGuid</span>(), <span class="t">ProductId</span> = r.<span class="t">ProductId</span>, <span class="t">Amount</span> = r.<span class="t">Amount</span> };
+        _db.<span class="t">Orders</span>.<span class="fn">Add</span>(order);
+        <span class="k">await</span> _db.<span class="fn">SaveChangesAsync</span>(ct);
+        <span class="k">return</span> order.<span class="t">Id</span>;
+    }
+}
+
+<span class="k">public static class</span> <span class="t">OrdersModule</span>
+{
+    <span class="k">public static</span> <span class="t">IServiceCollection</span> <span class="fn">AddOrdersModule</span>(
+        <span class="k">this</span> <span class="t">IServiceCollection</span> services, <span class="k">string</span> conn)
+    {
+        services.<span class="fn">AddDbContext</span>&lt;<span class="t">OrdersDbContext</span>&gt;(o =&gt; o.<span class="fn">UseSqlServer</span>(conn));
+        services.<span class="fn">AddMediatR</span>(c =&gt; c.<span class="fn">RegisterServicesFromAssembly</span>(<span class="k">typeof</span>(<span class="t">OrdersModule</span>).<span class="t">Assembly</span>));
+        <span class="k">return</span> services;
+    }
+
+    <span class="k">public static</span> <span class="t">IEndpointRouteBuilder</span> <span class="fn">MapOrdersEndpoints</span>(<span class="k">this</span> <span class="t">IEndpointRouteBuilder</span> app)
+    {
+        app.<span class="fn">MapPost</span>(<span class="s">"/orders"</span>, <span class="k">async</span> (<span class="t">PlaceOrder</span> req, <span class="t">IMediator</span> m, <span class="t">CancellationToken</span> ct) =&gt;
+        {
+            <span class="k">var</span> id = <span class="k">await</span> m.<span class="fn">Send</span>(req, ct);
+            <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Created</span>($<span class="s">"/orders/{id}"</span>, <span class="k">new</span> { id });
+        });
+        <span class="k">return</span> app;
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>The host's <code>Program.cs</code> wires every module the same way. The day the orders module needs to be extracted, you change the orders <code>IRequestHandler</code> registration to a thin HTTP client that posts to <code>order-svc:5000</code> — call sites are identical.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">Program.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+builder.<span class="t">Services</span>.<span class="fn">AddOrdersModule</span>(builder.<span class="t">Configuration</span>.<span class="fn">GetConnectionString</span>(<span class="s">"Orders"</span>)!);
+builder.<span class="t">Services</span>.<span class="fn">AddCatalogModule</span>(builder.<span class="t">Configuration</span>.<span class="fn">GetConnectionString</span>(<span class="s">"Catalog"</span>)!);
+builder.<span class="t">Services</span>.<span class="fn">AddAuthModule</span>(builder.<span class="t">Configuration</span>.<span class="fn">GetConnectionString</span>(<span class="s">"Auth"</span>)!);
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+
+app.<span class="fn">UseAuthentication</span>();
+app.<span class="fn">MapOrdersEndpoints</span>();
+app.<span class="fn">MapCatalogEndpoints</span>();
+app.<span class="fn">MapAuthEndpoints</span>();
+
+app.<span class="fn">Run</span>();</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">No foreign keys across modules</div>
+          <p>The instant you add <code>builder.HasOne(o =&gt; o.Product).WithMany().HasForeignKey(o =&gt; o.ProductId)</code>, you've welded orders to catalog. Extracting becomes a schema migration on every release. <strong>Keep cross-module references as plain ids.</strong> Validate via a domain service that calls the other module, not via a database constraint.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">One DbContext per module</div>
+          <p>Modules share the SQL Server instance, not the schema. Each module's DbContext has its own migrations, its own schema name, its own connection string. Tables across modules don't talk to each other in SQL. The cost: you can't write a single JOIN across modules. The benefit: when orders gets extracted, its database is already a separate database — the connection string is the only thing that changes.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Use <code>internal</code> ruthlessly</div>
+          <p>Default to <code>internal</code> on everything in a module. Only the contract record types and the registration extensions are <code>public</code>. C# enforces the boundary at compile time — the other module literally cannot type the name of your <code>Order</code> entity. This is the cheapest, most under-used architecture tool in the language.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">The mediator is the dispatch boundary</div>
+          <p>Every cross-module call goes through <code>IMediator.Send()</code>. In-process, that's a method dispatch by type. After extraction, swap the handler registration for a typed HTTP client that serialises the request, calls the new service, and deserialises the response. <em>The call site never changes.</em> That is the entire architectural payoff of a modular monolith.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Don't extract for "scale" without measurement</div>
+          <p>"We're splitting because the monolith won't scale" is almost always wrong. Profile first. The hot path is usually one slow query, one missing index, or one synchronous call that should be async. <strong>A modular monolith on a beefy VM scales further than any team thinks — Stack Overflow ran on nine servers at 6,000 RPS for years.</strong> Extract for org reasons, not throughput reasons.</p>
+        </div>
+
+        <div class="pull">"Microservices are an answer to an organisational problem dressed up as a technical decision. Diagnose the problem you actually have."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Shape</th>
+              <th>Coupling</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Single-process monolith<span class="sub">no boundaries</span></th>
+              <td>Tight</td>
+              <td>Fastest to iterate · trivial deploy · no distribution</td>
+              <td><strong>$50 – $500</strong> one VM</td>
+              <td>One process, one log, one deploy</td>
+              <td><span class="verdict good">Start here for solo &amp; tiny teams</span></td>
+            </tr>
+            <tr>
+              <th>Modular monolith<span class="sub">contracts + DbContexts</span></th>
+              <td>Compile-time bounded</td>
+              <td>Boundary discipline of services · monolith ergonomics · single deploy</td>
+              <td><strong>$100 – $2k</strong> one cluster</td>
+              <td>One deploy, one trace, one CI</td>
+              <td><span class="verdict good">Default for 2–30 engineers</span></td>
+            </tr>
+            <tr>
+              <th>Microservices (sync HTTP)<span class="sub">REST or gRPC</span></th>
+              <td>Network-coupled</td>
+              <td>Independent deploy · per-team velocity · per-service scaling</td>
+              <td><strong>$1k – $10k+</strong> N services + mesh</td>
+              <td>N pipelines, N alerts, N runbooks</td>
+              <td><span class="verdict warn">Only past clear org need</span></td>
+            </tr>
+            <tr>
+              <th>Microservices + service mesh<span class="sub">Istio / Linkerd</span></th>
+              <td>Mesh-mediated</td>
+              <td>Uniform mTLS · uniform retries · uniform telemetry</td>
+              <td><strong>$3k – $25k</strong> mesh + sidecars</td>
+              <td>Mesh is its own platform team's job</td>
+              <td><span class="verdict warn">For 50+ services; overkill below</span></td>
+            </tr>
+            <tr>
+              <th>Microservices + event-driven<span class="sub">brokers in the middle</span></th>
+              <td>Async-coupled</td>
+              <td>Loosely coupled · resilient to downstream outages</td>
+              <td><strong>$200 – $5k</strong> broker + N services</td>
+              <td>Sagas, outbox, ordering, replay</td>
+              <td><span class="verdict good">For workflows; not for queries</span></td>
+            </tr>
+            <tr>
+              <th>Serverless functions<span class="sub">FaaS</span></th>
+              <td>Per-function</td>
+              <td>No pod ops · sub-cent at idle · pay-per-invocation</td>
+              <td><strong>$0 – $500</strong> sparse · climbs fast at scale</td>
+              <td>Cold starts; tooling fragmentation</td>
+              <td><span class="verdict warn">For sparse, bursty surface area</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>1–4 engineers, pre-PMF</h5>
+            <p>Single-process monolith. Skip even the modular structure until you have two distinct domains that need to evolve at different speeds.</p>
+          </div>
+          <div class="cell">
+            <h5>5–30 engineers, single product</h5>
+            <p>Modular monolith. One deploy, one DB instance, multiple DbContexts and module assemblies. The shape that scales to 100k RPS without anyone noticing.</p>
+          </div>
+          <div class="cell">
+            <h5>Two teams blocking each other's deploys</h5>
+            <p>Extract the blocking module first via strangler. Run side-by-side for a quarter behind a flag, then cut over. Don't extract everything.</p>
+          </div>
+          <div class="cell">
+            <h5>PCI / HIPAA scoped path</h5>
+            <p>Extract the scoped path into its own service and namespace. Compliance isolation is one of the few clean-cut reasons to split early.</p>
+          </div>
+          <div class="cell">
+            <h5>ML / batch workload alongside web tier</h5>
+            <p>Separate process and node pool. ML doesn't share runtime requirements with transactional code; co-locating them costs you both.</p>
+          </div>
+          <div class="cell">
+            <h5>"We need microservices for scale"</h5>
+            <p>Show me the profile. Nine times out of ten, the bottleneck is one query. Optimise first; if the modular monolith still can't fit, then extract.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — extracting too early.</strong> Two months in, the team splits into four services and inherits four pipelines. The product hasn't shipped. Distribution should follow demonstrated need, not architecture-astronaut aesthetics.</p>
+        <p><strong>Two — foreign keys across the boundary.</strong> An <code>Orders.ProductId</code> FK to <code>Catalog.Products</code> welds the modules together at the database level. When you eventually extract, you discover you can't — every migration is cross-service. Keep cross-module references as ids only.</p>
+        <p><strong>Three — extracting <em>only</em> for "team velocity".</strong> If the team is one team, splitting the codebase doesn't help anyone deploy faster — it just adds coordination overhead. The split pays off when two distinct teams own two distinct services. Below that line, the modular monolith wins on every dimension.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="resilience-polly.html">
+          <div class="label">Chapter 11</div>
+          <div class="ttl">Resilience</div>
+        </a>
+        <a class="next-fwd" href="event-sourcing-cqrs.html">
+          <div class="label">Chapter 13</div>
+          <div class="ttl">Event sourcing &amp; CQRS →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 12 · Monolith vs Microservices · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

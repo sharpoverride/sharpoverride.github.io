@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>AI Coding Workflow · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive ai">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#ai">AI</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Coding workflow</span>
+    </div>
+    <nav><a href="../system-design.html">← Index</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>AI <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>Copilot · Cursor · Claude Code · Continue</b></span>
+      </div>
+      <h1>What the AI <span class="ital">coding tool</span> actually does.</h1>
+      <p class="lede">GitHub Copilot, Cursor, Claude Code, Continue — under the hood, all four are similar: an editor or terminal, a context-gathering pipeline, an LLM, a diff applier. The differences are in <em>which context gets gathered</em> and <em>how applies and reviews are gated</em>.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The loop</h5><p>Capture intent → gather context (open files, repo grep, embeddings) → call LLM → produce patch → apply → run → iterate.</p></div>
+      <div><h5>The differences</h5><p>Copilot is inline-completion. Cursor adds chat + multi-file edits. Claude Code adds full agent mode. Continue is the open-source pluggable one.</p></div>
+      <div><h5>Tech we'll touch</h5>
+        <div><span class="pill on">Tree-sitter</span><span class="pill on">Embeddings</span><span class="pill on">Tool calling</span><span class="pill on">Diff apply</span></div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why AI coding works at all</a></li>
+        <li><a href="#context">Context is everything</a></li>
+        <li><a href="#modes">Three interaction modes</a></li>
+        <li><a href="#gates">Apply, review, run</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why AI coding <span class="ital">works</span>.</h2>
+        <div class="prose">
+          <p>Code is dense, structured, repetitive at a pattern level. <strong>An LLM trained on github-scale corpus knows the patterns.</strong> Given the right context — the file, the imports, the recent edits, the project's conventions — predicting the next 5 lines is a tractable task. The model isn't reasoning about the codebase the way you do; it's producing the most-likely continuation, conditioned on context.</p>
+          <p>The product-engineering challenge isn't "make the model smarter." It's <em>gather the right context cheaply, apply the change reliably, gate the side effects safely</em>. Each tool is a different bundle of answers.</p>
+        </div>
+        <div class="pull">"The bottleneck isn't the model. It's the context the model gets to see."</div>
+      </section>
+
+      <section class="dd-section" id="context">
+        <h2 class="section"><span class="num">02</span>Context is <span class="ital">everything</span>.</h2>
+
+        <h3 class="sub">The static context</h3>
+        <div class="prose">
+          <p>Open file. File's imports. Recently-edited lines. Cursor position. <strong>This is the cheap-and-always-available context.</strong> Copilot v1 used only this. Quality of completions correlates with how much of it you can fit in the prompt without blowing past the model's window.</p>
+        </div>
+
+        <h3 class="sub">The repo-aware context</h3>
+        <div class="prose">
+          <p>"Where is <code>UserService</code> defined? What does it do?" — for these, the tool indexes the repo. <strong>Two approaches</strong>: (1) tree-sitter / language-server symbol index for exact lookups; (2) embedding index over chunks for fuzzy semantic queries. <em>Modern tools use both.</em> Cursor and Claude Code can grep the codebase, read additional files, follow references.</p>
+        </div>
+
+        <h3 class="sub">The conversation context</h3>
+        <div class="prose">
+          <p>"That looked wrong, try again with the X library." Chat-style tools carry a conversation history; agentic tools carry the trajectory of recent actions. <strong>The model uses recent feedback to course-correct.</strong> The longer the conversation, the more context budget is spent on history vs. new code.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 240" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · CONTEXT ASSEMBLY</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+            <g transform="translate(40, 80)">
+              <rect x="0" y="0" width="140" height="40" fill="#1a1814"/><text x="70" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">OPEN FILE</text>
+              <rect x="160" y="0" width="140" height="40" fill="#1a1814"/><text x="230" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">IMPORTS</text>
+              <rect x="320" y="0" width="140" height="40" fill="#c2410c"/><text x="390" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">REPO GREP</text>
+              <rect x="480" y="0" width="140" height="40" fill="#c2410c"/><text x="550" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">EMBED SEARCH</text>
+              <rect x="640" y="0" width="140" height="40" fill="#1a1814"/><text x="710" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CHAT HISTORY</text>
+              <rect x="800" y="0" width="160" height="40" fill="#c2410c"/><text x="880" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">PROMPT TO LLM</text>
+              <line x1="140" y1="20" x2="158" y2="20" stroke="#c2410c" stroke-width="1.5"/>
+              <line x1="300" y1="20" x2="318" y2="20" stroke="#c2410c" stroke-width="1.5"/>
+              <line x1="460" y1="20" x2="478" y2="20" stroke="#c2410c" stroke-width="1.5"/>
+              <line x1="620" y1="20" x2="638" y2="20" stroke="#c2410c" stroke-width="1.5"/>
+              <line x1="780" y1="20" x2="798" y2="20" stroke="#c2410c" stroke-width="1.5"/>
+              <text x="40" y="80" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">"Five inputs, one prompt, one model call. The art is what you put in, in what order."</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Each tool weighs these inputs differently. The bundle is what determines "good" vs "uncanny."</span></div>
+        </div>
+      </section>
+
+      <section class="dd-section" id="modes">
+        <h2 class="section"><span class="num">03</span>Three interaction <span class="ital">modes</span>.</h2>
+
+        <table class="matrix">
+          <thead><tr><th>Mode</th><th>What it does</th><th>Tool</th></tr></thead>
+          <tbody>
+            <tr><th>Inline completion</th><td>Ghost-text suggestion as you type. Accept with Tab.</td><td>Copilot, Cursor Tab, Continue</td></tr>
+            <tr><th>Chat / inline edit</th><td>Highlight code, describe change, model produces a diff.</td><td>Cursor, Continue, Copilot Chat</td></tr>
+            <tr><th>Agent</th><td>Describe a multi-step task; model plans, edits multiple files, runs commands, iterates.</td><td>Claude Code, Cursor Agent, Aider, OpenHands</td></tr>
+          </tbody>
+        </table>
+
+        <div class="prose">
+          <p><strong>Each mode has a different appropriate task size.</strong> Inline = one statement to one block. Chat = a function rewrite. Agent = a feature spanning several files. Mismatching task to mode is the first reason teams find AI tools "disappointing"; pick the right grain.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="gates">
+        <h2 class="section"><span class="num">04</span>Apply, review, <span class="ital">run</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Diffs are the unit</div>
+          <p>The model emits a patch (unified diff or structured edit). The tool validates it parses, applies it, optionally shows you the diff for review. <strong>Reject parse failures quickly</strong> — the model will sometimes hallucinate file content; the diff apply step is the canary.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Auto-run is the line you cross deliberately</div>
+          <p>Agent mode can run commands. <strong>Sandboxed by default</strong> — a non-root shell, ideally in a container. Auto-run on user machines is the same risk class as <code>curl | sh</code>. Most tools default to "ask before running"; the convenience of "yolo mode" is the security ceiling.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Test loop tightens quality</div>
+          <p>The model emits code → run the tests → feed the test output back. Failures become next-iteration context. <strong>This is the loop that turns 60% accuracy into 90% accuracy</strong>; the model can fix its own bugs if it can see the test result.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Review remains human</div>
+          <p>AI-generated code passes tests but can be subtly wrong — using a deprecated API, introducing a security smell, missing an edge case the tests don't cover. <em>The reviewer is still you.</em> Run it through CI, eyeball the diff, push.</p>
+        </div>
+
+        <div class="pull">"The AI does typing. The reviewer is still the engineer."</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">05</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Most-of-the-time coding</h5><p>Cursor or Copilot. Inline completion + chat. Stays in your way; gets out fast.</p></div>
+          <div class="cell"><h5>Full feature delegation</h5><p>Claude Code or Cursor Agent. Describe what you want; supervise the loop. Best for refactors and well-spec'd tasks.</p></div>
+          <div class="cell"><h5>Open-source, local model</h5><p>Continue + Ollama. Lower latency, no per-token cost, weaker model. Fine for tab-completion-grade tasks.</p></div>
+          <div class="cell"><h5>Privacy-strict environment</h5><p>Self-hosted code-completion (Tabby, Codeium for Enterprise). Your code never leaves your network.</p></div>
+          <div class="cell"><h5>Pair-programming style</h5><p>Claude Code or Aider with chat. Long-running session; the agent stays oriented on the task.</p></div>
+          <div class="cell"><h5>You're new to AI coding</h5><p>Start with inline completion. Get comfortable. Graduate to chat. Try agent mode once you understand what context the tools have.</p></div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="../system-design.html"><div class="label">Index</div><div class="ttl">All AI chapters</div></a>
+        <a class="next-fwd" href="ai-context-engineering.html"><div class="label">Next AI</div><div class="ttl">Context engineering →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>AI · Coding workflow · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

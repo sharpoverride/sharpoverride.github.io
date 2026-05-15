@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Saga Pattern · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">09 · Saga Pattern</span>
+    </div>
+    <nav>
+      <a href="idempotency-keys.html">← Prev</a>
+      <a href="realtime-channels.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>09</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~16 min</b></span>
+        <span>Stack <b>MassTransit · RabbitMQ · Azure Service Bus · EF Core</b></span>
+      </div>
+      <h1>A transaction the network <span class="ital">can't</span> abort.</h1>
+      <p class="lede">Two-phase commit dies the moment your services live in different processes. The saga replaces the database transaction with a sequence of <em>local</em> transactions and a sequence of <em>undo</em> transactions, glued together by a state machine that survives crashes.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>You cannot hold a lock across <em>order-service</em>, <em>payment-service</em>, and <em>inventory-service</em>. The locks belong to different databases.</p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>A saga is a workflow with two timelines: forward steps and compensating steps. The state of the saga is the workflow's only truth — persist it, replay it, and the network can fail however it likes.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">MassTransit</span>
+          <span class="pill on">RabbitMQ</span>
+          <span class="pill on">Azure Service Bus</span>
+          <span class="pill on">EF Core</span>
+          <span class="pill">Dapr Workflow</span>
+          <span class="pill">Temporal</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The 2PC problem</a></li>
+        <li><a href="#core">Orchestration vs choreography</a></li>
+        <li><a href="#compensation">Compensation is not rollback</a></li>
+        <li><a href="#dotnet">In MassTransit</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The <span class="ital">2PC</span> problem.</h2>
+        <div class="prose">
+          <p>An order placed at <code>POST /orders</code> needs four things to happen, all-or-nothing: write the order row, charge the card, decrement inventory, schedule shipping. In a single SQL database, that's <code>BEGIN TRANSACTION</code>. Across four services with four databases, it isn't anything — there is no shared transaction manager that can <code>ROLLBACK</code> the payment after the shipping service times out.</p>
+          <p>The textbook answer used to be <strong>two-phase commit (2PC)</strong>: a coordinator asks every participant to <em>prepare</em>, then to <em>commit</em>. In practice, 2PC holds locks across network calls. One slow participant freezes every other transaction touching those rows. One coordinator failure mid-protocol leaves participants stuck in the prepared state, waiting forever. <em>2PC is the reason Oracle's MTS architect quit and the reason every cloud database refuses to participate in it.</em></p>
+        </div>
+
+        <div class="pull">"A distributed transaction is a transaction that mostly succeeds. The remaining percent is a paging incident."</div>
+
+        <div class="prose">
+          <p>The saga, named by Garcia-Molina and Salem in a 1987 paper, is the workaround that won. <strong>Replace the single ACID transaction with a sequence of local ACID transactions, each in its own service, and define a compensating action for every step that already succeeded.</strong> If step four fails, you don't roll back — you run the inverse of step three, then step two, then step one, in reverse order. Steps commit immediately and are visible to other readers; you accept the cost of that visibility for the benefit of not holding locks.</p>
+          <p>The trick is keeping the workflow alive. Service A finishes its local commit and publishes an event. Service B is down. The event sits in a queue. When B recovers, it picks up the event and continues. The saga is the durable state of "where in the workflow are we" — and it is the only thing that needs to survive every crash.</p>
+        </div>
+      </section>
+
+      <!-- 2 core -->
+      <section class="dd-section" id="core">
+        <h2 class="section"><span class="num">02</span>Orchestration <span class="ital">vs</span> choreography.</h2>
+
+        <div class="prose">
+          <p>Two ways to wire the steps. Orchestration: one service holds the state machine and tells the others what to do next. Choreography: each service publishes "I'm done" and the next service listens for it. The diagram below is the same order workflow drawn both ways.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 520" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="sa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a1814"/></marker>
+              <marker id="sao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 05 · TWO SHAPES OF THE SAME WORKFLOW</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- ORCHESTRATION -->
+            <text x="20" y="72" font-family="Instrument Serif" font-style="italic" font-size="20" fill="#1a1814">Orchestration</text>
+            <text x="20" y="92" font-family="JetBrains Mono" font-size="10" fill="#1a1814" opacity="0.7">one brain, four limbs</text>
+
+            <g transform="translate(20, 110)">
+              <rect x="240" y="0" width="180" height="60" fill="#c2410c"/>
+              <text x="330" y="26" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">ORDER SAGA</text>
+              <text x="330" y="44" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">(state machine)</text>
+
+              <rect x="0"   y="100" width="140" height="48" fill="#1a1814"/>
+              <text x="70"  y="129" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">PAYMENT SVC</text>
+
+              <rect x="180" y="100" width="140" height="48" fill="#1a1814"/>
+              <text x="250" y="129" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">INVENTORY SVC</text>
+
+              <rect x="360" y="100" width="140" height="48" fill="#1a1814"/>
+              <text x="430" y="129" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">SHIPPING SVC</text>
+
+              <rect x="540" y="100" width="140" height="48" fill="#1a1814"/>
+              <text x="610" y="129" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">NOTIFY SVC</text>
+
+              <line x1="280" y1="60" x2="100"  y2="98" stroke="#c2410c" stroke-width="1.6" marker-end="url(#sao)"/>
+              <line x1="310" y1="60" x2="240"  y2="98" stroke="#c2410c" stroke-width="1.6" marker-end="url(#sao)"/>
+              <line x1="350" y1="60" x2="430"  y2="98" stroke="#c2410c" stroke-width="1.6" marker-end="url(#sao)"/>
+              <line x1="380" y1="60" x2="600"  y2="98" stroke="#c2410c" stroke-width="1.6" marker-end="url(#sao)"/>
+
+              <text x="900" y="34" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">One service knows the recipe.</text>
+              <text x="900" y="52" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">It sends <tspan font-family="JetBrains Mono" font-size="11" fill="#c2410c">ChargeCard</tspan>, awaits</text>
+              <text x="900" y="70" font-family="IBM Plex Sans" font-size="12" fill="#1a1814"><tspan font-family="JetBrains Mono" font-size="11" fill="#c2410c">CardCharged</tspan>, sends</text>
+              <text x="900" y="88" font-family="IBM Plex Sans" font-size="12" fill="#1a1814"><tspan font-family="JetBrains Mono" font-size="11" fill="#c2410c">ReserveStock</tspan>, and so on.</text>
+              <text x="900" y="118" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Pro: visible flow, debuggable.</text>
+              <text x="900" y="136" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Con: orchestrator is hot path.</text>
+            </g>
+
+            <line x1="20" y1="290" x2="1180" y2="290" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+            <!-- CHOREOGRAPHY -->
+            <text x="20" y="320" font-family="Instrument Serif" font-style="italic" font-size="20" fill="#1a1814">Choreography</text>
+            <text x="20" y="340" font-family="JetBrains Mono" font-size="10" fill="#1a1814" opacity="0.7">no brain, each limb listens for the previous one</text>
+
+            <g transform="translate(20, 360)">
+              <rect x="0"   y="20" width="140" height="48" fill="#1a1814"/>
+              <text x="70"  y="49" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">ORDER SVC</text>
+
+              <rect x="180" y="20" width="140" height="48" fill="#1a1814"/>
+              <text x="250" y="49" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">PAYMENT SVC</text>
+
+              <rect x="360" y="20" width="140" height="48" fill="#1a1814"/>
+              <text x="430" y="49" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">INVENTORY SVC</text>
+
+              <rect x="540" y="20" width="140" height="48" fill="#1a1814"/>
+              <text x="610" y="49" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">SHIPPING SVC</text>
+
+              <rect x="720" y="20" width="140" height="48" fill="#1a1814"/>
+              <text x="790" y="49" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">NOTIFY SVC</text>
+
+              <line x1="140" y1="44" x2="178" y2="44" stroke="#c2410c" stroke-width="2" marker-end="url(#sao)"/>
+              <line x1="320" y1="44" x2="358" y2="44" stroke="#c2410c" stroke-width="2" marker-end="url(#sao)"/>
+              <line x1="500" y1="44" x2="538" y2="44" stroke="#c2410c" stroke-width="2" marker-end="url(#sao)"/>
+              <line x1="680" y1="44" x2="718" y2="44" stroke="#c2410c" stroke-width="2" marker-end="url(#sao)"/>
+
+              <text x="62"  y="84" font-family="JetBrains Mono" font-size="8" fill="#c2410c">OrderPlaced</text>
+              <text x="240" y="84" font-family="JetBrains Mono" font-size="8" fill="#c2410c">CardCharged</text>
+              <text x="420" y="84" font-family="JetBrains Mono" font-size="8" fill="#c2410c">StockReserved</text>
+              <text x="600" y="84" font-family="JetBrains Mono" font-size="8" fill="#c2410c">ShipmentBooked</text>
+
+              <text x="900" y="20" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Each service knows the next.</text>
+              <text x="900" y="38" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">The broker is the wire.</text>
+              <text x="900" y="68" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Pro: nobody is the bottleneck.</text>
+              <text x="900" y="86" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Con: the flow lives in your head.</text>
+            </g>
+
+            <line x1="20" y1="470" x2="1180" y2="470" stroke="#1a1814" stroke-width="1" stroke-dasharray="3 3"/>
+            <text x="20" y="500" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">"Orchestration is a workflow you can read. Choreography is a workflow you can scale."</text>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 05</span><span>Orchestration centralises the state machine; choreography distributes it across event subscriptions. The bug surface is different, not smaller.</span></div>
+        </div>
+
+        <h3 class="sub">Why orchestration usually wins</h3>
+        <div class="prose">
+          <p>Choreography is elegant on the whiteboard. In production, it's the workflow nobody can describe. Adding a fifth step means hunting through five repositories to find every handler, every event subscription, every retry policy. Three months in, somebody adds a "tax-calculation" service between payment and inventory and the system silently skips it for half the traffic because the inventory handler still listens for <code>CardCharged</code>.</p>
+          <p><strong>Use orchestration unless you have a specific reason not to.</strong> Specific reasons: you really do have a fan-out style domain where a hundred listeners care about <code>OrderPlaced</code> for analytics, fraud, recommendations, marketing emails. There, choreography is the right primitive. For the <em>core transactional workflow</em>, the orchestrator is the source of truth and the audit log.</p>
+        </div>
+
+        <h3 class="sub">The state lives in a database</h3>
+        <div class="prose">
+          <p>Whichever shape you pick, <em>somebody</em> must persist the workflow's state. With orchestration, the saga instance is a row in Postgres / Cosmos / SQL with a current-state column and a per-instance correlation id. With choreography, each service keeps its own slice of the state and you reassemble the whole picture from event-sourcing or distributed-tracing telemetry. The orchestrator's state row is the difference between an audit trail you can read and a debugging session that starts in Application Insights and ends at the airport.</p>
+        </div>
+      </section>
+
+      <!-- 3 compensation -->
+      <section class="dd-section" id="compensation">
+        <h2 class="section"><span class="num">03</span>Compensation is <span class="ital">not</span> rollback.</h2>
+        <div class="prose">
+          <p>Inventory has decremented. Payment has charged. Shipping returns "no carrier serves that postcode." There is no <code>ROLLBACK</code> button — the payment is already in the bank's ledger, the stock is already off the shelf. The compensating action is a <em>new business operation</em>: refund the card, re-increment the stock. It is observable. The customer sees the charge appear and disappear. Auditors will ask why.</p>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 1100 240" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="cma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="22" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. 06 · FORWARD AND COMPENSATION TIMELINES</text>
+            <line x1="20" y1="32" x2="1080" y2="32" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(20, 60)">
+              <text x="0" y="14" font-family="JetBrains Mono" font-size="10" fill="#1a1814">FORWARD →</text>
+              <rect x="100" y="0"  width="120" height="28" fill="#1a1814"/>
+              <text x="160" y="18" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">CreateOrder</text>
+              <rect x="240" y="0"  width="120" height="28" fill="#1a1814"/>
+              <text x="300" y="18" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">ChargeCard</text>
+              <rect x="380" y="0"  width="120" height="28" fill="#1a1814"/>
+              <text x="440" y="18" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">ReserveStock</text>
+              <rect x="520" y="0"  width="120" height="28" fill="#c2410c"/>
+              <text x="580" y="18" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">BookShipment ✗</text>
+            </g>
+
+            <g transform="translate(20, 120)">
+              <text x="0" y="14" font-family="JetBrains Mono" font-size="10" fill="#c2410c">← COMPENSATE</text>
+              <rect x="380" y="0"  width="120" height="28" fill="#c2410c"/>
+              <text x="440" y="18" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">RestockItem</text>
+              <rect x="240" y="0"  width="120" height="28" fill="#c2410c"/>
+              <text x="300" y="18" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">RefundCard</text>
+              <rect x="100" y="0"  width="120" height="28" fill="#c2410c"/>
+              <text x="160" y="18" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">CancelOrder</text>
+
+              <line x1="500" y1="-44" x2="500" y2="14" stroke="#c2410c" stroke-width="2" marker-end="url(#cma)"/>
+            </g>
+
+            <g transform="translate(20, 180)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">Compensations run <tspan font-style="italic">in reverse</tspan>, each as its own local transaction, each idempotent.</text>
+            </g>
+          </svg>
+          <div class="cap"><b>The undo path is a first-class workflow</b> with the same retry, persistence, and observability guarantees as the forward path.</div>
+        </div>
+
+        <h3 class="sub">Compensations must be idempotent</h3>
+        <div class="prose">
+          <p>The refund will be retried. The restock will be retried. They run on the same broker with the same at-least-once guarantee as everything else. Every compensation needs a stable correlation id (the saga instance id is the natural choice) and a check at the start: <em>have I already refunded this saga?</em> Without that check, a transient network blip turns one refund into two, and the customer notices.</p>
+        </div>
+
+        <h3 class="sub">Some steps cannot be undone</h3>
+        <div class="prose">
+          <p>You can refund a card. You cannot un-send an email. You cannot un-ship a parcel once the courier has scanned it. The mitigation is ordering: <strong>put the un-undoable steps last</strong>. The last forward step doesn't need a compensation — by the time you get to it, every prior step has succeeded. If shipping is the last step and shipping fails, the saga aborts with full rollback. If notification is the last step and notification fails, that's a logging incident, not a $40 refund.</p>
+        </div>
+
+        <h3 class="sub">Semantic locks</h3>
+        <div class="prose">
+          <p>Between forward and compensation, the data is in a half-committed state. The order is "pending payment", the stock is "reserved but not shipped". Other readers see this state. The fix is a <strong>semantic lock</strong>: a status column that downstream queries respect. Reports filter on <code>Status = 'Confirmed'</code>, not <code>Status IN ('Pending', 'Confirmed')</code>. The saga moves the row from Pending → Confirmed atomically as the last step. It's the database equivalent of "released to production".</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">MassTransit</span>.</h2>
+
+        <div class="prose">
+          <p>MassTransit's <code>MassTransitStateMachine&lt;T&gt;</code> is the closest .NET has to a saga toolkit. The state machine is declarative, the instance is an EF Core entity persisted with optimistic concurrency, and the broker is whichever you've already wired up — RabbitMQ, Azure Service Bus, Amazon SQS. The example below is the full order saga: four forward steps, four compensations, one timeout.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">OrderSaga.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package MassTransit.EntityFrameworkCore</span>
+<span class="k">using</span> <span class="t">MassTransit</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Sagas</span>;
+
+<span class="k">public sealed class</span> <span class="t">OrderSagaState</span> : <span class="t">SagaStateMachineInstance</span>, <span class="t">ISagaVersion</span>
+{
+    <span class="k">public</span> <span class="t">Guid</span> <span class="t">CorrelationId</span> { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="k">int</span> <span class="t">Version</span> { <span class="k">get</span>; <span class="k">set</span>; }      <span class="c">// optimistic concurrency</span>
+    <span class="k">public</span> <span class="k">string</span> <span class="t">CurrentState</span> { <span class="k">get</span>; <span class="k">set</span>; } = <span class="s">""</span>;
+    <span class="k">public</span> <span class="t">Guid</span> <span class="t">CustomerId</span> { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="k">decimal</span> <span class="t">Amount</span>     { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="t">Guid</span>?   <span class="t">PaymentId</span>  { <span class="k">get</span>; <span class="k">set</span>; }
+    <span class="k">public</span> <span class="t">Guid</span>?   <span class="t">ReservationId</span> { <span class="k">get</span>; <span class="k">set</span>; }
+}
+
+<span class="k">public sealed class</span> <span class="t">OrderSaga</span> : <span class="t">MassTransitStateMachine</span>&lt;<span class="t">OrderSagaState</span>&gt;
+{
+    <span class="k">public</span> <span class="t">State</span> <span class="t">AwaitingPayment</span> { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+    <span class="k">public</span> <span class="t">State</span> <span class="t">AwaitingStock</span>   { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+    <span class="k">public</span> <span class="t">State</span> <span class="t">AwaitingShip</span>    { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+    <span class="k">public</span> <span class="t">State</span> <span class="t">Completed</span>       { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+    <span class="k">public</span> <span class="t">State</span> <span class="t">Compensating</span>    { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+    <span class="k">public</span> <span class="t">State</span> <span class="t">Failed</span>          { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+
+    <span class="k">public</span> <span class="t">Event</span>&lt;<span class="t">OrderSubmitted</span>&gt;  <span class="t">Submitted</span>       { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+    <span class="k">public</span> <span class="t">Event</span>&lt;<span class="t">PaymentCharged</span>&gt;  <span class="t">PaymentDone</span>     { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+    <span class="k">public</span> <span class="t">Event</span>&lt;<span class="t">PaymentFailed</span>&gt;   <span class="t">PaymentBad</span>      { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+    <span class="k">public</span> <span class="t">Event</span>&lt;<span class="t">StockReserved</span>&gt;   <span class="t">StockDone</span>       { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+    <span class="k">public</span> <span class="t">Event</span>&lt;<span class="t">StockUnavailable</span>&gt; <span class="t">StockBad</span>        { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+    <span class="k">public</span> <span class="t">Event</span>&lt;<span class="t">ShipmentBooked</span>&gt;  <span class="t">ShipDone</span>        { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+    <span class="k">public</span> <span class="t">Event</span>&lt;<span class="t">ShipmentFailed</span>&gt;  <span class="t">ShipBad</span>         { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+    <span class="k">public</span> <span class="t">Schedule</span>&lt;<span class="t">OrderSagaState</span>, <span class="t">PaymentTimeout</span>&gt; <span class="t">PaymentDeadline</span>
+        { <span class="k">get</span>; <span class="k">private set</span>; } = <span class="k">null</span>!;
+
+    <span class="k">public</span> <span class="fn">OrderSaga</span>()
+    {
+        <span class="fn">InstanceState</span>(x =&gt; x.<span class="t">CurrentState</span>);
+
+        <span class="fn">Event</span>(() =&gt; <span class="t">Submitted</span>, x =&gt; x.<span class="fn">CorrelateById</span>(m =&gt; m.<span class="t">Message</span>.<span class="t">OrderId</span>));
+        <span class="fn">Event</span>(() =&gt; <span class="t">PaymentDone</span>, x =&gt; x.<span class="fn">CorrelateById</span>(m =&gt; m.<span class="t">Message</span>.<span class="t">OrderId</span>));
+        <span class="fn">Event</span>(() =&gt; <span class="t">StockDone</span>,   x =&gt; x.<span class="fn">CorrelateById</span>(m =&gt; m.<span class="t">Message</span>.<span class="t">OrderId</span>));
+        <span class="fn">Event</span>(() =&gt; <span class="t">ShipDone</span>,    x =&gt; x.<span class="fn">CorrelateById</span>(m =&gt; m.<span class="t">Message</span>.<span class="t">OrderId</span>));
+
+        <span class="fn">Schedule</span>(() =&gt; <span class="t">PaymentDeadline</span>, x =&gt; x.<span class="t">PaymentTimeoutTokenId</span>, s =&gt;
+        {
+            s.<span class="t">Delay</span> = <span class="t">TimeSpan</span>.<span class="fn">FromMinutes</span>(<span class="n">5</span>);
+            s.<span class="fn">Received</span>(e =&gt; e.<span class="fn">CorrelateById</span>(m =&gt; m.<span class="t">Message</span>.<span class="t">OrderId</span>));
+        });
+
+        <span class="fn">Initially</span>(
+            <span class="fn">When</span>(<span class="t">Submitted</span>)
+                .<span class="fn">Then</span>(ctx =&gt;
+                {
+                    ctx.<span class="t">Saga</span>.<span class="t">CustomerId</span> = ctx.<span class="t">Message</span>.<span class="t">CustomerId</span>;
+                    ctx.<span class="t">Saga</span>.<span class="t">Amount</span>     = ctx.<span class="t">Message</span>.<span class="t">Amount</span>;
+                })
+                .<span class="fn">Publish</span>(ctx =&gt; <span class="k">new</span> <span class="t">ChargeCard</span>(
+                    ctx.<span class="t">Saga</span>.<span class="t">CorrelationId</span>, ctx.<span class="t">Saga</span>.<span class="t">CustomerId</span>, ctx.<span class="t">Saga</span>.<span class="t">Amount</span>))
+                .<span class="fn">Schedule</span>(<span class="t">PaymentDeadline</span>, ctx =&gt; <span class="k">new</span> <span class="t">PaymentTimeout</span>(ctx.<span class="t">Saga</span>.<span class="t">CorrelationId</span>))
+                .<span class="fn">TransitionTo</span>(<span class="t">AwaitingPayment</span>));
+
+        <span class="fn">During</span>(<span class="t">AwaitingPayment</span>,
+            <span class="fn">When</span>(<span class="t">PaymentDone</span>)
+                .<span class="fn">Then</span>(ctx =&gt; ctx.<span class="t">Saga</span>.<span class="t">PaymentId</span> = ctx.<span class="t">Message</span>.<span class="t">PaymentId</span>)
+                .<span class="fn">Unschedule</span>(<span class="t">PaymentDeadline</span>)
+                .<span class="fn">Publish</span>(ctx =&gt; <span class="k">new</span> <span class="t">ReserveStock</span>(ctx.<span class="t">Saga</span>.<span class="t">CorrelationId</span>))
+                .<span class="fn">TransitionTo</span>(<span class="t">AwaitingStock</span>),
+            <span class="fn">When</span>(<span class="t">PaymentBad</span>).<span class="fn">TransitionTo</span>(<span class="t">Failed</span>),
+            <span class="fn">When</span>(<span class="t">PaymentDeadline</span>.<span class="t">Received</span>).<span class="fn">TransitionTo</span>(<span class="t">Failed</span>));
+
+        <span class="fn">During</span>(<span class="t">AwaitingStock</span>,
+            <span class="fn">When</span>(<span class="t">StockDone</span>)
+                .<span class="fn">Then</span>(ctx =&gt; ctx.<span class="t">Saga</span>.<span class="t">ReservationId</span> = ctx.<span class="t">Message</span>.<span class="t">ReservationId</span>)
+                .<span class="fn">Publish</span>(ctx =&gt; <span class="k">new</span> <span class="t">BookShipment</span>(ctx.<span class="t">Saga</span>.<span class="t">CorrelationId</span>))
+                .<span class="fn">TransitionTo</span>(<span class="t">AwaitingShip</span>),
+            <span class="fn">When</span>(<span class="t">StockBad</span>)
+                .<span class="fn">Publish</span>(ctx =&gt; <span class="k">new</span> <span class="t">RefundPayment</span>(
+                    ctx.<span class="t">Saga</span>.<span class="t">CorrelationId</span>, ctx.<span class="t">Saga</span>.<span class="t">PaymentId</span>!.<span class="t">Value</span>))
+                .<span class="fn">TransitionTo</span>(<span class="t">Compensating</span>));
+
+        <span class="fn">During</span>(<span class="t">AwaitingShip</span>,
+            <span class="fn">When</span>(<span class="t">ShipDone</span>).<span class="fn">TransitionTo</span>(<span class="t">Completed</span>).<span class="fn">Finalize</span>(),
+            <span class="fn">When</span>(<span class="t">ShipBad</span>)
+                .<span class="fn">Publish</span>(ctx =&gt; <span class="k">new</span> <span class="t">ReleaseStock</span>(
+                    ctx.<span class="t">Saga</span>.<span class="t">CorrelationId</span>, ctx.<span class="t">Saga</span>.<span class="t">ReservationId</span>!.<span class="t">Value</span>))
+                .<span class="fn">Publish</span>(ctx =&gt; <span class="k">new</span> <span class="t">RefundPayment</span>(
+                    ctx.<span class="t">Saga</span>.<span class="t">CorrelationId</span>, ctx.<span class="t">Saga</span>.<span class="t">PaymentId</span>!.<span class="t">Value</span>))
+                .<span class="fn">TransitionTo</span>(<span class="t">Compensating</span>));
+
+        <span class="fn">SetCompletedWhenFinalized</span>();
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Wire the saga into the bus with EF Core persistence. The repository is the durable state; the DbContext is yours, with one table for instances and an outbox table to keep "publish" and "save state" in the same transaction.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">Program.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+builder.<span class="t">Services</span>.<span class="fn">AddDbContext</span>&lt;<span class="t">SagaDbContext</span>&gt;(o =&gt;
+    o.<span class="fn">UseSqlServer</span>(builder.<span class="t">Configuration</span>.<span class="fn">GetConnectionString</span>(<span class="s">"Sagas"</span>)));
+
+builder.<span class="t">Services</span>.<span class="fn">AddMassTransit</span>(x =&gt;
+{
+    x.<span class="fn">AddSagaStateMachine</span>&lt;<span class="t">OrderSaga</span>, <span class="t">OrderSagaState</span>&gt;()
+     .<span class="fn">EntityFrameworkRepository</span>(r =&gt;
+     {
+         r.<span class="t">ConcurrencyMode</span> = <span class="t">ConcurrencyMode</span>.<span class="t">Optimistic</span>;   <span class="c">// row-version check</span>
+         r.<span class="fn">ExistingDbContext</span>&lt;<span class="t">SagaDbContext</span>&gt;();
+         r.<span class="fn">UseSqlServer</span>();
+     });
+
+    x.<span class="fn">AddPublishMessageScheduler</span>();    <span class="c">// for the 5-minute payment deadline</span>
+    x.<span class="fn">AddEntityFrameworkOutbox</span>&lt;<span class="t">SagaDbContext</span>&gt;(o =&gt;
+    {
+        o.<span class="fn">UseSqlServer</span>();
+        o.<span class="t">UseBusOutbox</span>();   <span class="c">// publish-with-save-changes, transactional</span>
+    });
+
+    x.<span class="fn">UsingAzureServiceBus</span>((ctx, cfg) =&gt;
+    {
+        cfg.<span class="fn">Host</span>(builder.<span class="t">Configuration</span>.<span class="fn">GetConnectionString</span>(<span class="s">"ServiceBus"</span>));
+        cfg.<span class="fn">UseMessageScheduler</span>(<span class="k">new</span> <span class="t">Uri</span>(<span class="s">"queue:scheduler"</span>));
+        cfg.<span class="fn">ConfigureEndpoints</span>(ctx);
+    });
+});
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+app.<span class="fn">MapPost</span>(<span class="s">"/orders"</span>, <span class="k">async</span> (<span class="t">SubmitOrder</span> req, <span class="t">IPublishEndpoint</span> bus) =&gt;
+{
+    <span class="k">var</span> orderId = <span class="t">Guid</span>.<span class="fn">NewGuid</span>();
+    <span class="k">await</span> bus.<span class="fn">Publish</span>(<span class="k">new</span> <span class="t">OrderSubmitted</span>(orderId, req.<span class="t">CustomerId</span>, req.<span class="t">Amount</span>));
+    <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Accepted</span>($<span class="s">"/orders/{orderId}"</span>, <span class="k">new</span> { orderId });
+});
+app.<span class="fn">Run</span>();</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Always use the transactional outbox</div>
+          <p>Without it, you do <em>save state, then publish</em>, and a crash between the two means the saga is in a state nobody listens to anymore. With <code>UseBusOutbox</code>, the published message is written to a SQL table in the same transaction as the state change, and a background dispatcher drains the outbox onto the broker. The saga is consistent with the wire by construction.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Optimistic concurrency on the instance</div>
+          <p>Two events for the same saga can arrive concurrently — a slow <code>StockReserved</code> and a fast <code>StockUnavailable</code> from a retry, for example. <code>ConcurrencyMode.Optimistic</code> uses the row's version column; the second writer fails and MassTransit re-runs the message. Without it, you'll see "lost updates" — a state transition silently overwritten by a parallel one.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Every step is its own deadline</div>
+          <p>The 5-minute payment scheduler in the sample is one of typically four or five. <em>Every</em> awaited event needs a timeout, because no event = silent saga = forever-pending order. Tune the deadlines from real payment / inventory / shipping p99 latency, with a 3× safety margin. Without timeouts, a hung downstream is invisible until a customer complains a week later.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Compensations are messages, not method calls</div>
+          <p>The saga doesn't call <code>RefundService.Refund(...)</code> in-process — it publishes a <code>RefundPayment</code> message. The refund service consumes it with its own retry, its own circuit breaker, its own DLQ. The saga doesn't <em>await</em> the refund; it transitions to <code>Compensating</code> and forgets. When the refund's <code>PaymentRefunded</code> event lands, the saga handles it and either finalizes or moves to the next compensation. The asynchrony is the entire point.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Don't reach for sagas if you have one database</div>
+          <p>If "order, payment, inventory, shipping" all live in the same SQL Server, a regular transaction is correct and a saga is the wrong shape. Sagas pay for themselves when service boundaries are real and the data is genuinely partitioned. The line is <em>one database per workflow step</em>, not <em>one bounded context per workflow step</em>.</p>
+        </div>
+
+        <div class="pull">"The saga is the only artifact in your codebase that survives a 3am restart of every service mid-checkout. Treat it like the priority-zero asset it is."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Technology</th>
+              <th>Shape</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>MassTransit Saga<span class="sub">.NET, EF Core persistence</span></th>
+              <td>Orchestration</td>
+              <td>Idiomatic C# · works on RabbitMQ / SB / SQS · outbox built in</td>
+              <td><strong>$0</strong> (lib) + broker</td>
+              <td>You own the DB &amp; broker</td>
+              <td><span class="verdict good">Default for .NET teams</span></td>
+            </tr>
+            <tr>
+              <th>NServiceBus Saga<span class="sub">commercial</span></th>
+              <td>Orchestration</td>
+              <td>Mature · ServicePulse UI · licensed support</td>
+              <td><strong>$1k+</strong> license (Particular)</td>
+              <td>Vendor-supported</td>
+              <td><span class="verdict good">If you're already a Particular shop</span></td>
+            </tr>
+            <tr>
+              <th>Dapr Workflow<span class="sub">sidecar</span></th>
+              <td>Orchestration</td>
+              <td>Language-neutral · runs in K8s sidecar · durable</td>
+              <td><strong>$0</strong> (OSS) + infra</td>
+              <td>Sidecar per pod; learning curve</td>
+              <td><span class="verdict warn">Good for polyglot stacks; overkill for pure .NET</span></td>
+            </tr>
+            <tr>
+              <th>Azure Durable Functions<span class="sub">serverless</span></th>
+              <td>Orchestration</td>
+              <td>Zero infra · checkpoint persistence in Storage</td>
+              <td><strong>$0.20+</strong> per M executions</td>
+              <td>Azure-locked; cold start</td>
+              <td><span class="verdict good">Great if you're already on Functions</span></td>
+            </tr>
+            <tr>
+              <th>Temporal.io<span class="sub">workflow engine</span></th>
+              <td>Orchestration</td>
+              <td>Best-in-class durability · time-travel debugger · polyglot SDKs</td>
+              <td><strong>$200 – $5k</strong> Cloud · self-host free</td>
+              <td>Cluster to operate (or pay)</td>
+              <td><span class="verdict good">When workflow complexity warrants a dedicated engine</span></td>
+            </tr>
+            <tr>
+              <th>Choreography (manual outbox)<span class="sub">events only</span></th>
+              <td>Choreography</td>
+              <td>No central state · scales linearly</td>
+              <td><strong>$0</strong> + broker</td>
+              <td>Workflow lives in everyone's head</td>
+              <td><span class="verdict warn">Only for fan-out style flows, not transactional ones</span></td>
+            </tr>
+            <tr>
+              <th>2PC (DTC / XA)<span class="sub">distributed coordinator</span></th>
+              <td>—</td>
+              <td>True ACID across nodes</td>
+              <td>—</td>
+              <td>Locks across services; no cloud-DB support</td>
+              <td><span class="verdict bad">Don't. The cloud era left it behind.</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>3–5 microservices on RabbitMQ / Service Bus</h5>
+            <p>MassTransit saga with EF Core repository. Optimistic concurrency, transactional outbox, scheduled timeouts. The .NET default for a reason.</p>
+          </div>
+          <div class="cell">
+            <h5>Greenfield with no broker yet</h5>
+            <p>Start with Azure Service Bus + MassTransit. Don't roll your own. The broker, the dedupe, and the DLQ are the boring parts you don't want to write.</p>
+          </div>
+          <div class="cell">
+            <h5>Polyglot stack (C# + Go + Node)</h5>
+            <p>Temporal.io. The SDKs are first-class in every major language, and the workflow definition lives in code in each repo.</p>
+          </div>
+          <div class="cell">
+            <h5>Already serverless on Azure</h5>
+            <p>Durable Functions. The orchestrator function reads like a regular method; the durability is invisible. Cheap until you hit millions of activations.</p>
+          </div>
+          <div class="cell">
+            <h5>Fan-out, not a transaction</h5>
+            <p>Choreography is fine: publish <code>OrderPlaced</code>, let analytics, fraud, marketing, recommendations all consume it. No saga needed — these aren't compensable.</p>
+          </div>
+          <div class="cell">
+            <h5>All four services share one database</h5>
+            <p>Stop. Use a regular SQL transaction. A saga adds operational cost for a problem you don't have.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — no timeout on awaited events.</strong> The downstream goes silent, the saga sits in <code>AwaitingPayment</code> forever, the customer pages support. Every awaited state needs a scheduled deadline and a transition to <code>Failed</code>.</p>
+        <p><strong>Two — compensating with a method call.</strong> "Just call <code>refundService.Refund(...)</code> in the catch block." That call dies with the pod that owns the saga and your customer is now charged with no refund. Compensations are messages on the same durable bus as forward steps.</p>
+        <p><strong>Three — treating the saga as a transaction.</strong> Other readers see the in-progress state. Reports include the half-built order. Stock briefly shows reserved-but-not-shipped. Use semantic-lock status columns and design your queries accordingly.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="idempotency-keys.html">
+          <div class="label">Chapter 08</div>
+          <div class="ttl">Idempotency keys</div>
+        </a>
+        <a class="next-fwd" href="realtime-channels.html">
+          <div class="label">Chapter 10</div>
+          <div class="ttl">WebSockets, SSE &amp; long polling →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 09 · Saga Pattern · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

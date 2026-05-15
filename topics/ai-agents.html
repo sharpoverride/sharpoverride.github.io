@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>AI Agents · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive ai">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#ai">AI</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Agents</span>
+    </div>
+    <nav>
+      <a href="ai-rag.html">← Prev</a>
+      <a href="ai-mcp.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>AI <b>deep dive</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~12 min</b></span>
+        <span>Stack <b>Tool use · ReAct · planning · evals</b></span>
+      </div>
+      <h1>An LLM in a <span class="ital">loop</span>, with tools.</h1>
+      <p class="lede">An agent is an LLM that can take actions — call APIs, run code, search the web — observe the results, and decide what to do next. The architecture is a few hundred lines of orchestration around a model that can output structured tool calls. The hard part isn't the loop; it's keeping it productive.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The agent loop</h5>
+        <p><strong>Think → Act → Observe → repeat</strong>. The LLM reasons; emits a tool call; runtime executes; result feeds back; loop until done or budget exceeded.</p>
+      </div>
+      <div>
+        <h5>What changed in 2024–25</h5>
+        <p>Tool-calling went from a brittle prompt trick to a first-class model capability. Claude, GPT-4, Gemini all support structured tool calls natively. Agent frameworks (LangGraph, CrewAI, AutoGen, Microsoft AutoGen) provide the orchestration.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Tool calling</span>
+          <span class="pill on">ReAct loop</span>
+          <span class="pill on">Multi-step planning</span>
+          <span class="pill on">Evals</span>
+          <span class="pill">MCP</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">What makes a system an "agent"</a></li>
+        <li><a href="#loop">The agent loop</a></li>
+        <li><a href="#tools">Tool design</a></li>
+        <li><a href="#dotnet">In .NET</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>What makes a system an <span class="ital">agent</span>.</h2>
+        <div class="prose">
+          <p>A chatbot answers; an agent <em>acts</em>. The difference is the loop: the model can request actions, observe outcomes, and continue. <strong>"Book a flight from SFO to JFK next Tuesday under $400"</strong> doesn't have a one-shot answer; it requires search-the-flights → compare-prices → confirm-availability → book → return-confirmation. Each step is a tool call; each result informs the next step.</p>
+          <p>The agent shape unlocks tasks that pure chat can't. <em>Customer service that resolves issues end-to-end. Coding agents that read files, run tests, commit fixes. Research agents that explore the web for hours.</em> The "wow" demos are downstream of one architectural change: the model can call functions, and the runtime executes them.</p>
+        </div>
+
+        <div class="pull">"A chatbot tells you the answer. An agent does the thing."</div>
+      </section>
+
+      <section class="dd-section" id="loop">
+        <h2 class="section"><span class="num">02</span>The agent <span class="ital">loop</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 360" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="aga" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · ReAct LOOP</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 100)">
+              <circle cx="100" cy="60" r="60" fill="#c2410c"/>
+              <text x="100" y="56" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">LLM</text>
+              <text x="100" y="72" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">"think"</text>
+
+              <circle cx="380" cy="60" r="60" fill="#1a1814"/>
+              <text x="380" y="56" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">TOOL EXECUTOR</text>
+              <text x="380" y="72" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">"act"</text>
+
+              <circle cx="660" cy="60" r="60" fill="#c2410c"/>
+              <text x="660" y="56" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">RESULT</text>
+              <text x="660" y="72" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">"observe"</text>
+
+              <line x1="160" y1="60" x2="318" y2="60" stroke="#c2410c" stroke-width="2" marker-end="url(#aga)"/>
+              <text x="240" y="50" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#c2410c">tool_call</text>
+
+              <line x1="440" y1="60" x2="598" y2="60" stroke="#c2410c" stroke-width="2" marker-end="url(#aga)"/>
+              <text x="520" y="50" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#c2410c">api result</text>
+
+              <path d="M660 120 Q 380 220 100 120" fill="none" stroke="#c2410c" stroke-width="2" stroke-dasharray="3 3" marker-end="url(#aga)"/>
+              <text x="380" y="220" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#c2410c">feed observation back; loop</text>
+
+              <circle cx="940" cy="60" r="60" fill="#1a1814"/>
+              <text x="940" y="56" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">FINISH</text>
+              <text x="940" y="72" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">final answer</text>
+
+              <line x1="160" y1="40" x2="878" y2="40" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#aga)"/>
+              <text x="500" y="30" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#c2410c">when model decides it's done</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>The model picks a tool, the runtime executes, the result becomes the next observation. Iterate until the model returns a final answer.</span></div>
+        </div>
+
+        <h3 class="sub">ReAct: Reasoning + Acting</h3>
+        <div class="prose">
+          <p>The 2023 paper that named the pattern. The LLM produces a free-text "thought" + a structured "action" at each step. The thought is for the model itself (visible in logs); the action is what the runtime executes. <strong>This pattern works because giving the model "thinking room" before each action improves decision quality.</strong> Most production agents use a ReAct-shaped prompt.</p>
+        </div>
+
+        <h3 class="sub">Tool-calling protocol</h3>
+        <div class="prose">
+          <p>You pass the model a JSON schema describing each tool: name, params, types. The model emits a JSON tool call: <code>{name: "search_flights", args: {from: "SFO", to: "JFK", date: "..."}}</code>. The runtime parses, executes the corresponding function, appends the result to the conversation. <strong>This is now a first-class feature in all major LLMs</strong>; you don't need fragile parsing.</p>
+        </div>
+
+        <h3 class="sub">Step budget</h3>
+        <div class="prose">
+          <p>The loop has to terminate. <strong>Hard limit on iterations</strong> (typically 10–30). Soft limit on cost (cumulative tokens). Watchdog on stuck loops (model calls the same tool with the same args twice → break). <em>The agent's biggest failure mode is "ran for an hour, accomplished nothing, cost $50."</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="tools">
+        <h2 class="section"><span class="num">03</span>Tool <span class="ital">design</span>.</h2>
+
+        <h3 class="sub">Tools are APIs the model can call</h3>
+        <div class="prose">
+          <p>Each tool has a name, a description, parameters with types, and a function body. <strong>Write tool descriptions for the model, not for engineers.</strong> "Searches the flights database for trips matching the criteria" — describe what it does, when to use it, what it returns. The model's tool-use quality is dominated by the description.</p>
+        </div>
+
+        <h3 class="sub">Granularity is the design decision</h3>
+        <div class="prose">
+          <p>Too coarse: one tool <code>book_trip(...)</code> with 30 parameters. The model gets confused; partial inputs fail validation. Too fine: 50 tools for every CRUD operation. The model can't pick. <strong>Sweet spot: ~5–15 tools per agent</strong>, each with a clear single purpose. Compose more complex flows via the agent's loop, not a giant tool.</p>
+        </div>
+
+        <h3 class="sub">Side-effect tools need guardrails</h3>
+        <div class="prose">
+          <p>Read-only tools are safe. Tools that book flights, send emails, run code, delete files — <em>these need explicit controls</em>: idempotency keys (see <a href="idempotency-keys.html">idempotency chapter</a>), dollar limits, human-in-the-loop confirmation for high-stakes actions. <strong>The agent will make mistakes; build the brake before the throttle.</strong></p>
+        </div>
+
+        <h3 class="sub">Multi-agent: planner + workers</h3>
+        <div class="prose">
+          <p>For complex tasks, a "planner" agent decomposes the goal into subtasks; "worker" agents execute each. Each worker is a smaller agent with a focused tool set. <strong>This is the Anthropic-style "orchestrator + subagents" pattern</strong> and the shape behind most production multi-agent systems. Each subagent has its own context window; the planner aggregates.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">.NET</span>.</h2>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">SimpleAgent.cs (using Semantic Kernel)</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Microsoft.SemanticKernel</span>
+<span class="k">using</span> <span class="t">Microsoft.SemanticKernel</span>;
+<span class="k">using</span> <span class="t">Microsoft.SemanticKernel.ChatCompletion</span>;
+
+<span class="c">// Define tools as plain C# methods with descriptive attributes.</span>
+<span class="k">public sealed class</span> <span class="t">FlightTools</span>
+{
+    [<span class="at">KernelFunction</span>, <span class="at">Description</span>(<span class="s">"Search flights by route and date. Returns a list of options."</span>)]
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">FlightOption</span>[]&gt; <span class="fn">SearchFlights</span>(
+        [<span class="at">Description</span>(<span class="s">"3-letter origin airport code"</span>)]      <span class="k">string</span> from,
+        [<span class="at">Description</span>(<span class="s">"3-letter destination airport code"</span>)] <span class="k">string</span> to,
+        [<span class="at">Description</span>(<span class="s">"ISO date YYYY-MM-DD"</span>)]              <span class="k">string</span> date)
+        =&gt; <span class="k">await</span> _api.<span class="fn">SearchAsync</span>(from, to, date);
+
+    [<span class="at">KernelFunction</span>, <span class="at">Description</span>(<span class="s">"Book a specific flight. Requires user confirmation."</span>)]
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">BookingResult</span>&gt; <span class="fn">BookFlight</span>(
+        [<span class="at">Description</span>(<span class="s">"Flight ID from SearchFlights"</span>)] <span class="k">string</span> flightId,
+        [<span class="at">Description</span>(<span class="s">"User confirmation token"</span>)]    <span class="k">string</span> confirmationToken)
+    {
+        <span class="k">if</span> (!<span class="k">await</span> _humanLoop.<span class="fn">ConfirmedAsync</span>(confirmationToken))
+            <span class="k">return new</span> <span class="t">BookingResult</span>(<span class="t">Status</span>: <span class="s">"NeedsHumanConfirmation"</span>, ...);
+        <span class="k">return await</span> _api.<span class="fn">BookAsync</span>(flightId);
+    }
+}
+
+<span class="c">// Configure the kernel with the tools and an LLM.</span>
+<span class="k">var</span> builder = <span class="t">Kernel</span>.<span class="fn">CreateBuilder</span>();
+builder.<span class="fn">AddOpenAIChatCompletion</span>(<span class="s">"gpt-4o"</span>, apiKey);
+<span class="k">var</span> kernel = builder.<span class="fn">Build</span>();
+kernel.<span class="fn">ImportPluginFromObject</span>(<span class="k">new</span> <span class="t">FlightTools</span>(...));
+
+<span class="c">// Agent loop — SK handles tool calling and observation injection.</span>
+<span class="k">var</span> chat = kernel.<span class="fn">GetRequiredService</span>&lt;<span class="t">IChatCompletionService</span>&gt;();
+<span class="k">var</span> history = <span class="k">new</span> <span class="t">ChatHistory</span>();
+history.<span class="fn">AddSystemMessage</span>(<span class="s">"You book flights. Always confirm before booking. Step budget: 10."</span>);
+history.<span class="fn">AddUserMessage</span>(userRequest);
+
+<span class="k">var</span> stepCount = <span class="n">0</span>;
+<span class="k">while</span> (stepCount++ &lt; <span class="n">10</span>)
+{
+    <span class="k">var</span> response = <span class="k">await</span> chat.<span class="fn">GetChatMessageContentAsync</span>(history, <span class="k">new</span>()
+    {
+        <span class="t">FunctionChoiceBehavior</span> = <span class="t">FunctionChoiceBehavior</span>.<span class="fn">Auto</span>(),
+    }, kernel);
+
+    history.<span class="fn">Add</span>(response);
+    <span class="k">if</span> (response.<span class="t">Content</span> is { } answer &amp;&amp; response.<span class="t">Items</span>.<span class="t">Count</span> == <span class="n">0</span>)
+    {
+        <span class="k">return</span> answer;   <span class="c">// Model produced a final answer — no more tool calls.</span>
+    }
+    <span class="c">// Otherwise SK auto-invoked tools; observations are in the history.</span>
+}
+<span class="k">throw new</span> <span class="t">InvalidOperationException</span>(<span class="s">"Agent exceeded step budget"</span>);</pre>
+        </div>
+      </section>
+
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Evals are non-negotiable</div>
+          <p>Agents drift more than chatbots. <strong>An eval suite of (task, expected tool sequence, accepted final answers) catches regressions</strong> when you change the model, the prompt, or the tools. Run on every change. The best eval suites have 100+ adversarial scenarios.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Idempotency keys for every action</div>
+          <p>The agent will retry tool calls under retry policies and after errors. <strong>Mutating tools need idempotency keys.</strong> Booking the same flight twice because the agent retried after a network error is the failure mode that hits production once and is remembered forever.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Context-window management is operational</div>
+          <p>Long agent runs blow past context windows. <strong>Summarise older steps</strong> (the agent's own observations from 5 steps ago can usually be compressed). <strong>Truncate tool outputs</strong> — a 100-page web search result gets summarised before going back to the model. Without this, agents fail at step ~7 when the context fills.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Human-in-the-loop for high-stakes actions</div>
+          <p>"Send this email", "transfer this money", "delete this file" — make the agent emit a proposal, surface it in the UI, wait for human approval before executing. <em>Build the human gate before you turn the agent loose.</em> The asymmetric cost of "agent ran wild" justifies the friction.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Observability is harder</div>
+          <p>Agent runs are non-deterministic and multi-step. <strong>Log every step</strong>: model output, tool call, tool result, decision. Use a tracing tool that understands LLM steps (LangSmith, Helicone, Phoenix). When something goes wrong, you need the full trajectory.</p>
+        </div>
+
+        <div class="pull">"The agent is an LLM with footguns. Build the safety catches first, then turn it on."</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">06</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Customer support automation</h5>
+            <p>Agent with tools: lookup-order, refund, send-message, escalate. Human-in-loop for refunds &gt; $X. Eval suite of canonical interactions.</p>
+          </div>
+          <div class="cell">
+            <h5>Coding agent</h5>
+            <p>Tools: read-file, edit-file, run-tests, search-codebase. <strong>Idempotency by version-control:</strong> changes are commits, easy to revert.</p>
+          </div>
+          <div class="cell">
+            <h5>Research / browsing agent</h5>
+            <p>Tools: web-search, fetch-page, summarise. Step budget ~20. Time budget the user can interrupt. Cite sources in the final answer.</p>
+          </div>
+          <div class="cell">
+            <h5>Multi-agent system</h5>
+            <p>Planner + workers. Planner decomposes; workers each have a focused toolkit. Cross-worker coordination via shared state, not direct messaging.</p>
+          </div>
+          <div class="cell">
+            <h5>Simple Q&amp;A over your docs</h5>
+            <p>Don't reach for an agent. RAG (see <a href="ai-rag.html">RAG chapter</a>) is the right shape. Add agents only when actions are needed.</p>
+          </div>
+          <div class="cell">
+            <h5>Long-running autonomous agent</h5>
+            <p>Hard cost cap. Persistent state (resumable). Watchdog for stuck loops. Telemetry. <em>The longer the agent runs autonomously, the more the safety net matters.</em></p>
+          </div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="ai-rag.html">
+          <div class="label">Prev</div>
+          <div class="ttl">RAG</div>
+        </a>
+        <a class="next-fwd" href="ai-mcp.html">
+          <div class="label">Next</div>
+          <div class="ttl">MCP →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>AI · Agents · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

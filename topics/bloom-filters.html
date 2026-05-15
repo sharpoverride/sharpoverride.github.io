@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Bloom Filters · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">14 · Bloom Filters</span>
+    </div>
+    <nav>
+      <a href="event-sourcing-cqrs.html">← Prev</a>
+      <a href="service-discovery.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>14</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~11 min</b></span>
+        <span>Stack <b>C# from scratch · Redis BF.* · RedisBloom</b></span>
+      </div>
+      <h1>Ten bits per item. <span class="ital">No</span> false negatives.</h1>
+      <p class="lede">A bloom filter answers one question — "have you maybe seen this before?" — at one percent the memory of a hash set. Cassandra uses one per SSTable. Chrome's safe-browsing list ships one to your laptop. Every URL shortener relies on one. The math is older than you are; the use cases keep multiplying.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>"Is this key on disk?" is expensive. <em>"Is this key DEFINITELY NOT on disk?" can be answered from a bit array smaller than your terminal window.</em></p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Trade exactness for size. A bloom filter says "no" with certainty and "maybe" with a tuneable false-positive rate. Use it as the first hop in any read path where the negative case dominates.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">C# in-memory bloom</span>
+          <span class="pill on">RedisBloom (BF.ADD)</span>
+          <span class="pill">Cuckoo filter</span>
+          <span class="pill">HyperLogLog</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The negative case</a></li>
+        <li><a href="#core">How the bits encode the set</a></li>
+        <li><a href="#sizing">Sizing it correctly</a></li>
+        <li><a href="#dotnet">In C# (and Redis)</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The negative <span class="ital">case</span>.</h2>
+        <div class="prose">
+          <p>A URL shortener generates a candidate slug. Is it taken? <em>Almost certainly not.</em> The keyspace is huge, the existing set is finite. A direct database lookup answers "no" 99% of the time and costs you 5ms of round-trip plus an index seek. Multiply by a billion candidate generations and you've spent six figures on the word "no". The same shape repeats everywhere: <strong>spam URL check, cached password leak check, "have I emailed this lead before", "is this row in any SSTable on this disk"</strong> — they all dominate on negatives.</p>
+          <p>A hash set would solve it, but a hash set of a billion 64-byte URLs is 64 GB. You can't ship 64 GB to each pod. A bloom filter holds the same billion entries in <em>1.2 GB</em> at a 1% false-positive rate. The negatives are confirmed for free; the 1% of "maybe" are passed through to the real database lookup. <strong>Net effect: 99× fewer database hits, at no correctness cost.</strong></p>
+        </div>
+
+        <div class="pull">"The cheapest read is the one that says &lsquo;definitely not&rsquo; before you touch the disk."</div>
+      </section>
+
+      <!-- 2 core -->
+      <section class="dd-section" id="core">
+        <h2 class="section"><span class="num">02</span>How the bits <span class="ital">encode</span> the set.</h2>
+
+        <div class="prose">
+          <p>A bloom filter is a bit array of length <em>m</em> and a set of <em>k</em> independent hash functions. To add an item, hash it <em>k</em> ways, set the <em>k</em> resulting bits to 1. To check, hash and read the bits; if any is 0, the item is definitely not in the set. If all are 1, the item is <em>probably</em> in the set — could be a real hit, could be a collision.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 460" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="bla" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 14 · INSERT &amp; LOOKUP</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- INSERT -->
+            <g transform="translate(40, 70)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">INSERT "stripe.com"</text>
+
+              <rect x="0" y="30" width="120" height="40" fill="#1a1814"/>
+              <text x="60" y="55" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">"stripe.com"</text>
+
+              <g transform="translate(180, 20)">
+                <rect x="0"   y="0"  width="80" height="20" fill="#c2410c"/>
+                <text x="40"  y="15" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">h1 = 3</text>
+                <rect x="0"   y="30" width="80" height="20" fill="#c2410c"/>
+                <text x="40"  y="45" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">h2 = 9</text>
+                <rect x="0"   y="60" width="80" height="20" fill="#c2410c"/>
+                <text x="40"  y="75" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">h3 = 14</text>
+              </g>
+
+              <line x1="120" y1="50" x2="178" y2="30" stroke="#c2410c" stroke-width="1.5" marker-end="url(#bla)"/>
+              <line x1="120" y1="50" x2="178" y2="50" stroke="#c2410c" stroke-width="1.5" marker-end="url(#bla)"/>
+              <line x1="120" y1="50" x2="178" y2="70" stroke="#c2410c" stroke-width="1.5" marker-end="url(#bla)"/>
+
+              <g transform="translate(330, 30)">
+                <text x="-10" y="40" font-family="JetBrains Mono" font-size="9" fill="#1a1814">bits ↓</text>
+                <g fill="#f1ece1" stroke="#1a1814" stroke-width="1">
+                  <rect x="0"   y="0" width="36" height="36"/>
+                  <rect x="38"  y="0" width="36" height="36"/>
+                  <rect x="76"  y="0" width="36" height="36"/>
+                  <rect x="114" y="0" width="36" height="36" fill="#c2410c"/>
+                  <rect x="152" y="0" width="36" height="36"/>
+                  <rect x="190" y="0" width="36" height="36"/>
+                  <rect x="228" y="0" width="36" height="36"/>
+                  <rect x="266" y="0" width="36" height="36"/>
+                  <rect x="304" y="0" width="36" height="36"/>
+                  <rect x="342" y="0" width="36" height="36" fill="#c2410c"/>
+                  <rect x="380" y="0" width="36" height="36"/>
+                  <rect x="418" y="0" width="36" height="36"/>
+                  <rect x="456" y="0" width="36" height="36"/>
+                  <rect x="494" y="0" width="36" height="36"/>
+                  <rect x="532" y="0" width="36" height="36" fill="#c2410c"/>
+                </g>
+                <g font-family="JetBrains Mono" font-size="9" text-anchor="middle">
+                  <text x="18"   y="50" fill="#1a1814">0</text>
+                  <text x="56"   y="50" fill="#1a1814">1</text>
+                  <text x="94"   y="50" fill="#1a1814">2</text>
+                  <text x="132"  y="50" fill="#c2410c">3</text>
+                  <text x="170"  y="50" fill="#1a1814">4</text>
+                  <text x="208"  y="50" fill="#1a1814">5</text>
+                  <text x="246"  y="50" fill="#1a1814">6</text>
+                  <text x="284"  y="50" fill="#1a1814">7</text>
+                  <text x="322"  y="50" fill="#1a1814">8</text>
+                  <text x="360"  y="50" fill="#c2410c">9</text>
+                  <text x="398"  y="50" fill="#1a1814">10</text>
+                  <text x="436"  y="50" fill="#1a1814">11</text>
+                  <text x="474"  y="50" fill="#1a1814">12</text>
+                  <text x="512"  y="50" fill="#1a1814">13</text>
+                  <text x="550"  y="50" fill="#c2410c">14</text>
+                </g>
+              </g>
+            </g>
+
+            <line x1="40" y1="200" x2="1140" y2="200" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+            <!-- LOOKUP -->
+            <g transform="translate(40, 220)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">LOOKUP "shopify.com"</text>
+
+              <rect x="0" y="30" width="120" height="40" fill="#1a1814"/>
+              <text x="60" y="55" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">"shopify.com"</text>
+
+              <g transform="translate(180, 20)">
+                <rect x="0"   y="0"  width="80" height="20" fill="#1a1814"/>
+                <text x="40"  y="15" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">h1 = 7</text>
+                <rect x="0"   y="30" width="80" height="20" fill="#1a1814"/>
+                <text x="40"  y="45" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">h2 = 9</text>
+                <rect x="0"   y="60" width="80" height="20" fill="#1a1814"/>
+                <text x="40"  y="75" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">h3 = 12</text>
+              </g>
+
+              <g transform="translate(330, 30)">
+                <g fill="#f1ece1" stroke="#1a1814" stroke-width="1">
+                  <rect x="0"   y="0" width="36" height="36"/>
+                  <rect x="38"  y="0" width="36" height="36"/>
+                  <rect x="76"  y="0" width="36" height="36"/>
+                  <rect x="114" y="0" width="36" height="36" fill="#c2410c"/>
+                  <rect x="152" y="0" width="36" height="36"/>
+                  <rect x="190" y="0" width="36" height="36"/>
+                  <rect x="228" y="0" width="36" height="36"/>
+                  <rect x="266" y="0" width="36" height="36"/>
+                  <rect x="304" y="0" width="36" height="36"/>
+                  <rect x="342" y="0" width="36" height="36" fill="#c2410c"/>
+                  <rect x="380" y="0" width="36" height="36"/>
+                  <rect x="418" y="0" width="36" height="36"/>
+                  <rect x="456" y="0" width="36" height="36"/>
+                  <rect x="494" y="0" width="36" height="36"/>
+                  <rect x="532" y="0" width="36" height="36" fill="#c2410c"/>
+                </g>
+                <text x="284" y="50" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#1a1814">bit 7 = 0 → NOT IN SET (certain)</text>
+              </g>
+
+              <text x="0" y="120" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#c2410c">A single zero is enough to prove absence.</text>
+            </g>
+
+            <line x1="20" y1="380" x2="1180" y2="380" stroke="#1a1814" stroke-width="1" stroke-dasharray="3 3"/>
+            <text x="20" y="410" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">"No false negatives. Calibrated false positives. Constant-time everything."</text>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 14</span><span>k hash functions decide k bit positions. Insert flips them; lookup reads them. Any zero bit means definitely not in the set.</span></div>
+        </div>
+
+        <h3 class="sub">Why no false negatives</h3>
+        <div class="prose">
+          <p>If an item was inserted, every one of its <em>k</em> bits was set to 1. Subsequent inserts can only turn other bits from 0 to 1; they cannot turn 1 to 0. So a lookup for the inserted item reads <em>k</em> ones — every time, forever. The false-negative rate is zero. <strong>This is the property that earns the bloom filter its place in the read path.</strong> A negative answer is a real negative; the database doesn't need to confirm it.</p>
+        </div>
+
+        <h3 class="sub">Why false positives exist</h3>
+        <div class="prose">
+          <p>Two items can hash to the same <em>k</em> bits, or a checker can land on <em>k</em> bits that were each set by different other items. The bloom filter cannot tell the difference between "you inserted me" and "the bits that would prove me were collectively set by other inserts." A false positive means: pass the query through to the actual database lookup. <em>Correctness is preserved; you just did the work you were trying to skip.</em></p>
+        </div>
+      </section>
+
+      <!-- 3 sizing -->
+      <section class="dd-section" id="sizing">
+        <h2 class="section"><span class="num">03</span>Sizing it <span class="ital">correctly</span>.</h2>
+        <div class="prose">
+          <p>Three numbers: <em>n</em> (items you'll insert), <em>p</em> (acceptable false-positive rate), <em>m</em> (bits) and <em>k</em> (hash functions). The classic formulas:</p>
+          <p style="font-family: 'JetBrains Mono'; font-size: 14px; padding-left: 20px; color: #c2410c;">m = −(n · ln p) / (ln 2)²</p>
+          <p style="font-family: 'JetBrains Mono'; font-size: 14px; padding-left: 20px; color: #c2410c;">k = (m / n) · ln 2</p>
+          <p>For 1 million items at 1% FP rate: <strong>m ≈ 9.6 Mbits ≈ 1.2 MB; k ≈ 7</strong>. For 1 billion items at the same rate: <strong>m ≈ 9.6 Gbits ≈ 1.2 GB; k ≈ 7</strong>. Memory grows linearly with <em>n</em>; <em>k</em> stays roughly constant in the useful range.</p>
+        </div>
+
+        <h3 class="sub">Pick <em>p</em> from the cost ratio</h3>
+        <div class="prose">
+          <p>The false-positive rate is a knob, not a fixed constant. Pick it from <strong>(cost of the unnecessary downstream lookup) ÷ (memory cost of additional bits)</strong>. If a database hit is 5ms and your downstream is provisioned for 1k RPS, a 1% FP rate is fine — that's 10 spurious lookups per second per pod. If the downstream is provisioned for 100k RPS and a hit is 50ms, you want closer to 0.01% — pay the extra megabytes to save the seconds.</p>
+        </div>
+
+        <h3 class="sub">You cannot remove items</h3>
+        <div class="prose">
+          <p>A standard bloom filter doesn't support deletion. Removing an item would mean clearing its <em>k</em> bits — but those bits may belong to other items, and clearing them would give those other items <em>false negatives</em>, which breaks the guarantee. Three workarounds: <strong>counting bloom filter</strong> (each "bit" is a small counter; decrement on delete — costs 4× memory), <strong>scalable bloom filter</strong> (start a new filter when full; query both — useful for append-only workloads), <strong>cuckoo filter</strong> (a different probabilistic structure that supports deletion natively).</p>
+        </div>
+
+        <h3 class="sub">The cardinality you committed to matters</h3>
+        <div class="prose">
+          <p>The filter is sized for <em>n</em>. Insert 10× <em>n</em> and the FP rate climbs catastrophically — the bit array saturates with 1s and almost every lookup returns "maybe." <strong>Plan for growth; oversize on creation</strong>; or use a scalable bloom filter that adds layers as you exceed the original cardinality. Capacity planning is the part everybody forgets until the filter degrades and nobody knows why the cache hit rate is suddenly 0%.</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">C#</span>.</h2>
+
+        <div class="prose">
+          <p>A from-scratch bloom filter using xxHash for cheap, well-distributed hashes. One BitArray. Single-pod, in-memory. ~80 lines. Ship it as a typed dependency.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">BloomFilter.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package System.IO.Hashing  -- for XxHash3</span>
+<span class="k">using</span> <span class="t">System.Collections</span>;
+<span class="k">using</span> <span class="t">System.IO.Hashing</span>;
+<span class="k">using</span> <span class="t">System.Text</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Bloom</span>;
+
+<span class="k">public sealed class</span> <span class="t">BloomFilter</span>
+{
+    <span class="k">private readonly</span> <span class="t">BitArray</span> _bits;
+    <span class="k">private readonly</span> <span class="k">int</span> _k;
+    <span class="k">private readonly</span> <span class="k">int</span> _m;
+
+    <span class="k">public</span> <span class="fn">BloomFilter</span>(<span class="k">int</span> expectedItems, <span class="k">double</span> falsePositiveRate = <span class="n">0.01</span>)
+    {
+        <span class="k">if</span> (expectedItems &lt;= <span class="n">0</span>)        <span class="k">throw new</span> <span class="t">ArgumentOutOfRangeException</span>(<span class="k">nameof</span>(expectedItems));
+        <span class="k">if</span> (falsePositiveRate &lt;= <span class="n">0</span> || falsePositiveRate &gt;= <span class="n">1</span>)
+            <span class="k">throw new</span> <span class="t">ArgumentOutOfRangeException</span>(<span class="k">nameof</span>(falsePositiveRate));
+
+        <span class="c">// m = -n * ln(p) / (ln 2)^2 — round up to the nearest 8 for byte alignment</span>
+        _m = (<span class="k">int</span>)<span class="t">Math</span>.<span class="fn">Ceiling</span>(-expectedItems * <span class="t">Math</span>.<span class="fn">Log</span>(falsePositiveRate) / (<span class="t">Math</span>.<span class="fn">Log</span>(<span class="n">2</span>) * <span class="t">Math</span>.<span class="fn">Log</span>(<span class="n">2</span>)));
+        _m = (_m + <span class="n">7</span>) &amp; ~<span class="n">7</span>;
+        <span class="c">// k = (m / n) * ln 2 — clamp to a sensible band</span>
+        _k = <span class="t">Math</span>.<span class="fn">Max</span>(<span class="n">1</span>, (<span class="k">int</span>)<span class="t">Math</span>.<span class="fn">Round</span>((_m / (<span class="k">double</span>)expectedItems) * <span class="t">Math</span>.<span class="fn">Log</span>(<span class="n">2</span>)));
+        _bits = <span class="k">new</span> <span class="t">BitArray</span>(_m);
+    }
+
+    <span class="k">public void</span> <span class="fn">Add</span>(<span class="t">ReadOnlySpan</span>&lt;<span class="k">byte</span>&gt; key)
+    {
+        <span class="k">foreach</span> (<span class="k">var</span> idx <span class="k">in</span> <span class="fn">Indices</span>(key)) _bits[idx] = <span class="k">true</span>;
+    }
+    <span class="k">public void</span> <span class="fn">Add</span>(<span class="k">string</span> s) =&gt; <span class="fn">Add</span>(<span class="t">Encoding</span>.<span class="t">UTF8</span>.<span class="fn">GetBytes</span>(s));
+
+    <span class="k">public bool</span> <span class="fn">MightContain</span>(<span class="t">ReadOnlySpan</span>&lt;<span class="k">byte</span>&gt; key)
+    {
+        <span class="k">foreach</span> (<span class="k">var</span> idx <span class="k">in</span> <span class="fn">Indices</span>(key))
+            <span class="k">if</span> (!_bits[idx]) <span class="k">return false</span>;  <span class="c">// any zero = definitely not in set</span>
+        <span class="k">return true</span>;                       <span class="c">// all ones = probably in set</span>
+    }
+    <span class="k">public bool</span> <span class="fn">MightContain</span>(<span class="k">string</span> s) =&gt; <span class="fn">MightContain</span>(<span class="t">Encoding</span>.<span class="t">UTF8</span>.<span class="fn">GetBytes</span>(s));
+
+    <span class="c">// Kirsch–Mitzenmacher trick: simulate k hash functions from two real ones.</span>
+    <span class="c">// XxHash3 with two different seeds gives statistically independent h1/h2.</span>
+    <span class="k">private</span> <span class="t">IEnumerable</span>&lt;<span class="k">int</span>&gt; <span class="fn">Indices</span>(<span class="t">ReadOnlySpan</span>&lt;<span class="k">byte</span>&gt; key)
+    {
+        <span class="k">var</span> h1 = <span class="t">XxHash3</span>.<span class="fn">HashToUInt64</span>(key, seed: <span class="n">0xC0FFEEUL</span>);
+        <span class="k">var</span> h2 = <span class="t">XxHash3</span>.<span class="fn">HashToUInt64</span>(key, seed: <span class="n">0xDEADBEEFUL</span>);
+        <span class="k">for</span> (<span class="k">var</span> i = <span class="n">0</span>; i &lt; _k; i++)
+            <span class="k">yield return</span> (<span class="k">int</span>)(unchecked(h1 + (<span class="k">ulong</span>)i * h2) % (<span class="k">ulong</span>)_m);
+    }
+
+    <span class="c">// Estimate of current false-positive rate based on bits set.</span>
+    <span class="k">public double</span> <span class="fn">EstimatedFalsePositiveRate</span>()
+    {
+        <span class="k">var</span> setBits = <span class="n">0</span>;
+        <span class="k">foreach</span> (<span class="k">bool</span> b <span class="k">in</span> _bits) <span class="k">if</span> (b) setBits++;
+        <span class="k">var</span> fraction = setBits / (<span class="k">double</span>)_m;
+        <span class="k">return</span> <span class="t">Math</span>.<span class="fn">Pow</span>(fraction, _k);
+    }
+
+    <span class="k">public</span> (<span class="k">int</span> <span class="t">M</span>, <span class="k">int</span> <span class="t">K</span>) <span class="t">Shape</span> =&gt; (_m, _k);
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>For a multi-pod world, an in-process bloom filter won't do — each pod sees a different state. The fix is <strong>RedisBloom</strong>, the official Redis module that provides server-side bloom filters with the same constant-time guarantees and a few extras (count-min sketch, cuckoo, top-k). One filter, every pod hits the same state.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">RedisBloomClient.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package StackExchange.Redis</span>
+<span class="k">using</span> <span class="t">StackExchange.Redis</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Bloom</span>;
+
+<span class="k">public sealed class</span> <span class="t">RedisBloomClient</span>
+{
+    <span class="k">private readonly</span> <span class="t">IDatabase</span> _db;
+    <span class="k">private readonly</span> <span class="t">RedisKey</span> _key;
+
+    <span class="k">public</span> <span class="fn">RedisBloomClient</span>(<span class="t">IConnectionMultiplexer</span> mux, <span class="k">string</span> filterName)
+    { _db = mux.<span class="fn">GetDatabase</span>(); _key = filterName; }
+
+    <span class="c">// One-time setup. Idempotent at the Redis side (re-running is a no-op).</span>
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">EnsureCreatedAsync</span>(<span class="k">long</span> capacity, <span class="k">double</span> errorRate = <span class="n">0.01</span>)
+    {
+        <span class="c">// BF.RESERVE key error_rate capacity</span>
+        <span class="k">try</span>
+        {
+            <span class="k">await</span> _db.<span class="fn">ExecuteAsync</span>(<span class="s">"BF.RESERVE"</span>, _key, errorRate, capacity);
+        }
+        <span class="k">catch</span> (<span class="t">RedisServerException</span> ex) <span class="k">when</span> (ex.<span class="t">Message</span>.<span class="fn">Contains</span>(<span class="s">"already exists"</span>))
+        { <span class="c">/* idempotent */</span> }
+    }
+
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="k">bool</span>&gt; <span class="fn">AddAsync</span>(<span class="k">string</span> item)
+        =&gt; (<span class="k">bool</span>)(<span class="k">await</span> _db.<span class="fn">ExecuteAsync</span>(<span class="s">"BF.ADD"</span>, _key, item));
+
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="k">bool</span>&gt; <span class="fn">MightContainAsync</span>(<span class="k">string</span> item)
+        =&gt; (<span class="k">bool</span>)(<span class="k">await</span> _db.<span class="fn">ExecuteAsync</span>(<span class="s">"BF.EXISTS"</span>, _key, item));
+
+    <span class="c">// Batch versions exist (BF.MADD / BF.MEXISTS). Use them — 10× throughput.</span>
+}</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Two hashes, k indices: the Kirsch–Mitzenmacher trick</div>
+          <p>Computing seven independent hash functions is expensive. The 2006 Kirsch–Mitzenmacher paper showed that <code>g_i(x) = h1(x) + i · h2(x)</code> is statistically indistinguishable from <em>k</em> independent hashes, as long as h1 and h2 are themselves independent. <strong>Every production bloom filter uses this trick.</strong> Two hashes, k indices, constant time. The sample code above does it explicitly.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Don't use HashSet&lt;T&gt; for "large" sets</div>
+          <p>"How large?" you ask. The crossover is around 100k items. Below that, a <code>HashSet&lt;string&gt;</code> is faster <em>and</em> uses less memory than a bloom filter, because the per-string overhead dominates. Above 1M items, the bloom filter wins on memory by an order of magnitude. <strong>Between 100k and 1M, profile both</strong> — the right answer depends on item size and FP requirement.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Cuckoo filter when you need delete</div>
+          <p>If you need to delete items, a counting bloom filter costs 4× memory; a cuckoo filter costs ~1.5× and supports delete natively. Cuckoo is also slightly faster on lookup (one cache line vs k cache lines). The downside: cuckoo has an <em>insertion failure</em> mode if it overfills, which a bloom filter doesn't. <strong>Pick cuckoo when delete is a requirement, bloom when append-only is the access pattern.</strong></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Don't ship the filter; ship the bytes</div>
+          <p>A bloom filter serializes to a fixed-size byte array. Persist it to disk, ship it to clients, mmap it. <em>Cassandra's bloom filters live on disk next to the SSTable</em>, paged in on demand. Chrome's safe-browsing filter is a downloaded byte array that the browser checks against locally before consulting the cloud. The bit array is the entire artefact.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Monitor saturation</div>
+          <p>The estimated false-positive rate climbs as the filter fills. Emit <code>setBits / m</code> as a gauge — when it exceeds the value you sized for, the filter is overfull and the FP rate has degraded. <em>This is the single most useful metric you can ship for a bloom filter</em> and the one nobody adds until the cache hit rate cratered last Friday.</p>
+        </div>
+
+        <div class="pull">"The bit array is the entire object. The math is the entire algorithm. Everything else is plumbing."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Technology</th>
+              <th>Where</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>C# in-memory bloom<span class="sub">from scratch</span></th>
+              <td>Single pod</td>
+              <td>10 bits / item · ns lookups · zero dependencies</td>
+              <td><strong>$0</strong> (RAM)</td>
+              <td>You ship and persist it</td>
+              <td><span class="verdict good">Single-pod or replicated read-only</span></td>
+            </tr>
+            <tr>
+              <th>RedisBloom (BF.*)<span class="sub">module</span></th>
+              <td>Shared</td>
+              <td>Shared across pods · scalable variant · batch ops</td>
+              <td><strong>$25 – $1k</strong> Redis Enterprise / OSS+module</td>
+              <td>Module install on Redis</td>
+              <td><span class="verdict good">Multi-pod default</span></td>
+            </tr>
+            <tr>
+              <th>Cuckoo filter (CF.*)<span class="sub">RedisBloom</span></th>
+              <td>Shared</td>
+              <td>Supports delete · slightly faster lookup · 1.5× memory</td>
+              <td><strong>$25 – $1k</strong> Redis Enterprise</td>
+              <td>Same as bloom</td>
+              <td><span class="verdict good">Pick over bloom when delete matters</span></td>
+            </tr>
+            <tr>
+              <th>Quotient filter<span class="sub">cache-friendly</span></th>
+              <td>Specialty</td>
+              <td>SIMD-friendly · resizable · sequential layout</td>
+              <td>—</td>
+              <td>Niche; few .NET libs</td>
+              <td><span class="verdict warn">For perf-critical, single-process use</span></td>
+            </tr>
+            <tr>
+              <th>HashSet&lt;T&gt;<span class="sub">.NET built-in</span></th>
+              <td>Single pod</td>
+              <td>Exact · 0% FP · simple</td>
+              <td>$0</td>
+              <td>Memory dominates above ~100k items</td>
+              <td><span class="verdict good">For small sets where exactness matters</span></td>
+            </tr>
+            <tr>
+              <th>HyperLogLog<span class="sub">cardinality</span></th>
+              <td>Shared</td>
+              <td>Counts distinct items in ~12 KB regardless of N</td>
+              <td><strong>$25+</strong> Redis</td>
+              <td>Same as Redis</td>
+              <td><span class="verdict good">Different question: HOW MANY, not WHICH</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>URL-shortener slug availability check</h5>
+            <p>RedisBloom shared across pods. Size for 10× current cardinality at 0.1% FP. Pre-warm from the existing slug table on deploy.</p>
+          </div>
+          <div class="cell">
+            <h5>Cache-skip pattern ("is this key on disk?")</h5>
+            <p>In-process bloom per pod, rebuilt on cold start from the database's distinct keys. Cassandra and Postgres ship this pattern internally.</p>
+          </div>
+          <div class="cell">
+            <h5>"Have we seen this email/phone before?"</h5>
+            <p>Shared RedisBloom. The negative case dominates; the 1% false positive falls through to a real database lookup. Net 99× fewer DB hits.</p>
+          </div>
+          <div class="cell">
+            <h5>Set with deletes (revocation, blocklists)</h5>
+            <p>Cuckoo filter (CF.* commands in RedisBloom). Same lookup profile, supports remove without 4× memory of a counting bloom.</p>
+          </div>
+          <div class="cell">
+            <h5>Set fits in RAM (&lt;100k items)</h5>
+            <p>Use <code>HashSet&lt;T&gt;</code>. The bloom filter's constant overhead loses to a hash set's directness at small N.</p>
+          </div>
+          <div class="cell">
+            <h5>Counting distinct, not membership</h5>
+            <p>HyperLogLog (PFADD / PFCOUNT). Different problem, different probabilistic structure. 12 KB to count a billion distinct items at 0.81% error.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — undersizing.</strong> Filter sized for a million, real cardinality grows to ten million, FP rate climbs from 1% to 60% — cache hit rate craters. Plan capacity; instrument <code>setBits / m</code>.</p>
+        <p><strong>Two — deleting.</strong> Clearing the <em>k</em> bits of an item destroys the no-false-negative guarantee for every other item that shared a bit. If you need delete, use cuckoo or counting bloom; never a plain one.</p>
+        <p><strong>Three — using cryptographic hashes.</strong> SHA-256 is overkill and slow. xxHash3, MurmurHash3, or even FNV-1a are statistically fine and 10–50× faster. The bloom filter doesn't care about pre-image resistance.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="event-sourcing-cqrs.html">
+          <div class="label">Chapter 13</div>
+          <div class="ttl">Event sourcing</div>
+        </a>
+        <a class="next-fwd" href="service-discovery.html">
+          <div class="label">Chapter 15</div>
+          <div class="ttl">Service discovery →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 14 · Bloom Filters · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

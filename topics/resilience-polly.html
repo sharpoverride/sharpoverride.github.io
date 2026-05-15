@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Circuit Breakers &amp; Resilience · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">11 · Resilience</span>
+    </div>
+    <nav>
+      <a href="realtime-channels.html">← Prev</a>
+      <a href="monolith-vs-microservices.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>11</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~13 min</b></span>
+        <span>Stack <b>Polly v8 · ASP.NET Core · HttpClient factory</b></span>
+      </div>
+      <h1>Every downstream call <span class="ital">will</span> fail.</h1>
+      <p class="lede">Networks partition. Disks fill. Pods restart. The interesting question is not <em>whether</em> the call will fail — it's <em>how your service behaves while it is failing</em>. Polly v8 gives you four strategies, composed into one pipeline, applied everywhere.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>A slow dependency takes your service down faster than a dead one. <em>The threads pile up first; the page comes second.</em></p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Four primitives — <strong>timeout, retry with jitter, circuit breaker, bulkhead</strong> — composed into a single pipeline per dependency. Configured by the boundary, applied by the framework. No reaching for <code>try/catch</code> in business code.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Polly v8</span>
+          <span class="pill on">Microsoft.Extensions.Http.Resilience</span>
+          <span class="pill on">HttpClient factory</span>
+          <span class="pill">Istio retry</span>
+          <span class="pill">Hystrix (legacy)</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The cascade</a></li>
+        <li><a href="#core">Four primitives, one pipeline</a></li>
+        <li><a href="#jitter">Retries, jitter, half-open</a></li>
+        <li><a href="#dotnet">In Polly v8</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The <span class="ital">cascade</span>.</h2>
+        <div class="prose">
+          <p>Service A calls service B. B gets slow — not failed, just slow. A's threads pile up waiting. The thread pool grows. New requests to A start queuing. A's p99 latency climbs. A's clients (frontends, mobiles) retry. The retry storm hits A harder. A becomes unhealthy and its own callers start retrying <em>it</em>. Five minutes later, half the system is down because <em>one</em> downstream got slow.</p>
+          <p>This is the cascading-failure pattern. It killed Netflix before they wrote Hystrix; it killed Twitter regularly until they tightened deadlines; it killed every Friday-night cloud incident you remember by name. <strong>The cause is almost never the original fault — it's the absence of a wall between the fault and the rest of the system.</strong> A timeout is that wall. A circuit breaker is the wall that keeps remembering. A bulkhead is the wall that keeps one pool of threads from drowning the rest.</p>
+        </div>
+
+        <div class="pull">"You don't ship resilience to handle the failures you imagined. You ship it to survive the failures you didn't."</div>
+      </section>
+
+      <!-- 2 core -->
+      <section class="dd-section" id="core">
+        <h2 class="section"><span class="num">02</span>Four primitives, <span class="ital">one</span> pipeline.</h2>
+
+        <div class="prose">
+          <p>Polly v8 refactored an idea from Hystrix and Microsoft's own <code>HttpClientFactory</code> story: a resilience pipeline is just a chain of strategies wrapping a delegate. Each strategy decides whether to invoke the next one, and what to do with the result.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 460" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="rea" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a1814"/></marker>
+              <marker id="reao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 09 · PIPELINE OF STRATEGIES (OUTER → INNER)</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0"   y="0" width="220" height="80" fill="#1a1814"/>
+              <text x="110" y="32" font-family="JetBrains Mono" font-size="12" text-anchor="middle" fill="#f1ece1">BULKHEAD</text>
+              <text x="110" y="50" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">cap concurrent calls</text>
+              <text x="110" y="64" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">overflow → reject fast</text>
+
+              <rect x="240" y="0" width="220" height="80" fill="#c2410c"/>
+              <text x="350" y="32" font-family="JetBrains Mono" font-size="12" text-anchor="middle" fill="#f1ece1">CIRCUIT BREAKER</text>
+              <text x="350" y="50" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">closed → open → half-open</text>
+              <text x="350" y="64" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">trip on N failures / window</text>
+
+              <rect x="480" y="0" width="220" height="80" fill="#1a1814"/>
+              <text x="590" y="32" font-family="JetBrains Mono" font-size="12" text-anchor="middle" fill="#f1ece1">RETRY (+ JITTER)</text>
+              <text x="590" y="50" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">3× exp · decorrelated</text>
+              <text x="590" y="64" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">only on transient</text>
+
+              <rect x="720" y="0" width="220" height="80" fill="#c2410c"/>
+              <text x="830" y="32" font-family="JetBrains Mono" font-size="12" text-anchor="middle" fill="#f1ece1">TIMEOUT</text>
+              <text x="830" y="50" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">per-attempt deadline</text>
+              <text x="830" y="64" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">cooperative cancellation</text>
+
+              <rect x="960" y="0" width="180" height="80" fill="#1a1814"/>
+              <text x="1050" y="32" font-family="JetBrains Mono" font-size="12" text-anchor="middle" fill="#f1ece1">HTTP CALL</text>
+              <text x="1050" y="50" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">to downstream</text>
+
+              <line x1="220" y1="40" x2="238" y2="40" stroke="#c2410c" stroke-width="2" marker-end="url(#reao)"/>
+              <line x1="460" y1="40" x2="478" y2="40" stroke="#c2410c" stroke-width="2" marker-end="url(#reao)"/>
+              <line x1="700" y1="40" x2="718" y2="40" stroke="#c2410c" stroke-width="2" marker-end="url(#reao)"/>
+              <line x1="940" y1="40" x2="958" y2="40" stroke="#c2410c" stroke-width="2" marker-end="url(#reao)"/>
+            </g>
+
+            <line x1="40" y1="200" x2="1140" y2="200" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+            <g transform="translate(40, 220)">
+              <text x="0" y="10" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">Reading order matters.</text>
+
+              <text x="0" y="50" font-family="IBM Plex Sans" font-size="12" fill="#1a1814"><tspan font-family="JetBrains Mono" font-size="11" fill="#c2410c">Bulkhead</tspan> outermost: limits how many requests can <em>even start</em> hitting the dependency.</text>
+              <text x="0" y="72" font-family="IBM Plex Sans" font-size="12" fill="#1a1814"><tspan font-family="JetBrains Mono" font-size="11" fill="#c2410c">Circuit breaker</tspan> next: short-circuits everything when the dependency is observably broken.</text>
+              <text x="0" y="94" font-family="IBM Plex Sans" font-size="12" fill="#1a1814"><tspan font-family="JetBrains Mono" font-size="11" fill="#c2410c">Retry</tspan> third: tries again on transient faults — counts as <em>one</em> trip from the circuit's view.</text>
+              <text x="0" y="116" font-family="IBM Plex Sans" font-size="12" fill="#1a1814"><tspan font-family="JetBrains Mono" font-size="11" fill="#c2410c">Timeout</tspan> innermost: bounds <em>one</em> attempt, so a single hung call doesn't keep the slot.</text>
+
+              <text x="0" y="160" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#c2410c">Get the order wrong and the strategies fight each other.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 09</span><span>The pipeline is read outer-to-inner. Each strategy makes a local decision about the inner strategy's outcome.</span></div>
+        </div>
+
+        <h3 class="sub">Order is the design decision</h3>
+        <div class="prose">
+          <p>The single most common Polly bug is wrong-order strategies. Put the timeout <em>outside</em> the retry and the deadline applies to the entire retry chain — three attempts collapse to one, the retry never gets to fire. Put the circuit breaker <em>inside</em> the retry and the retry will trip the breaker on its own retries, opening it on every transient blip. <strong>Outer-to-inner: bulkhead → circuit breaker → retry → timeout → execute.</strong> Polly v8's builder API enforces this naturally; the v7 fluent <code>Wrap()</code> made it backwards by default. If you're reading old code that wraps in the other direction, expect bugs.</p>
+        </div>
+      </section>
+
+      <!-- 3 jitter -->
+      <section class="dd-section" id="jitter">
+        <h2 class="section"><span class="num">03</span>Retries, jitter, <span class="ital">half-open</span>.</h2>
+        <div class="prose">
+          <p>The naive retry strategy — "wait 1s, then 2s, then 4s" — is what causes the <strong>retry storm</strong>. A thousand pods all retry at the same moment, hammer the recovering downstream, push it back over the edge. <em>Synchronised retries are worse than no retries.</em></p>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 1100 240" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="22" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. 10 · WITH AND WITHOUT JITTER</text>
+            <line x1="20" y1="32" x2="1080" y2="32" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(20, 60)">
+              <text x="0" y="10" font-family="JetBrains Mono" font-size="10" fill="#1a1814">Synchronised retries (1s, 2s, 4s):</text>
+              <rect x="0"   y="20" width="3" height="30" fill="#c2410c"/>
+              <rect x="100" y="20" width="60" height="30" fill="#c2410c"/>
+              <rect x="200" y="20" width="60" height="30" fill="#c2410c"/>
+              <rect x="400" y="20" width="60" height="30" fill="#c2410c"/>
+              <text x="800" y="42" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">cliffs of 1000 pods all firing at once.</text>
+            </g>
+
+            <g transform="translate(20, 140)">
+              <text x="0" y="10" font-family="JetBrains Mono" font-size="10" fill="#1a1814">Decorrelated jitter (random in [base, prev × 3]):</text>
+              <rect x="0"   y="20" width="3" height="30" fill="#1a1814"/>
+              <g fill="#1a1814">
+                <rect x="80"  y="20" width="4" height="30"/>
+                <rect x="120" y="20" width="4" height="30"/>
+                <rect x="150" y="20" width="4" height="30"/>
+                <rect x="200" y="20" width="4" height="30"/>
+                <rect x="230" y="20" width="4" height="30"/>
+                <rect x="270" y="20" width="4" height="30"/>
+                <rect x="320" y="20" width="4" height="30"/>
+                <rect x="370" y="20" width="4" height="30"/>
+                <rect x="420" y="20" width="4" height="30"/>
+                <rect x="470" y="20" width="4" height="30"/>
+                <rect x="520" y="20" width="4" height="30"/>
+                <rect x="580" y="20" width="4" height="30"/>
+              </g>
+              <text x="800" y="42" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">retries spread across the recovery window.</text>
+            </g>
+          </svg>
+          <div class="cap"><b>Decorrelated jitter</b> (AWS Architecture Blog, 2015) gives the recovering downstream the headroom it needs to actually recover.</div>
+        </div>
+
+        <h3 class="sub">Don't retry the unretryable</h3>
+        <div class="prose">
+          <p>Retry only on transient faults: <strong>5xx, network timeouts, 408, 429</strong>. Never retry 4xx other than 408 or 429 — the response will be the same the second time. Never retry POST without an <code>Idempotency-Key</code> (see <a href="idempotency-keys.html">Chapter 08</a>); you'll charge twice. The classification logic is the most under-loved part of every retry policy; Polly v8 makes it explicit via the <code>ShouldHandle</code> predicate, and you should write that predicate by hand for every dependency.</p>
+        </div>
+
+        <h3 class="sub">The circuit breaker's three states</h3>
+        <div class="prose">
+          <p><strong>Closed</strong>: traffic flows; failures counted. <strong>Open</strong>: traffic rejected immediately with a synthetic exception; downstream is allowed to recover. <strong>Half-open</strong>: after a cooldown, one probing request is allowed through; if it succeeds, close the circuit; if it fails, back to open. The half-open probe is the part most homegrown circuit breakers get wrong — they either let the floodgates open all at once (and re-trip immediately) or they never reset because nothing tests the path. Polly's state machine does this for you.</p>
+        </div>
+
+        <h3 class="sub">Bulkhead is concurrency, not rate</h3>
+        <div class="prose">
+          <p>A bulkhead caps <em>concurrent</em> in-flight calls to a dependency — typically at "saturation of the downstream divided by your pod count, plus a little headroom." If 50 is the maximum, the 51st caller gets <code>BulkheadRejectedException</code> immediately and the thread is freed. <strong>This is what stops a slow downstream from holding all your threads.</strong> A rate limiter, by contrast, caps <em>per-second</em> calls — different problem. Use rate limiting for protecting the downstream from your fleet's burst; use bulkheads for protecting your fleet from the downstream's slowness.</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">Polly v8</span>.</h2>
+
+        <div class="prose">
+          <p>A typed <code>HttpClient</code> with the full pipeline. Wired into the DI container, applied automatically to every call made through this client. No <code>try/catch</code> in business code.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">ResilienceSetup.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Microsoft.Extensions.Http.Resilience</span>
+<span class="k">using</span> <span class="t">Microsoft.Extensions.DependencyInjection</span>;
+<span class="k">using</span> <span class="t">Polly</span>;
+<span class="k">using</span> <span class="t">Polly.CircuitBreaker</span>;
+<span class="k">using</span> <span class="t">Polly.Retry</span>;
+<span class="k">using</span> <span class="t">Polly.Timeout</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Resilience</span>;
+
+<span class="k">public sealed class</span> <span class="t">InventoryClient</span>
+{
+    <span class="k">private readonly</span> <span class="t">HttpClient</span> _http;
+    <span class="k">public</span> <span class="fn">InventoryClient</span>(<span class="t">HttpClient</span> http) =&gt; _http = http;
+
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">StockLevel</span>&gt; <span class="fn">GetAsync</span>(<span class="k">string</span> sku, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">var</span> resp = <span class="k">await</span> _http.<span class="fn">GetAsync</span>($<span class="s">"/stock/{sku}"</span>, ct);
+        resp.<span class="fn">EnsureSuccessStatusCode</span>();
+        <span class="k">return</span> (<span class="k">await</span> resp.<span class="t">Content</span>.<span class="fn">ReadFromJsonAsync</span>&lt;<span class="t">StockLevel</span>&gt;(ct))!;
+    }
+}
+
+<span class="k">public static class</span> <span class="t">ResilienceRegistration</span>
+{
+    <span class="k">public static</span> <span class="t">IServiceCollection</span> <span class="fn">AddInventoryClient</span>(
+        <span class="k">this</span> <span class="t">IServiceCollection</span> services, <span class="k">string</span> baseUrl)
+    {
+        services.<span class="fn">AddHttpClient</span>&lt;<span class="t">InventoryClient</span>&gt;(c =&gt;
+        {
+            c.<span class="t">BaseAddress</span> = <span class="k">new</span> <span class="t">Uri</span>(baseUrl);
+            <span class="c">// "Total deadline" for the whole call. Lives in HttpClient.Timeout — Polly per-attempt is shorter.</span>
+            c.<span class="t">Timeout</span> = <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">10</span>);
+        })
+        .<span class="fn">AddResilienceHandler</span>(<span class="s">"inventory"</span>, builder =&gt;
+        {
+            <span class="c">// 1. Bulkhead — outermost. Cap concurrent in-flight calls per pod.</span>
+            builder.<span class="fn">AddConcurrencyLimiter</span>(permitLimit: <span class="n">50</span>, queueLimit: <span class="n">0</span>);
+
+            <span class="c">// 2. Circuit breaker — trip after 50% failures over a 30s window of 100 calls.</span>
+            builder.<span class="fn">AddCircuitBreaker</span>(<span class="k">new</span> <span class="t">CircuitBreakerStrategyOptions</span>&lt;<span class="t">HttpResponseMessage</span>&gt;
+            {
+                <span class="t">FailureRatio</span>      = <span class="n">0.5</span>,
+                <span class="t">MinimumThroughput</span> = <span class="n">20</span>,
+                <span class="t">SamplingDuration</span>  = <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">30</span>),
+                <span class="t">BreakDuration</span>     = <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">15</span>),
+                <span class="t">ShouldHandle</span> = <span class="fn">PredicateBuilder</span>
+                    .<span class="fn">HttpStatusCodes</span>(<span class="t">HttpStatusCode</span>.<span class="t">InternalServerError</span>,
+                                      <span class="t">HttpStatusCode</span>.<span class="t">BadGateway</span>,
+                                      <span class="t">HttpStatusCode</span>.<span class="t">ServiceUnavailable</span>,
+                                      <span class="t">HttpStatusCode</span>.<span class="t">GatewayTimeout</span>)
+                    .<span class="fn">Handle</span>&lt;<span class="t">HttpRequestException</span>&gt;()
+                    .<span class="fn">Handle</span>&lt;<span class="t">TimeoutRejectedException</span>&gt;()
+            });
+
+            <span class="c">// 3. Retry — only transient. Decorrelated jitter backoff.</span>
+            builder.<span class="fn">AddRetry</span>(<span class="k">new</span> <span class="t">RetryStrategyOptions</span>&lt;<span class="t">HttpResponseMessage</span>&gt;
+            {
+                <span class="t">MaxRetryAttempts</span> = <span class="n">3</span>,
+                <span class="t">BackoffType</span>      = <span class="t">DelayBackoffType</span>.<span class="t">Exponential</span>,
+                <span class="t">UseJitter</span>        = <span class="k">true</span>,           <span class="c">// decorrelated jitter built in</span>
+                <span class="t">Delay</span>            = <span class="t">TimeSpan</span>.<span class="fn">FromMilliseconds</span>(<span class="n">200</span>),
+                <span class="t">ShouldHandle</span> = <span class="fn">PredicateBuilder</span>
+                    .<span class="fn">HttpStatusCodes</span>(<span class="t">HttpStatusCode</span>.<span class="t">RequestTimeout</span>,
+                                      <span class="t">HttpStatusCode</span>.<span class="t">TooManyRequests</span>,
+                                      <span class="t">HttpStatusCode</span>.<span class="t">InternalServerError</span>,
+                                      <span class="t">HttpStatusCode</span>.<span class="t">BadGateway</span>,
+                                      <span class="t">HttpStatusCode</span>.<span class="t">ServiceUnavailable</span>,
+                                      <span class="t">HttpStatusCode</span>.<span class="t">GatewayTimeout</span>)
+                    .<span class="fn">Handle</span>&lt;<span class="t">HttpRequestException</span>&gt;()
+                    .<span class="fn">Handle</span>&lt;<span class="t">TimeoutRejectedException</span>&gt;(),
+                <span class="t">OnRetry</span> = args =&gt;
+                {
+                    <span class="t">Activity</span>.<span class="t">Current</span>?.<span class="fn">AddEvent</span>(<span class="k">new</span>(<span class="s">"polly.retry"</span>,
+                        tags: <span class="k">new</span>() { [<span class="s">"attempt"</span>] = args.<span class="t">AttemptNumber</span> }));
+                    <span class="k">return</span> <span class="t">ValueTask</span>.<span class="t">CompletedTask</span>;
+                }
+            });
+
+            <span class="c">// 4. Per-attempt timeout — innermost. Each HTTP call gets 2 seconds.</span>
+            builder.<span class="fn">AddTimeout</span>(<span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">2</span>));
+        });
+
+        <span class="k">return</span> services;
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Register once in <code>Program.cs</code> and the handler is applied to every call through <code>InventoryClient</code>. No per-call wrapping needed — the pipeline lives in the message handler chain.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">Program.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+builder.<span class="t">Services</span>.<span class="fn">AddInventoryClient</span>(builder.<span class="t">Configuration</span>[<span class="s">"Inventory:BaseUrl"</span>]!);
+
+builder.<span class="t">Services</span>.<span class="fn">AddOpenTelemetry</span>()
+    .<span class="fn">WithTracing</span>(t =&gt; t.<span class="fn">AddSource</span>(<span class="s">"Polly"</span>).<span class="fn">AddAspNetCoreInstrumentation</span>().<span class="fn">AddOtlpExporter</span>())
+    .<span class="fn">WithMetrics</span>(m =&gt; m.<span class="fn">AddMeter</span>(<span class="s">"Polly"</span>).<span class="fn">AddOtlpExporter</span>());
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+
+app.<span class="fn">MapGet</span>(<span class="s">"/products/{sku}"</span>, <span class="k">async</span> (<span class="k">string</span> sku, <span class="t">InventoryClient</span> inv, <span class="t">CancellationToken</span> ct) =&gt;
+{
+    <span class="k">try</span>
+    {
+        <span class="k">var</span> stock = <span class="k">await</span> inv.<span class="fn">GetAsync</span>(sku, ct);
+        <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Ok</span>(stock);
+    }
+    <span class="k">catch</span> (<span class="t">BrokenCircuitException</span>)
+    {
+        <span class="c">// Graceful degradation: return cached "last known" or a friendly fallback.</span>
+        <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Ok</span>(<span class="k">new</span> { sku, available = (<span class="k">bool</span>?)<span class="k">null</span>, source = <span class="s">"unavailable"</span> });
+    }
+});
+
+app.<span class="fn">Run</span>();</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">The total deadline lives in HttpClient.Timeout</div>
+          <p>Polly's per-attempt timeout bounds <em>one</em> HTTP call. The total deadline for the operation — including all retries and the bulkhead queue — is <code>HttpClient.Timeout</code>. Set the outer larger than the inner × max attempts × max delay, or you'll see <code>TaskCanceledException</code> on the second retry of every call and wonder why your retry policy never gets to fire.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Circuit breakers belong per-dependency, not per-service</div>
+          <p>One breaker per downstream. Sharing a breaker across services means a slow inventory call trips the breaker for payment too. Polly's resilience handler is per <code>HttpClient</code>, which lines up naturally with per-dependency typed clients. Resist the urge to extract a single "global resilience policy" — the whole point is that each dependency fails differently.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Observability is half the value</div>
+          <p>Polly v8 emits <code>Activity</code> events and a <code>Polly</code> meter — wire them to OpenTelemetry and you'll see retry counts, circuit state transitions, and bulkhead rejections on the dashboard. <em>Without telemetry, the breaker is a black box and the "intermittent failure" ticket will keep coming back.</em> If you can't see when the circuit opened, you can't tune the thresholds.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Fallback is a separate concern</div>
+          <p>Polly v7 had a <code>FallbackPolicy</code>; Polly v8 deliberately removed it. Fallback is a business decision — return cached data, return a default, return 503 — and lives in your endpoint, not in the pipeline. The pipeline's job is to <em>fail fast and clearly</em> (<code>BrokenCircuitException</code>, <code>BulkheadRejectedException</code>). The endpoint translates that into a customer-friendly response.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Don't double-up with the service mesh</div>
+          <p>If you're on Istio or Linkerd with retry policies in the mesh, do <strong>not</strong> add retries in Polly — you'll get retries × retries = retry-of-retries and a 9× amplification on every blip. Pick one layer. The mesh wins for cross-language uniformity; Polly wins for per-dependency precision. Mixed, they're a footgun.</p>
+        </div>
+
+        <div class="pull">"A timeout you never set is a timeout the platform sets for you. The platform's choice is rarely better than yours."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Technology</th>
+              <th>Layer</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Polly v8 pipelines<span class="sub">.NET library</span></th>
+              <td>In-process</td>
+              <td>Per-dependency precision · idiomatic C# · OpenTelemetry built in</td>
+              <td><strong>$0</strong> (lib)</td>
+              <td>You own the policies and the metrics</td>
+              <td><span class="verdict good">Default for .NET</span></td>
+            </tr>
+            <tr>
+              <th>Microsoft.Extensions.Http.Resilience<span class="sub">opinionated wrapper</span></th>
+              <td>In-process</td>
+              <td>Polly v8 with sensible defaults · standard pipeline preset</td>
+              <td><strong>$0</strong> (lib)</td>
+              <td>Less to configure, less to tune</td>
+              <td><span class="verdict good">When defaults are good enough</span></td>
+            </tr>
+            <tr>
+              <th>Hystrix (legacy JVM)<span class="sub">Netflix</span></th>
+              <td>In-process</td>
+              <td>Pioneer of the pattern · rich dashboard</td>
+              <td>—</td>
+              <td>Officially in maintenance since 2018</td>
+              <td><span class="verdict bad">Don't start here. Use Resilience4J on JVM.</span></td>
+            </tr>
+            <tr>
+              <th>Istio retry policies<span class="sub">service mesh</span></th>
+              <td>Sidecar</td>
+              <td>Language-neutral · centrally managed · uniform across fleet</td>
+              <td><strong>$0</strong> (OSS) + sidecar CPU</td>
+              <td>Mesh is its own operational beast</td>
+              <td><span class="verdict warn">For polyglot fleets; replaces Polly, doesn't supplement</span></td>
+            </tr>
+            <tr>
+              <th>Linkerd retries<span class="sub">service mesh</span></th>
+              <td>Sidecar</td>
+              <td>Lighter than Istio · sane defaults · ultralight Rust proxy</td>
+              <td><strong>$0</strong> (OSS) + minimal CPU</td>
+              <td>Simpler config than Istio</td>
+              <td><span class="verdict good">Mesh-of-choice when you want a mesh</span></td>
+            </tr>
+            <tr>
+              <th>Manual try/catch/retry<span class="sub">DIY</span></th>
+              <td>In-process</td>
+              <td>Zero dependencies</td>
+              <td>$0</td>
+              <td>You write the bugs Polly already fixed</td>
+              <td><span class="verdict bad">Don't. Always wrong on jitter, classification, or both.</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>.NET service calling a flaky HTTP dependency</h5>
+            <p>Polly v8 typed-client with the four-strategy pipeline. Per-attempt timeout 2s, retry 3× with jitter, breaker 50% over 30s, bulkhead 50.</p>
+          </div>
+          <div class="cell">
+            <h5>Pure idiomatic, willing to accept defaults</h5>
+            <p><code>Microsoft.Extensions.Http.Resilience</code>'s <code>AddStandardResilienceHandler()</code> — one line, opinionated, fine for 80% of dependencies.</p>
+          </div>
+          <div class="cell">
+            <h5>Polyglot fleet (C# + Go + Python)</h5>
+            <p>Move retries into the mesh (Linkerd or Istio). Uniform policy across languages beats per-service drift. Remove Polly retries to avoid amplification.</p>
+          </div>
+          <div class="cell">
+            <h5>Calls to your own database (EF Core)</h5>
+            <p>EF Core has <code>EnableRetryOnFailure()</code> for transient SQL faults. Use it; don't wrap EF in Polly — the contexts don't survive disposal across retries.</p>
+          </div>
+          <div class="cell">
+            <h5>Background worker → external API</h5>
+            <p>Polly pipeline + longer per-attempt timeouts (10–30s). Retry budget should be lower than for online traffic; failure is not user-facing.</p>
+          </div>
+          <div class="cell">
+            <h5>POST without idempotency key</h5>
+            <p>Don't retry. Or, more precisely, generate an idempotency key and <em>then</em> retry. Polly will gladly charge a customer twice; the safe path is upstream of the retry policy.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — wrong strategy order.</strong> Timeout outside retry collapses the retry to one attempt. Retry outside breaker re-trips the breaker on its own backoff. Outer-to-inner: bulkhead, breaker, retry, timeout. Memorise it.</p>
+        <p><strong>Two — retrying on 4xx.</strong> 400, 401, 403, 404, 422 will return the same thing the second time. Only 408 and 429 are retryable client errors. Spell out <code>ShouldHandle</code> explicitly for every dependency.</p>
+        <p><strong>Three — double retries (Polly + mesh).</strong> Three Polly attempts × three mesh attempts = nine actual calls per logical request. A 1% transient failure rate looks like 9% to the downstream. Pick a layer.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="realtime-channels.html">
+          <div class="label">Chapter 10</div>
+          <div class="ttl">Realtime channels</div>
+        </a>
+        <a class="next-fwd" href="monolith-vs-microservices.html">
+          <div class="label">Chapter 12</div>
+          <div class="ttl">Monolith vs microservices →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 11 · Resilience &amp; Circuit Breakers · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

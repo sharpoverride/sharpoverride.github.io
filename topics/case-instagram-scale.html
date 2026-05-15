@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Instagram — 2.5B users · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#cases">Case Studies</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Instagram</span>
+    </div>
+    <nav><a href="case-uber-nearby.html">← Prev</a><a href="case-slack.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Years <b>2010 → today</b></span>
+        <span>Scale <b>2.5B users · 95M photos/day</b></span>
+        <span>Stack <b>Django · Postgres · Cassandra · Memcached</b></span>
+      </div>
+      <h1>The <span class="ital">Django</span> monolith that scaled.</h1>
+      <p class="lede">Instagram went from launch (2010) to a billion users on a Python monolith. Three engineers built the original. The story has become folklore — and a case study in how far "boring tech" can go.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The original stack</h5><p>Django, Postgres, Redis, Memcached. EC2. Nothing exotic.</p></div>
+      <div><h5>What scaled where</h5><p>Postgres sharded by user-id. Cassandra added for inbox/feed. Memcached for everything. Django ran as gunicorn workers across many instances.</p></div>
+      <div><h5>The lesson</h5><p>Most engineering teams reach for new tech long before they exhaust their current stack. Instagram exhausted Django and Postgres before adding Cassandra.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">From 0 to a billion</a></li>
+      <li><a href="#sharding">Postgres sharding the Instagram way</a></li>
+      <li><a href="#feed">Feed and pull-on-read</a></li>
+      <li><a href="#numbers">The numbers</a></li>
+      <li><a href="#lessons">Lessons</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>From <span class="ital">0</span> to a billion.</h2>
+        <div class="prose">
+          <p>Instagram launched on EC2 in 2010. Three engineers. Django. <strong>Within three months they had 1M users.</strong> Within two years, 30M. Within ten years, a billion. The "obvious" answers — rewrite in Java, switch to NoSQL — were rejected. The team optimised the Django+Postgres stack until it stopped paying.</p>
+          <p>The architectural moves were boring: <em>add a cache layer, add a read replica, shard the database, add a queue.</em> Each move bought 1–2 years of runway; the next was scheduled in advance.</p>
+        </div>
+        <div class="pull">"Boring tech scales further than tech blogs suggest. Most teams give up too early."</div>
+      </section>
+
+      <section class="dd-section" id="sharding">
+        <h2 class="section"><span class="num">02</span>Postgres sharding the <span class="ital">Instagram way</span>.</h2>
+        <div class="prose">
+          <p>Instagram's published sharding scheme is the most-cited in the field. <strong>The trick: a logical shard ID embedded in every primary key</strong>, so any row's shard is computable from the ID alone.</p>
+        </div>
+
+        <h3 class="sub">The 64-bit ID</h3>
+        <table class="matrix"><thead><tr><th>Bits</th><th>What</th></tr></thead><tbody>
+          <tr><th>41 bits</th><td>Timestamp (ms since custom epoch)</td></tr>
+          <tr><th>13 bits</th><td>Logical shard ID</td></tr>
+          <tr><th>10 bits</th><td>Auto-increment within shard</td></tr>
+        </tbody></table>
+        <div class="prose">
+          <p>13 bits = 8192 logical shards. <strong>The number of physical Postgres machines is &lt;8192</strong>; each machine hosts many logical shards. Re-sharding = moving logical shards to different physical machines; the IDs in the application don't change.</p>
+        </div>
+
+        <h3 class="sub">Sharded by user</h3>
+        <div class="prose">
+          <p>The shard for a row is determined by the user-id (the row's owner). All of one user's data lives on one shard. <strong>Single-user queries are local</strong>; no cross-shard joins needed for "show me my profile."</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="feed">
+        <h2 class="section"><span class="num">03</span>Feed and <span class="ital">pull-on-read</span>.</h2>
+        <div class="prose">
+          <p>The home-feed problem (also see <a href="interview-framework.html">interview framework</a>): show me posts from the people I follow. Fan-out-on-write (push to followers' inboxes at post time) doesn't scale for celebrity accounts. Instagram uses <strong>hybrid</strong>: regular users fan out at post; celebrities are pulled at read.</p>
+          <p>Memcached is the feed cache. <strong>Hit rate is the engineering metric</strong>; cache miss = expensive recomputation. Memcache cluster of thousands of nodes, sharded by key.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">numbers</span>.</h2>
+        <table class="matrix"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+          <tr><th>Users</th><td>~2.5B (2024)</td></tr>
+          <tr><th>Photos/day</th><td>~95M (~1100/sec)</td></tr>
+          <tr><th>Likes/day</th><td>~4B</td></tr>
+          <tr><th>Engineers at 1B users</th><td>still &lt;50 on backend infra</td></tr>
+          <tr><th>Primary language</th><td>Python (Django) — backend still</td></tr>
+          <tr><th>Logical shards</th><td>~8192</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">lessons</span>.</h2>
+        <div class="callout"><div class="ctag">Embed the shard ID in the primary key</div><p>Every row's shard is computable from its ID. Re-sharding doesn't break the application. <strong>This is the technique most people don't know about and shouldn't ship a sharded app without.</strong></p></div>
+        <div class="callout"><div class="ctag">Memcached scales further than Redis for raw cache</div><p>Memcached's design is simpler. Instagram uses it for billions of get/set per second. Redis is fine; just don't assume it's mandatory because it's fancier.</p></div>
+        <div class="callout"><div class="ctag">Don't rewrite Python because it's "slow"</div><p>The bottleneck is almost always I/O — database, cache, network. Python being 5× slower than Java on CPU rarely shows up when each request is 95% waiting. Instagram on Django to 2B users is the proof.</p></div>
+        <div class="callout"><div class="ctag">Hybrid fan-out for read/write skew</div><p>Pure push doesn't work with celebrities. Pure pull doesn't work for active users. Hybrid: push for normal users, pull for the long-tail celebrities. Same shape Twitter uses.</p></div>
+        <div class="pull">"Instagram's scale story is not about new technology. It's about not throwing away old technology."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-uber-nearby.html"><div class="label">Prev</div><div class="ttl">Uber nearby</div></a>
+        <a class="next-fwd" href="case-slack.html"><div class="label">Next</div><div class="ttl">Slack →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Case · Instagram · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Concurrency vs Parallelism · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Concurrency vs Parallelism</span>
+    </div>
+    <nav><a href="fundamental-actor-model.html">← Prev</a><a href="fundamental-hinted-handoff.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~8 min</b></span>
+        <span>Stack <b>Async/await · goroutines · threads · cores</b></span>
+      </div>
+      <h1>"Doing many things" vs "doing many things <span class="ital">at once</span>".</h1>
+      <p class="lede">Rob Pike's distinction is one of the most useful sentences in the field. Concurrency is structure: many independent things in flight. Parallelism is execution: many things running simultaneously on different cores. Concurrency is a design choice; parallelism is an implementation detail.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The Pike line</h5><p>"Concurrency is about dealing with many things at once. Parallelism is about doing many things at once."</p></div>
+      <div><h5>Why it matters</h5><p>Concurrent design opens the door to parallel execution. But you can be concurrent without parallel (1 core, event loop) and parallel without concurrent (vector instructions, GPU). The terms aren't synonyms.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#words">The two words</a></li>
+      <li><a href="#models">Concurrency models</a></li>
+      <li><a href="#parallel">Parallelism models</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="words">
+        <h2 class="section"><span class="num">01</span>The two <span class="ital">words</span>.</h2>
+        <div class="prose">
+          <p><strong>Concurrency</strong> is a structural property of a program: <em>independent computations that can interleave</em>. A single-core machine running an event loop is concurrent — many in-flight requests, only one executing at any instant. A web server with 1000 open connections is concurrent regardless of how many cores it has.</p>
+          <p><strong>Parallelism</strong> is a hardware property of execution: <em>computations physically running at the same wall-clock moment</em>. Requires multiple cores (or vector lanes, or GPU threads). A program with no concurrent structure can still be parallel — e.g., matrix multiplication on a GPU.</p>
+        </div>
+
+        <h3 class="sub">The matrix</h3>
+        <table class="matrix"><thead><tr><th>State</th><th>What it looks like</th><th>Example</th></tr></thead><tbody>
+          <tr><th>Neither</th><td>One thing at a time</td><td>Bash script</td></tr>
+          <tr><th>Concurrent, not parallel</th><td>Many in flight, one core</td><td>Node.js, Python asyncio on 1 CPU</td></tr>
+          <tr><th>Parallel, not concurrent</th><td>One task across many cores</td><td>NumPy / BLAS, GPU shader</td></tr>
+          <tr><th>Both</th><td>Many concurrent tasks across many cores</td><td>Go web server, Erlang, modern .NET</td></tr>
+        </tbody></table>
+        <div class="pull">"Concurrency enables parallelism. It doesn't require it. The distinction is the design tool."</div>
+      </section>
+
+      <section class="dd-section" id="models">
+        <h2 class="section"><span class="num">02</span>Concurrency <span class="ital">models</span>.</h2>
+        <div class="prose">
+          <p>How do you express "many things in flight"? Different languages picked different answers.</p>
+        </div>
+
+        <h3 class="sub">Threads</h3>
+        <div class="prose"><p>OS-level threads. Heavyweight (~1 MB stack each), scheduled by the kernel. <strong>The default in older Java, C, C++.</strong> Hard to use safely at high counts. Limited to thousands per process.</p></div>
+
+        <h3 class="sub">Event loop</h3>
+        <div class="prose"><p>Single-threaded, callback-driven. Concurrency without parallelism. <strong>Node.js, classic Python single-threaded servers.</strong> Simple mental model; CPU-bound work blocks the loop.</p></div>
+
+        <h3 class="sub">Async / await</h3>
+        <div class="prose"><p>Cooperative concurrency expressed with await points. <strong>Modern .NET, Python asyncio, JavaScript async, Rust async.</strong> Avoids callback hell; runtime decides scheduling. Can be parallel if the runtime uses multiple threads.</p></div>
+
+        <h3 class="sub">Goroutines / virtual threads</h3>
+        <div class="prose"><p>Lightweight runtime-managed "user-space threads". <strong>Go's goroutines (~few KB), JVM 21+ virtual threads.</strong> Scale to millions per process. Programmer writes blocking-looking code; runtime multiplexes onto OS threads.</p></div>
+
+        <h3 class="sub">Actors</h3>
+        <div class="prose"><p>See <a href="fundamental-actor-model.html">actor model chapter</a>. Concurrency expressed as isolated actors + message passing.</p></div>
+      </section>
+
+      <section class="dd-section" id="parallel">
+        <h2 class="section"><span class="num">03</span>Parallelism <span class="ital">models</span>.</h2>
+
+        <h3 class="sub">SIMD / vector</h3>
+        <div class="prose"><p>One instruction on many data points. CPU vector units (AVX, NEON). Compilers auto-vectorise simple loops. <strong>Big speedup for matrix math, image processing, string scanning.</strong></p></div>
+
+        <h3 class="sub">Multi-core (SMP)</h3>
+        <div class="prose"><p>Threads or processes pinned to different cores. The standard parallelism story. <strong>Bottleneck shifts from compute to memory bandwidth and lock contention.</strong></p></div>
+
+        <h3 class="sub">GPU</h3>
+        <div class="prose"><p>Thousands of simple cores. Massive parallelism for embarrassingly-parallel problems (rendering, neural networks). <strong>Different programming model</strong> (CUDA, Metal); the algorithm must fit the architecture.</p></div>
+
+        <h3 class="sub">Distributed</h3>
+        <div class="prose"><p>Parallel across machines. MapReduce, Spark, Dask. Network is the new bottleneck. <strong>Parallelism that crosses the network is a different design problem entirely</strong>; see <a href="fundamental-distributed-systems.html">distributed systems chapter</a>.</p></div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">04</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>I/O-bound web service</h5><p>Concurrency without much parallelism. Async/await or goroutines. The work is waiting on the network, not on CPU.</p></div>
+          <div class="cell"><h5>CPU-bound number crunching</h5><p>Parallelism, not concurrency. SIMD where it fits; multi-core thread pools; GPU for the hot inner loop if you're in that league.</p></div>
+          <div class="cell"><h5>Mixed</h5><p>Most production systems. Async/await with a pool of CPU-bound workers. Modern .NET and JVM excel at this shape.</p></div>
+          <div class="cell"><h5>Many independent stateful entities</h5><p>Actor model. Each entity is concurrent and independently routable; the runtime parallelises across cores.</p></div>
+          <div class="cell"><h5>Heavy math, big data</h5><p>GPU for inner loops; cluster compute (Spark, Ray) for the volume. Numpy / Polars in Python for in-memory analytics.</p></div>
+          <div class="cell"><h5>"I have a parallelism problem"</h5><p>Profile first. Usually it's a concurrency problem misdiagnosed. The fix is async/await, not bigger thread pool.</p></div>
+        </div>
+        <div class="pull">"Pick concurrency for structure. Pick parallelism for speed. They're different choices."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-actor-model.html"><div class="label">Prev</div><div class="ttl">Actor model</div></a>
+        <a class="next-fwd" href="fundamental-hinted-handoff.html"><div class="label">Next</div><div class="ttl">Hinted handoff →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Concurrency vs Parallelism · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

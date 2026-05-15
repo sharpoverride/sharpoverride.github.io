@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PayPal — 1B transactions, 8 VMs · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#cases">Case Studies</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">PayPal</span>
+    </div>
+    <nav>
+      <a href="case-hotstar-concurrent.html">← Prev case</a>
+      <a href="case-shopify-flash.html">Next case →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Year <b>2014–2018</b></span>
+        <span>Scale <b>1B txn/day · 8 VMs</b></span>
+        <span>Stack <b>Akka · Scala · actor model</b></span>
+      </div>
+      <h1>One billion transactions a day. <span class="ital">Eight</span> VMs.</h1>
+      <p class="lede">PayPal's payment-flow service handled a billion transactions a day on eight VMs. The trick wasn't bigger hardware — it was the actor model. Same hardware, different concurrency primitive, two orders of magnitude more throughput.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The setup</h5>
+        <p>Java/Tomcat thread-per-request stack hit a wall: thousands of threads idle on I/O, GC pauses, context switching dominating CPU.</p>
+      </div>
+      <div>
+        <h5>The move</h5>
+        <p>Rewrite on Akka actors (JVM-based actor library). One actor per request, no thread per request. Backed by Scala for the message-passing model.</p>
+      </div>
+      <div>
+        <h5>The number</h5>
+        <p>Pre-Akka: ~50 VMs for the workload. Post-Akka: 8 VMs for the same workload. <strong>5–6× density improvement, same hardware.</strong></p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The thread-per-request wall</a></li>
+        <li><a href="#actors">What the actor model gives you</a></li>
+        <li><a href="#design">PayPal's deployment</a></li>
+        <li><a href="#cost">The cost of switching</a></li>
+        <li><a href="#numbers">The numbers</a></li>
+        <li><a href="#lessons">Lessons</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The thread-per-request <span class="ital">wall</span>.</h2>
+        <div class="prose">
+          <p>A payment in PayPal touches 5–10 downstream services synchronously: fraud, ledger, risk scoring, partner banks, notifications. Each is an HTTP call; each takes ~10–100ms. <strong>A single payment request holds a Java thread for the duration</strong>, mostly idle on I/O. At 10k concurrent payments, you've consumed 10k threads. The JVM defaults aren't ready for it; thread switching dominates CPU; GC pauses lengthen under thread-creation pressure.</p>
+          <p>The standard fixes — bigger thread pools, async I/O with futures — improve throughput by a factor of 2–3. <em>They don't change the basic model.</em> PayPal needed a 10× improvement, not a 3× one. The architectural rewrite was the only path.</p>
+        </div>
+
+        <div class="pull">"A thread is 1 MB of stack. A million concurrent requests don't fit in any machine you can buy."</div>
+      </section>
+
+      <section class="dd-section" id="actors">
+        <h2 class="section"><span class="num">02</span>What the actor model <span class="ital">gives</span> you.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 360" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="ppa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · THREADS vs ACTORS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 70)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Thread per request</text>
+
+              <g>
+                <rect x="0"   y="40" width="120" height="22" fill="#1a1814"/>
+                <text x="60"  y="56" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">Thread A</text>
+                <rect x="0"   y="68" width="120" height="22" fill="#1a1814"/>
+                <text x="60"  y="84" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">Thread B</text>
+                <rect x="0"   y="96" width="120" height="22" fill="#1a1814"/>
+                <text x="60"  y="112" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">Thread C</text>
+              </g>
+
+              <text x="0" y="150" font-family="JetBrains Mono" font-size="10" fill="#c2410c">1 MB stack each</text>
+              <text x="0" y="166" font-family="JetBrains Mono" font-size="10" fill="#c2410c">blocks on I/O</text>
+              <text x="0" y="182" font-family="JetBrains Mono" font-size="10" fill="#c2410c">OS schedules</text>
+              <text x="0" y="198" font-family="JetBrains Mono" font-size="10" fill="#c2410c">~2k–10k max</text>
+            </g>
+
+            <line x1="280" y1="60" x2="280" y2="280" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+            <g transform="translate(340, 70)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Actor model</text>
+
+              <g>
+                <rect x="0"   y="40" width="60" height="22" fill="#c2410c"/>
+                <text x="30"  y="56" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">A</text>
+                <rect x="64"  y="40" width="60" height="22" fill="#c2410c"/>
+                <text x="94"  y="56" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">B</text>
+                <rect x="128" y="40" width="60" height="22" fill="#c2410c"/>
+                <text x="158" y="56" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">C</text>
+                <rect x="192" y="40" width="60" height="22" fill="#c2410c"/>
+                <text x="222" y="56" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">D</text>
+                <rect x="256" y="40" width="60" height="22" fill="#c2410c"/>
+                <text x="286" y="56" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">E</text>
+                <rect x="320" y="40" width="60" height="22" fill="#c2410c"/>
+                <text x="350" y="56" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">F</text>
+                <rect x="384" y="40" width="60" height="22" fill="#c2410c"/>
+                <text x="414" y="56" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">…</text>
+                <rect x="448" y="40" width="60" height="22" fill="#c2410c"/>
+                <text x="478" y="56" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">N</text>
+              </g>
+
+              <rect x="0" y="80" width="510" height="22" fill="#1a1814"/>
+              <text x="255" y="96" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">SHARED THREAD POOL (~CPU cores × 2)</text>
+
+              <text x="0" y="150" font-family="JetBrains Mono" font-size="10" fill="#c2410c">~300 bytes each</text>
+              <text x="0" y="166" font-family="JetBrains Mono" font-size="10" fill="#c2410c">message-passing, no I/O block</text>
+              <text x="0" y="182" font-family="JetBrains Mono" font-size="10" fill="#c2410c">JVM scheduler</text>
+              <text x="0" y="198" font-family="JetBrains Mono" font-size="10" fill="#c2410c">millions on one machine</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Actors are lightweight (~300 bytes vs a thread's 1 MB stack), scheduled by the JVM onto a small thread pool, communicate by message-passing instead of blocking I/O.</span></div>
+        </div>
+
+        <h3 class="sub">The key shift: messages instead of method calls</h3>
+        <div class="prose">
+          <p>An actor receives messages, processes them, sends messages, returns. <strong>It never blocks waiting for a response.</strong> When a payment actor needs the fraud service's verdict, it sends a message and registers a callback; it goes back to processing other messages until the response arrives. The JVM's small thread pool stays busy with CPU work; nothing idles on I/O.</p>
+          <p>This is structurally similar to Node.js's event loop or Go's goroutines — same idea, different shape. The actor model adds <strong>isolated mutable state per actor</strong>; each actor's state is private, modified only by that actor in response to messages. No locks, no race conditions, no memory model debates. The trade is verbose: every interaction is a message type with a handler.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="design">
+        <h2 class="section"><span class="num">03</span>PayPal's <span class="ital">deployment</span>.</h2>
+        <div class="prose">
+          <p>PayPal didn't rewrite the whole platform on Akka. They identified the highest-volume, most-I/O-bound path — payment authorisation — and rewrote that. <strong>The rewrite was Scala on Akka; everything else stayed on Java/Tomcat.</strong> The two systems coexisted; the actor-based service handled the hot path; the Java tier handled the rest.</p>
+          <p>This is the right pragmatic move: actor-model code requires a different mental model and toolchain. Imposing it on the entire engineering organisation would have been a multi-year project. Limiting it to a specific component contained the scope.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="cost">
+        <h2 class="section"><span class="num">04</span>The cost of <span class="ital">switching</span>.</h2>
+
+        <h3 class="sub">Hiring</h3>
+        <div class="prose">
+          <p>Scala + Akka engineers cost ~20–30% more than Java engineers and are harder to find. PayPal could absorb that cost; smaller teams cannot. <strong>The talent market is a real input to architectural choices</strong>; a brilliant technical decision that depends on hiring twenty Akka specialists isn't viable for most companies.</p>
+        </div>
+
+        <h3 class="sub">Debugging</h3>
+        <div class="prose">
+          <p>Async, message-passing code has stack traces that don't read like procedural code. The "what called this" question is harder. Distributed tracing (OpenTelemetry, Zipkin) becomes non-optional. <em>Hours that would have gone into feature work go into improving observability of the actor mesh.</em></p>
+        </div>
+
+        <h3 class="sub">Akka licensing</h3>
+        <div class="prose">
+          <p>In 2022, Lightbend (Akka's commercial sponsor) relicensed Akka under BSL — no longer freely usable for commercial production. <strong>Companies on Akka had to either pay for a commercial license or migrate.</strong> Open alternatives (Pekko, an Akka fork) exist but the ecosystem fragmented. The PayPal story predates this shift; if you're starting today, weigh it. .NET's Akka.NET, Erlang/OTP, and Microsoft Orleans are the closest equivalents that remain freely usable.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">numbers</span>.</h2>
+
+        <table class="matrix">
+          <thead>
+            <tr><th>Metric</th><th>Pre-Akka (Java)</th><th>Post-Akka</th></tr>
+          </thead>
+          <tbody>
+            <tr><th>VMs for the workload</th><td>~50</td><td>8</td></tr>
+            <tr><th>Transactions / day</th><td>1B</td><td>1B (same)</td></tr>
+            <tr><th>Threads per VM</th><td>~2,000</td><td>~16 (thread pool)</td></tr>
+            <tr><th>Concurrent in-flight requests / VM</th><td>~5,000</td><td>~100,000+</td></tr>
+            <tr><th>p99 latency</th><td>baseline</td><td>~40% lower</td></tr>
+            <tr><th>Engineering cost to rewrite</th><td>—</td><td>~6 months, 6 engineers</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">06</span>The <span class="ital">lessons</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">The concurrency primitive is the architecture</div>
+          <p>Thread-per-request and actor-model produce different ceilings on the same hardware. <strong>If your workload is I/O bound and your throughput is capped, the concurrency model is usually the cause.</strong> Async/await (modern C#, Node.js), goroutines (Go), actors (Akka, Orleans), virtual threads (JVM 21+) — all variations of the same insight.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Rewrite the hot path, not everything</div>
+          <p>PayPal rewrote one service, not the platform. The rest of the system kept running. <em>Architectural-pattern changes are almost always wrong as platform-wide mandates</em>; they're right as targeted interventions where the workload demands them.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Modern .NET makes most of this free</div>
+          <p>The PayPal story is from a pre-async-everywhere world. <code>async</code>/<code>await</code> in .NET (and Kotlin coroutines, modern Java's virtual threads) give you the I/O-non-blocking benefit without the actor-model rewrite. <strong>If you're starting today on a modern language</strong>, you already have most of what PayPal moved to. Pure actor models (Orleans, Akka.NET) are now justified only by additional benefits — location transparency, supervision trees, distributed state.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Watch the license</div>
+          <p>Akka's commercial relicense in 2022 caught many teams flat-footed. <em>Stateful infrastructure choices have a vendor-dependency profile</em>; check the licence before you build on it. Open alternatives age in and out of viability; build with replaceability in mind where you can.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Density is a cost line</div>
+          <p>50 VMs → 8 VMs is ~$25k–$50k/month of compute saved at production scale, plus the cascading savings (smaller cluster = simpler ops). <strong>The architecture review should price compute density as a feature</strong>, not just throughput.</p>
+        </div>
+
+        <div class="pull">"More hardware is the answer until the architecture is the problem. The trick is knowing which you've got."</div>
+
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-hotstar-concurrent.html">
+          <div class="label">Prev case</div>
+          <div class="ttl">Hotstar — 25M concurrent</div>
+        </a>
+        <a class="next-fwd" href="case-shopify-flash.html">
+          <div class="label">Next case</div>
+          <div class="ttl">Shopify — Flash sales →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Case Study · PayPal · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

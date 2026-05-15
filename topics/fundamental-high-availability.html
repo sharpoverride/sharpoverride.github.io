@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>High Availability · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">High availability</span>
+    </div>
+    <nav><a href="fundamental-api-versioning.html">← Prev</a><a href="fundamental-gossip.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>SLA · SLI · SLO · error budget</b></span>
+      </div>
+      <h1>The nines, <span class="ital">honestly</span>.</h1>
+      <p class="lede">"99.99% uptime" sounds great until you compute that's 53 minutes of downtime per year. SLAs, SLOs, error budgets — the vocabulary of availability is precise; the engineering follows from picking the right target.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The math</h5><p>99% = 3.65 days/year down. 99.9% = 8.76 hours. 99.99% = 53 min. 99.999% = 5.26 min. Each "9" is ~10× harder.</p></div>
+      <div><h5>The vocabulary</h5><p>SLI: what you measure. SLO: target you commit to. SLA: contract with customers. Error budget: 1 − SLO.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#math">The math</a></li>
+      <li><a href="#words">SLI, SLO, SLA</a></li>
+      <li><a href="#patterns">Patterns that buy 9s</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="math">
+        <h2 class="section"><span class="num">01</span>The <span class="ital">math</span>.</h2>
+        <table class="matrix"><thead><tr><th>SLO</th><th>Downtime / year</th><th>Downtime / month</th><th>Downtime / week</th></tr></thead><tbody>
+          <tr><th>99%</th><td>3.65 days</td><td>7.3 hours</td><td>1.68 hours</td></tr>
+          <tr><th>99.9%</th><td>8.76 hours</td><td>43.8 min</td><td>10.1 min</td></tr>
+          <tr><th>99.95%</th><td>4.38 hours</td><td>21.9 min</td><td>5.04 min</td></tr>
+          <tr><th>99.99%</th><td>52.6 min</td><td>4.38 min</td><td>1.01 min</td></tr>
+          <tr><th>99.999%</th><td>5.26 min</td><td>26 sec</td><td>6.05 sec</td></tr>
+        </tbody></table>
+
+        <div class="prose">
+          <p><strong>Each additional 9 is ~10× the engineering investment.</strong> 99% → 99.9% is a few well-placed retries. 99.9% → 99.99% requires multi-AZ. 99.99% → 99.999% requires multi-region, careful operations, chaos engineering. The cost curve is exponential; the value curve usually isn't.</p>
+          <p>Composability is brutal. If your service depends on 5 dependencies each at 99.9%, your aggregate availability is 0.999⁵ ≈ 99.5% — half a 9 worse than any one dependency. <em>Caching, retries, and graceful degradation are how you recover the 9s.</em></p>
+        </div>
+        <div class="pull">"The nines lie. The downtime budget tells the truth."</div>
+      </section>
+
+      <section class="dd-section" id="words">
+        <h2 class="section"><span class="num">02</span>SLI, SLO, <span class="ital">SLA</span>.</h2>
+
+        <h3 class="sub">SLI — Service Level Indicator</h3>
+        <div class="prose"><p>What you measure. Examples: "fraction of HTTP requests that return 2xx", "p99 latency &lt; 300ms", "fraction of writes that durably persist." <strong>The SLI is a number computed from telemetry.</strong></p></div>
+
+        <h3 class="sub">SLO — Service Level Objective</h3>
+        <div class="prose"><p>The target. "SLI must be ≥ 99.9% over a 30-day rolling window." <em>The SLO is the internal commitment.</em> If you breach it, you stop shipping features and fix reliability.</p></div>
+
+        <h3 class="sub">SLA — Service Level Agreement</h3>
+        <div class="prose"><p>The contract with customers. "If availability drops below 99.95%, you get a refund." <strong>Always set the SLO tighter than the SLA</strong>; you want a buffer between "internally unacceptable" and "we owe you money."</p></div>
+
+        <h3 class="sub">Error budget</h3>
+        <div class="prose"><p>1 − SLO. For 99.9%, the error budget is 0.1% — about 43 minutes per month of "OK to be down." <strong>Spend it deliberately</strong>: a planned deploy that risks 5 min of degradation is fine if you have budget; not fine if you've already spent it on outages this month.</p></div>
+      </section>
+
+      <section class="dd-section" id="patterns">
+        <h2 class="section"><span class="num">03</span>Patterns that <span class="ital">buy 9s</span>.</h2>
+
+        <table class="matrix"><thead><tr><th>Pattern</th><th>Adds</th><th>Cost</th></tr></thead><tbody>
+          <tr><th>Multi-AZ</th><td>~99.95 → 99.99</td><td>2–3× storage / replicas</td></tr>
+          <tr><th>Multi-region active/passive</th><td>~99.99 → 99.995</td><td>~2× total infra</td></tr>
+          <tr><th>Multi-region active/active</th><td>~99.995 → 99.999</td><td>3× total + conflict resolution</td></tr>
+          <tr><th>Retries with backoff</th><td>Recovers most transient errors</td><td>None (just code)</td></tr>
+          <tr><th>Circuit breakers</th><td>Prevents cascade failures</td><td>Library config</td></tr>
+          <tr><th>Graceful degradation</th><td>Partial outage instead of full</td><td>Feature flag, fallback paths</td></tr>
+          <tr><th>Chaos engineering</th><td>Finds bugs before customers</td><td>Engineering investment</td></tr>
+          <tr><th>Pre-warming / capacity</th><td>Survives traffic spikes</td><td>Idle compute cost</td></tr>
+        </tbody></table>
+
+        <div class="prose">
+          <p>The cheapest 9 is the one you get from <strong>graceful degradation</strong>: don't let one feature's failure take down the whole product. Recommendations down? Show a static list. Search down? Show recent items. <em>Most "outages" in the bad sense are full outages; partial degradation barely registers.</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">04</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Internal tool, ~10 users</h5><p>99% is fine. Single VM. Backups. Don't over-engineer.</p></div>
+          <div class="cell"><h5>B2B SaaS, paying customers</h5><p>99.9% — 99.95%. Multi-AZ, retries, circuit breakers. Sub-min monitoring. Defined SLA in contract.</p></div>
+          <div class="cell"><h5>Payments / health / mission-critical</h5><p>99.99%+. Multi-region, chaos engineering, defined error budget, dedicated SRE.</p></div>
+          <div class="cell"><h5>Free consumer product</h5><p>99.9% is the social-media expectation. Anything less and you get bad press.</p></div>
+          <div class="cell"><h5>You don't know the right SLO</h5><p>Start at 99.9% and measure for 90 days. If you're hitting it easily, raise. If you're missing, fix or lower.</p></div>
+          <div class="cell"><h5>Aiming for 99.999%</h5><p>Reconsider. The engineering investment past 99.99% is enormous; the user-perceived benefit is small. Reserve for genuine safety-of-life systems.</p></div>
+        </div>
+        <div class="pull">"Five nines is a marketing number. Three nines is a real engineering target."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-api-versioning.html"><div class="label">Prev</div><div class="ttl">API versioning</div></a>
+        <a class="next-fwd" href="fundamental-gossip.html"><div class="label">Next</div><div class="ttl">Gossip protocol →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · High availability · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

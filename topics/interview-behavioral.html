@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Behavioral Interview Playbook · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive interview">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#interviews">Interviews</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Behavioral playbook</span>
+    </div>
+    <nav><a href="../system-design.html">← Index</a><a href="interview-mobile-framework.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Interview <b>playbook</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~11 min</b></span>
+        <span>Stack <b>STAR · scope · seniority signals</b></span>
+      </div>
+      <h1>Stories with <span class="ital">structure</span>.</h1>
+      <p class="lede">The behavioural interview is the most-prepared-for and least-taken-seriously round. Senior engineers fail it not because they lack stories, but because they tell them without structure. STAR is the structure. The trick is making it not sound like STAR.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>What it tests</h5><p>How you make decisions under pressure. How you handle conflict. How you scope. How you grow. Whether you take ownership.</p></div>
+      <div><h5>The format</h5><p>"Tell me about a time when…" — open-ended; ~5 minutes per answer; the interviewer drills in on details.</p></div>
+      <div><h5>The standard themes</h5><p>(1) Conflict. (2) Failure. (3) Influence without authority. (4) Difficult decision. (5) Cross-team project. (6) Mistake / lesson learned.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why it's hard for seniors</a></li>
+        <li><a href="#star">STAR, but better</a></li>
+        <li><a href="#themes">The themes &amp; what they test</a></li>
+        <li><a href="#anti">Anti-patterns</a></li>
+        <li><a href="#prep">Preparation guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why it's hard for <span class="ital">seniors</span>.</h2>
+        <div class="prose">
+          <p>Junior interviewers haven't been in the field long; their stories are simple and clean. Senior engineers have been in the field for a decade; their stories are <em>massive</em> projects with too much context. <strong>The senior failure mode is "this would take an hour to explain"</strong> — and then they spend the first three minutes on background and never get to the point.</p>
+          <p>The interviewer wants a specific shape: situation, what you did, what happened. Five minutes total. <em>Selecting and compressing is the skill being tested</em>, alongside the substance.</p>
+        </div>
+        <div class="pull">"The behavioural interview isn't about whether you've done the thing. It's about whether you can tell the story in five minutes."</div>
+      </section>
+
+      <section class="dd-section" id="star">
+        <h2 class="section"><span class="num">02</span>STAR, but <span class="ital">better</span>.</h2>
+
+        <table class="matrix">
+          <thead><tr><th>Letter</th><th>What</th><th>Time</th></tr></thead>
+          <tbody>
+            <tr><th>S — Situation</th><td>1–2 sentences. Project, team size, your role.</td><td>30 sec</td></tr>
+            <tr><th>T — Task</th><td>The specific challenge. The number that mattered.</td><td>30 sec</td></tr>
+            <tr><th>A — Action</th><td>What <em>you</em> did. Decisions, tradeoffs, who you talked to.</td><td>3 min</td></tr>
+            <tr><th>R — Result</th><td>What changed. Quantified if possible.</td><td>1 min</td></tr>
+          </tbody>
+        </table>
+
+        <h3 class="sub">The "A" is the entire answer</h3>
+        <div class="prose">
+          <p>Most candidates spend too long on S and T (context-setting) and not enough on A (the actions). <strong>The interviewer scores on A.</strong> The 3 minutes on actions are where you signal seniority: how did you frame the problem? What did you consider and reject? Who did you bring along? What did you escalate and what did you handle?</p>
+        </div>
+
+        <h3 class="sub">Use "I", not "we"</h3>
+        <div class="prose">
+          <p>"We migrated the database" doesn't tell the interviewer what <em>you</em> did. <strong>"I led the migration; I owned the rollback plan; my recommendation to do it in waves was accepted."</strong> Senior interviewers listen for "I" — not because of ego, but because they need to assess <em>your</em> contribution.</p>
+        </div>
+
+        <h3 class="sub">Quantify when you can</h3>
+        <div class="prose">
+          <p>"It made things faster" → "p99 latency dropped from 800ms to 120ms, a 6× improvement." Specific numbers signal that you measured. <em>"I don't remember the exact number, but it was significant"</em> is OK occasionally; never every time.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="themes">
+        <h2 class="section"><span class="num">03</span>The <span class="ital">themes</span>.</h2>
+
+        <h3 class="sub">Conflict (with peer / manager / staff+)</h3>
+        <div class="prose">
+          <p><strong>Tests:</strong> can you disagree respectfully and still get to a decision. Bad answer: "I was right, they were wrong." Good answer: "We had different priors; here's the data I brought; here's where I conceded; here's the outcome." <em>Show that disagreement → decision, not disagreement → grudge.</em></p>
+        </div>
+
+        <h3 class="sub">Failure</h3>
+        <div class="prose">
+          <p><strong>Tests:</strong> ownership, growth. Bad answer: "We failed because the team didn't…". Good answer: "I made the call to X; in retrospect, I missed Y; the next time I faced a similar decision, I did Z differently." <em>Concrete failure + concrete lesson + evidence the lesson applied.</em></p>
+        </div>
+
+        <h3 class="sub">Influence without authority</h3>
+        <div class="prose">
+          <p><strong>Tests:</strong> can you move an organisation. Bad: "I asked my manager to escalate." Good: "I built the prototype, brought it to staff+, scoped a 2-week experiment with team X, presented the results, secured commitment from team Y." <em>The mechanics of getting things done in a big org.</em></p>
+        </div>
+
+        <h3 class="sub">Difficult decision</h3>
+        <div class="prose">
+          <p><strong>Tests:</strong> can you weigh tradeoffs explicitly. <em>Always name the option you didn't pick</em>, and why it was tempting. Pure-justification answers ("X was obviously right") fail; the interviewer wants to see your decision frame.</p>
+        </div>
+
+        <h3 class="sub">Cross-team project</h3>
+        <div class="prose">
+          <p><strong>Tests:</strong> can you coordinate across boundaries. The signal: do you naturally orient on team-level goals or stay siloed in your team's deliverables?</p>
+        </div>
+
+        <h3 class="sub">Mistake</h3>
+        <div class="prose">
+          <p><strong>Tests:</strong> self-awareness. The mistake should be <em>real</em>. Candidates who say "I work too hard" or "I take on too much" telegraph that they haven't reflected. A real mistake — and a real lesson — beats a polished non-answer.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="anti">
+        <h2 class="section"><span class="num">04</span><span class="ital">Anti-patterns</span>.</h2>
+
+        <div class="callout"><div class="ctag">"We" instead of "I"</div><p>The interviewer can't grade the team. Be specific about your contribution.</p></div>
+        <div class="callout"><div class="ctag">No actual decision</div><p>"And then we discussed and decided to do X." Bad. <em>Who decided?</em> Was it you? On what basis? The decision is the signal.</p></div>
+        <div class="callout"><div class="ctag">Endless setup</div><p>3 minutes of context before any action. The interviewer is glazing over. Bring the timer down: 1 minute setup, 3 minutes action, 1 minute result.</p></div>
+        <div class="callout"><div class="ctag">Examples too old or too small</div><p>The university project doesn't show senior judgement. The 1-day decision doesn't show scope. <strong>Pick examples that match the level you're interviewing for.</strong></p></div>
+        <div class="callout"><div class="ctag">Refusing to talk about failure</div><p>"I haven't really had a failure." This is a credibility-killing answer. Everyone has failures; pick one and be honest.</p></div>
+
+        <div class="pull">"Specificity is the texture that makes you sound senior."</div>
+      </section>
+
+      <section class="dd-section" id="prep">
+        <h2 class="section"><span class="num">05</span>Preparation <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Map your career into stories</h5><p>List 8–12 projects. Tag each with which themes it covers (conflict / failure / influence / etc.). Aim for full coverage with overlap.</p></div>
+          <div class="cell"><h5>Write the bones, not the script</h5><p>Bullet points for each story: situation, key actions (3–4), result. Don't memorise prose; you'll sound rehearsed.</p></div>
+          <div class="cell"><h5>Time yourself</h5><p>5 minutes max per answer. If you go over, cut. The pruning is the practice.</p></div>
+          <div class="cell"><h5>Recruiter call is data</h5><p>Ask what themes they emphasise. "Ownership", "bias for action", "high standards" are signals. Bring stories that hit those.</p></div>
+          <div class="cell"><h5>Mock with a peer</h5><p>Practise with a peer who'll push back. "Why did you do that and not Y?" The follow-ups are what you're really practising.</p></div>
+          <div class="cell"><h5>Have your worst story ready</h5><p>The one where you'd rather not talk about it. Practise telling it cleanly. If it comes up unprepared, you'll fumble; prepared, you sound mature.</p></div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="../system-design.html"><div class="label">Index</div><div class="ttl">All interviews</div></a>
+        <a class="next-fwd" href="interview-mobile-framework.html"><div class="label">Next</div><div class="ttl">Mobile SD framework →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Interview · Behavioral · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

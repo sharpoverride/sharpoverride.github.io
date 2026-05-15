@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Hinted Handoff · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Hinted handoff</span>
+    </div>
+    <nav><a href="fundamental-concurrency-vs-parallelism.html">← Prev</a><a href="fundamental-micro-frontends.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~7 min</b></span>
+        <span>Stack <b>Dynamo · Cassandra · Riak · sloppy quorum</b></span>
+      </div>
+      <h1>Write somewhere, <span class="ital">repair</span> later.</h1>
+      <p class="lede">A node is down. A write needs to land somewhere. Hinted handoff: store the write on a healthy peer with a note saying "this belongs to node X"; when X recovers, the peer delivers. The result: writes accept during partitions; consistency converges when the partition heals.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>What it solves</h5><p>Strict quorum writes block when a replica is down. Hinted handoff keeps writes accepting at the cost of brief staleness.</p></div>
+      <div><h5>Where it lives</h5><p>Dynamo (2007), Cassandra, Riak, ScyllaDB. The technique is the canonical "AP" survival pattern.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">Strict quorum's fragility</a></li>
+      <li><a href="#mechanics">How it works</a></li>
+      <li><a href="#tradeoffs">Tradeoffs</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Strict quorum's <span class="ital">fragility</span>.</h2>
+        <div class="prose">
+          <p>You have N replicas. Configured for W=2 writes to succeed. <strong>If one replica is down and another is slow, W=2 can't be satisfied; the write rejects.</strong> The user sees an error; the system technically had capacity to absorb the write somewhere; it just refused.</p>
+          <p>For a payment, this might be acceptable — you'd rather a clear error than ambiguity. For "add to cart," it's a customer-experience disaster. Hinted handoff lets the write succeed against a stand-in replica, deferring delivery to the intended node.</p>
+        </div>
+        <div class="pull">"The strict-quorum write that blocks is also the strict-quorum write that loses a sale."</div>
+      </section>
+
+      <section class="dd-section" id="mechanics">
+        <h2 class="section"><span class="num">02</span>How it <span class="ital">works</span>.</h2>
+        <div class="prose">
+          <p>Cluster of 5 nodes; replication factor 3; for key K the canonical replicas are nodes {A, B, C}. <strong>A is down.</strong> Coordinator writes to B and C as normal; for A's replica, it picks the next healthy node D and writes there with a <em>hint</em>: "this data belongs to A; deliver when A recovers."</p>
+          <p>Sloppy quorum + hinted handoff: <strong>W is satisfied against any 2 reachable nodes</strong>, not specifically A/B/C. The write succeeds. The hint sits on D until A comes back, then drains.</p>
+        </div>
+
+        <h3 class="sub">Recovery loop</h3>
+        <div class="prose">
+          <p>Every minute (or so), D checks: is A reachable? If yes, send the pending hints. A applies them; D deletes them from its hint log. <strong>Eventually consistent</strong>: after A recovers, the data flows in, the cluster converges.</p>
+        </div>
+
+        <h3 class="sub">Anti-entropy is the backstop</h3>
+        <div class="prose">
+          <p>Hints can be lost (D itself crashes; hints expire). <strong>Periodic anti-entropy</strong> — Merkle-tree comparison between replicas — detects and repairs any remaining divergence. <em>Hinted handoff is the fast path; anti-entropy is the safety net.</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">03</span><span class="ital">Tradeoffs</span>.</h2>
+
+        <div class="callout"><div class="ctag">Brief inconsistency</div><p>Reads against A immediately after recovery may not see the hinted writes (yet). Read quorum (R=2) covers it: at least one of B or C has the data. <strong>Read-your-own-writes survives if R+W &gt; N.</strong></p></div>
+
+        <div class="callout"><div class="ctag">Hint storms</div><p>If A is down for an hour, D accumulates an hour of writes. When A returns, D dumps everything; A's network and disk spike. Tune the drain rate to avoid melting the recovering node.</p></div>
+
+        <div class="callout"><div class="ctag">Hints expire</div><p>By policy (typically 3–24 hours). If A doesn't recover in that window, hints are dropped. <em>Don't rely on hints for long-outage recovery</em>; use the anti-entropy mechanism (read repair, periodic Merkle compare).</p></div>
+
+        <div class="callout"><div class="ctag">Not for safety-critical data</div><p>The window of inconsistency is real. For payments or accounting, prefer strict-quorum and accept the availability cost. Hinted handoff is the AP-style "writes always accept" answer.</p></div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">04</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>AP-style database (Cassandra, Riak)</h5><p>Hinted handoff on by default. Tune hint TTL and drain rate by your operational reality.</p></div>
+          <div class="cell"><h5>CP-style database (Spanner, Zookeeper)</h5><p>Not used. Strict consensus refuses writes during partition; that's the correct semantics for the workload.</p></div>
+          <div class="cell"><h5>Custom replication layer</h5><p>Worth implementing for shopping-cart-shaped workloads. Skip for ledger-shaped workloads.</p></div>
+          <div class="cell"><h5>Need both consistency and availability</h5><p>You can't have both during partition (CAP). Hinted handoff gives availability and converges to consistency; pure linearisability gives the inverse. Pick by data semantics.</p></div>
+          <div class="cell"><h5>Long-outage recovery</h5><p>Anti-entropy (Merkle trees) is the backstop. Hints expire; entropy detection doesn't.</p></div>
+          <div class="cell"><h5>Hot key during outage</h5><p>One downed replica + a viral content burst = the standby gets crushed. Rate-limit the drain when the original replica returns.</p></div>
+        </div>
+        <div class="pull">"Hinted handoff is the technique that turns 'sometimes-down' into 'never blocked'."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-concurrency-vs-parallelism.html"><div class="label">Prev</div><div class="ttl">Concurrency vs parallelism</div></a>
+        <a class="next-fwd" href="fundamental-micro-frontends.html"><div class="label">Next</div><div class="ttl">Micro frontends →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Hinted handoff · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

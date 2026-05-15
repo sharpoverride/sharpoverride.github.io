@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Distributed Systems — Overview · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Distributed systems</span>
+    </div>
+    <nav><a href="fundamental-stock-exchange.html">← Prev</a><a href="../system-design.html">Index →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~13 min</b></span>
+        <span>Stack <b>CAP · FLP · time · consensus · failure modes</b></span>
+      </div>
+      <h1>The <span class="ital">eight fallacies</span>, and what to do about them.</h1>
+      <p class="lede">"The network is reliable." "Latency is zero." "Bandwidth is infinite." Peter Deutsch's 1994 list of fallacies still names the bugs production teams ship today. The discipline of distributed systems is mostly the discipline of not believing them.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The fallacies</h5><p>Network reliable. Latency zero. Bandwidth infinite. Network secure. Topology stable. One admin. Transport cost zero. Network homogeneous.</p></div>
+      <div><h5>The acronyms to know</h5><p>CAP, PACELC, FLP, BASE, ACID. Each names a tradeoff that becomes architectural.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#fallacies">The eight fallacies</a></li>
+      <li><a href="#cap">CAP and PACELC</a></li>
+      <li><a href="#time">Time is the hard one</a></li>
+      <li><a href="#consensus">Consensus</a></li>
+      <li><a href="#patterns">The standard patterns</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="fallacies">
+        <h2 class="section"><span class="num">01</span>The eight <span class="ital">fallacies</span>.</h2>
+        <table class="matrix"><thead><tr><th>Fallacy</th><th>Reality</th></tr></thead><tbody>
+          <tr><th>The network is reliable</th><td>Partitions happen daily at scale</td></tr>
+          <tr><th>Latency is zero</th><td>Cross-region = 150ms minimum</td></tr>
+          <tr><th>Bandwidth is infinite</th><td>Egress costs money; backbone gets saturated</td></tr>
+          <tr><th>The network is secure</th><td>mTLS or assume MITM</td></tr>
+          <tr><th>Topology doesn't change</th><td>Pods, IPs, DNS — all churn constantly</td></tr>
+          <tr><th>There is one administrator</th><td>Multiple teams; multiple clouds; multiple policies</td></tr>
+          <tr><th>Transport cost is zero</th><td>Serialisation, encryption, copying are real CPU</td></tr>
+          <tr><th>The network is homogeneous</th><td>5G, Wi-Fi, LTE, satellite — different latencies, MTUs</td></tr>
+        </tbody></table>
+        <div class="pull">"Every bug in a distributed system is one of these fallacies hiding."</div>
+      </section>
+
+      <section class="dd-section" id="cap">
+        <h2 class="section"><span class="num">02</span>CAP and <span class="ital">PACELC</span>.</h2>
+
+        <h3 class="sub">CAP</h3>
+        <div class="prose">
+          <p>Brewer's theorem. During a network partition, you must choose: <strong>Consistency</strong> (refuse writes) or <strong>Availability</strong> (accept writes, reconcile later). You cannot have both. <em>The "C" in CAP is linearisability</em>; weaker consistencies don't trigger the trade.</p>
+          <p>Dynamo chose A. Spanner chose C. Most modern databases let you tune it. See <a href="consistency-patterns.html">consistency patterns</a> for the spectrum.</p>
+        </div>
+
+        <h3 class="sub">PACELC</h3>
+        <div class="prose">
+          <p>CAP only describes partition behaviour. PACELC extends: <strong>during a partition (P) pick A or C; else (E) pick latency (L) or consistency (C)</strong>. In normal operation, faster-but-eventual or slower-but-strong is also a choice. Cassandra is PA/EL; HBase is PC/EC; MongoDB is PA/EC.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="time">
+        <h2 class="section"><span class="num">03</span>Time is the <span class="ital">hard one</span>.</h2>
+        <div class="prose">
+          <p>In a single process, time is monotonic. In a distributed system, every node's clock disagrees by milliseconds (NTP-synced) or hours (drifting). <strong>You cannot order events from different nodes by wall-clock without ambiguity.</strong></p>
+        </div>
+
+        <h3 class="sub">Lamport clocks</h3>
+        <div class="prose">
+          <p>Logical counter per node, incremented on each event, attached to every message. On receive, set local counter to max(local, received) + 1. <strong>Establishes happens-before ordering</strong> for events that are causally related; says nothing about concurrent events.</p>
+        </div>
+
+        <h3 class="sub">Vector clocks</h3>
+        <div class="prose">
+          <p>Per-node counter for every node in the cluster. Detects concurrent (causally-unrelated) writes; gives clients the data to merge. <strong>Dynamo used these.</strong> Application has to know how to reconcile concurrents.</p>
+        </div>
+
+        <h3 class="sub">TrueTime</h3>
+        <div class="prose">
+          <p>Google's hardware-clock-bounded interval (see <a href="paper-spanner.html">Spanner paper</a>). Returns "now is between X and Y." Lets the database wait out clock uncertainty to provide global ordering. <em>The cheating answer: pay for atomic clocks.</em></p>
+        </div>
+
+        <h3 class="sub">HLC — hybrid logical clocks</h3>
+        <div class="prose">
+          <p>Wall-clock combined with a logical counter. Stays close to physical time but corrects for skew. <strong>CockroachDB, YugabyteDB use HLCs</strong> — the software-only approximation of TrueTime.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="consensus">
+        <h2 class="section"><span class="num">04</span><span class="ital">Consensus</span>.</h2>
+        <div class="prose">
+          <p>The problem: N nodes must agree on a value (the next entry in a log, the current leader, the cluster config). <strong>FLP impossibility (1985)</strong>: in an asynchronous network with even one possible crash, no deterministic protocol can guarantee consensus in bounded time. Practical protocols (Paxos, Raft) work because they assume eventual progress, not bounded time.</p>
+        </div>
+
+        <h3 class="sub">Paxos</h3>
+        <div class="prose">
+          <p>The 1989 protocol. Two phases: propose, accept. Notoriously hard to understand. Multi-Paxos extends to a sequence of values (a log). <strong>Underneath Google Spanner, Chubby, Zookeeper's Zab.</strong></p>
+        </div>
+
+        <h3 class="sub">Raft</h3>
+        <div class="prose">
+          <p>2014 reimagining of Paxos for understandability. <strong>Roles</strong>: leader, follower, candidate. The leader replicates a log to followers; commit when a majority acks. Election by timeout + vote. <em>The protocol that most modern systems use</em> — etcd, Consul, TiKV, CockroachDB.</p>
+        </div>
+
+        <h3 class="sub">Why quorum?</h3>
+        <div class="prose">
+          <p>For N nodes, a majority (N/2+1) is the minimum that guarantees consistency. <strong>Two majorities cannot exist simultaneously in a partition</strong> — at most one side has the majority; the other side correctly refuses to act. This is the deepest property of consensus systems.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="patterns">
+        <h2 class="section"><span class="num">05</span>The standard <span class="ital">patterns</span>.</h2>
+        <table class="matrix"><thead><tr><th>Problem</th><th>Pattern</th><th>Where</th></tr></thead><tbody>
+          <tr><th>Partition by key</th><td>Consistent hashing</td><td><a href="consistent-hashing.html">CH chapter</a></td></tr>
+          <tr><th>One service active at a time</th><td>Leader election</td><td><a href="leader-election.html">Leader chapter</a></td></tr>
+          <tr><th>At-least-once delivery</th><td>Idempotent consumers</td><td><a href="idempotency-keys.html">Idempotency</a></td></tr>
+          <tr><th>Cross-service transaction</th><td>Saga</td><td><a href="saga-pattern.html">Saga chapter</a></td></tr>
+          <tr><th>Atomic write + publish</th><td>Outbox</td><td><a href="change-data-capture.html">CDC chapter</a></td></tr>
+          <tr><th>Blast radius isolation</th><td>Cell-based</td><td><a href="fundamental-cell-architecture.html">Cells chapter</a></td></tr>
+          <tr><th>Membership / failure detection</th><td>Gossip</td><td><a href="fundamental-gossip.html">Gossip chapter</a></td></tr>
+          <tr><th>Strong global consistency</th><td>Spanner-style</td><td><a href="paper-spanner.html">Spanner paper</a></td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">06</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Designing fresh</h5><p>Start with single-machine. Add distribution only when the workload requires it. Most products never need actual distribution.</p></div>
+          <div class="cell"><h5>Need consistency</h5><p>Use a system that provides it (Spanner, CockroachDB, classic SQL with replication). Don't reinvent consensus.</p></div>
+          <div class="cell"><h5>Need availability under partition</h5><p>Pick an AP system (Cassandra, Dynamo, Riak). Plan for conflict resolution. Use CRDTs where the data fits.</p></div>
+          <div class="cell"><h5>Suspect ordering bugs</h5><p>You're probably trusting wall-clock somewhere. Look for cross-node timestamp comparisons; replace with logical clocks or fencing tokens.</p></div>
+          <div class="cell"><h5>Cluster membership</h5><p>Use what your platform provides (K8s, Consul). Don't roll your own gossip without a strong reason.</p></div>
+          <div class="cell"><h5>Want to learn</h5><p>Read Kleppmann's "Designing Data-Intensive Applications." It's the modern textbook. Then the original Paxos and Raft papers.</p></div>
+        </div>
+        <div class="pull">"Distributed systems is the art of pretending the network exists, while knowing it does."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-stock-exchange.html"><div class="label">Prev</div><div class="ttl">Stock exchange</div></a>
+        <a class="next-fwd" href="../system-design.html"><div class="label">Index</div><div class="ttl">All chapters →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Distributed systems · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

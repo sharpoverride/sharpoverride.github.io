@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Timsort · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Timsort</span>
+    </div>
+    <nav><a href="fundamental-cybersecurity-terms.html">← Prev</a><a href="fundamental-mobile-architecture.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~9 min</b></span>
+        <span>Stack <b>Hybrid merge + binary insertion · runs · galloping</b></span>
+      </div>
+      <h1>The sort behind <span class="ital">everything you've called <code>sort()</code> on</span>.</h1>
+      <p class="lede">Tim Peters invented Timsort for Python in 2002. It's now the default in Python's <code>list.sort()</code>, Java's <code>Arrays.sort()</code>, Android, Rust's <code>slice.sort()</code>, V8 (JavaScript). The trick: real-world data isn't random; it has runs of order; exploit them.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>Why it won</h5><p>O(n) on already-sorted-ish data. O(n log n) worst case. Stable. Conservative on extra memory. Pleasantly fast in practice.</p></div>
+      <div><h5>What it's not</h5><p>Quicksort. The lore in textbooks is quicksort; the production reality has been Timsort or a Timsort-derivative for over a decade.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#why">Why it exists</a></li>
+      <li><a href="#runs">Runs &amp; minrun</a></li>
+      <li><a href="#merge">Merge &amp; galloping</a></li>
+      <li><a href="#numbers">Complexity</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="why">
+        <h2 class="section"><span class="num">01</span>Why it <span class="ital">exists</span>.</h2>
+        <div class="prose">
+          <p>Textbook sorts (quicksort, mergesort) treat the input as random. Real-world input isn't random — log files are partially sorted, sensor data trends, user data clusters. <strong>Timsort exploits the order that's already there.</strong> If the input is mostly sorted, it runs in O(n); if it's reverse-sorted, also O(n). Random input is the worst case at O(n log n).</p>
+          <p>It's also <strong>stable</strong>: equal elements maintain their original order. Mergesort is stable; quicksort isn't. For sorting tables by multiple columns or anything where stability matters, Timsort wins by default.</p>
+        </div>
+        <div class="pull">"The textbook sort is for the worst case. The production sort is for the common case."</div>
+      </section>
+
+      <section class="dd-section" id="runs">
+        <h2 class="section"><span class="num">02</span>Runs &amp; <span class="ital">minrun</span>.</h2>
+        <div class="prose">
+          <p>Scan the array. Identify <strong>runs</strong> — already-sorted (or reverse-sorted) subsequences. Reverse the descending ones in place; you now have ascending runs. <em>Most real-world arrays have long natural runs</em>; Timsort builds on them rather than ignoring them.</p>
+        </div>
+
+        <h3 class="sub">Minrun</h3>
+        <div class="prose">
+          <p>If a natural run is too short, Timsort extends it via binary insertion sort to a target size called <strong>minrun</strong> (typically 32–64). Why: very-short runs cause too many merges; binary insertion sort is O(n²) but fast for small n with low constant factors. The "merge runs" phase is the expensive part; minrun keeps the count manageable.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="merge">
+        <h2 class="section"><span class="num">03</span>Merge &amp; <span class="ital">galloping</span>.</h2>
+        <div class="prose">
+          <p>Push runs onto a stack. Maintain invariants: top run lengths obey size relationships. When invariants break, merge. The merging respects the stack invariant; Timsort's bookkeeping is what makes the total work O(n log n) rather than O(n²).</p>
+        </div>
+
+        <h3 class="sub">Galloping</h3>
+        <div class="prose">
+          <p>While merging two runs A and B: if A keeps winning (many consecutive elements of A are smaller than B's head), <strong>switch to "galloping" mode</strong> — use binary search to find where B's head fits in A, copy that whole block of A at once. <em>Turns a string of comparisons into one log-n search</em>; when one run is much smaller than the other, this is a huge win.</p>
+        </div>
+
+        <h3 class="sub">The galloping threshold adapts</h3>
+        <div class="prose">
+          <p>If galloping pays off, lower the threshold (be quicker to gallop next time). If it doesn't, raise it. <strong>Self-tuning to the data's actual shape.</strong> This is the dose of empiricism that makes Timsort feel "smart."</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">04</span><span class="ital">Complexity</span>.</h2>
+        <table class="matrix"><thead><tr><th>Case</th><th>Time</th></tr></thead><tbody>
+          <tr><th>Already sorted (or reverse)</th><td>O(n)</td></tr>
+          <tr><th>Many runs of length k</th><td>O(n + n log(n/k))</td></tr>
+          <tr><th>Random data</th><td>O(n log n)</td></tr>
+          <tr><th>Worst case</th><td>O(n log n)</td></tr>
+          <tr><th>Space</th><td>O(n) worst (merge buffer); often less</td></tr>
+          <tr><th>Stable?</th><td>Yes</td></tr>
+        </tbody></table>
+
+        <div class="callout"><div class="ctag">Why this matters for system design</div><p>Most language standard libraries default to Timsort or a variant. <strong>"Sort" is fast and stable by default</strong>; you don't usually need a custom sort. The rare exceptions: external sorting (data doesn't fit in RAM — merge sort with disk runs), radix sort for fixed-width keys, counting sort for small integer ranges, parallel sorts for many-core machines.</p></div>
+
+        <div class="callout"><div class="ctag">The 2015 Java bug</div><p>Timsort's invariant-keeping logic had an off-by-one that, on adversarial inputs, broke the invariants — and crashed Java's Arrays.sort with ArrayIndexOutOfBoundsException. Found by formal verification, fixed promptly. <em>Even "trivial" sort code in 2015 still had bugs hiding.</em></p></div>
+
+        <div class="pull">"Quicksort is the algorithm in your textbook. Timsort is the algorithm in your runtime."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-cybersecurity-terms.html"><div class="label">Prev</div><div class="ttl">Security terms</div></a>
+        <a class="next-fwd" href="fundamental-mobile-architecture.html"><div class="label">Next</div><div class="ttl">Mobile architecture →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Timsort · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

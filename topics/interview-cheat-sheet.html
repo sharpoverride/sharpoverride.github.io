@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>System Design Interview Cheat Sheet · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive interview">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#interviews">Interviews</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Cheat sheet</span>
+    </div>
+    <nav><a href="interview-failure-modes.html">← Prev</a><a href="../system-design.html">Index →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Interview <b>cheat sheet</b></span>
+        <span>Difficulty <b>★★☆☆☆</b></span>
+        <span>Read <b>~8 min</b></span>
+        <span>Stack <b>Numbers · patterns · vocabulary</b></span>
+      </div>
+      <h1>One page. <span class="ital">Everything</span> you should have memorised.</h1>
+      <p class="lede">Print, fold, keep on your desk. The numbers, the patterns, the vocabulary, the failure-mode prompts. Cross-references to the chapters that go deep on each.</p>
+    </div>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#nums">Anchor numbers</a></li>
+      <li><a href="#latencies">Latency table</a></li>
+      <li><a href="#patterns">Pattern menu</a></li>
+      <li><a href="#vocab">Tradeoff vocabulary</a></li>
+      <li><a href="#prompts">Prompts to surface</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="nums">
+        <h2 class="section"><span class="num">01</span>Anchor <span class="ital">numbers</span>.</h2>
+        <table class="matrix"><thead><tr><th>Item</th><th>Order of magnitude</th></tr></thead><tbody>
+          <tr><th>Seconds in a day</th><td>~10⁵ (86,400)</td></tr>
+          <tr><th>Seconds in a year</th><td>~3 × 10⁷</td></tr>
+          <tr><th>2¹⁰</th><td>~10³</td></tr>
+          <tr><th>2²⁰</th><td>~10⁶</td></tr>
+          <tr><th>2³⁰</th><td>~10⁹</td></tr>
+          <tr><th>Tweet / chat message</th><td>~1 KB</td></tr>
+          <tr><th>Image (compressed)</th><td>~200 KB</td></tr>
+          <tr><th>HD video minute</th><td>~100 MB</td></tr>
+          <tr><th>Web server QPS</th><td>~10k</td></tr>
+          <tr><th>SQL writes/s on a primary</th><td>~5k–20k</td></tr>
+          <tr><th>Kafka per broker</th><td>~100 MB/s</td></tr>
+          <tr><th>Redis ops/s</th><td>~100k</td></tr>
+          <tr><th>Peak ≈ avg ×</th><td>~4</td></tr>
+        </tbody></table>
+        <div class="prose"><p>See <a href="fundamental-back-of-envelope.html">BoE chapter</a> for the math.</p></div>
+      </section>
+
+      <section class="dd-section" id="latencies">
+        <h2 class="section"><span class="num">02</span>Latency <span class="ital">table</span>.</h2>
+        <table class="matrix"><thead><tr><th>Op</th><th>Time</th></tr></thead><tbody>
+          <tr><th>L1 / RAM access</th><td>~1 / 100 ns</td></tr>
+          <tr><th>Mutex lock</th><td>~25 ns</td></tr>
+          <tr><th>SSD random read</th><td>~100 μs</td></tr>
+          <tr><th>RPC within DC</th><td>~500 μs</td></tr>
+          <tr><th>RPC within region</th><td>~5 ms</td></tr>
+          <tr><th>RPC across continent</th><td>~50 ms</td></tr>
+          <tr><th>RPC across ocean</th><td>~150 ms</td></tr>
+          <tr><th>TLS handshake (1.3)</th><td>~30–80 ms</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="patterns">
+        <h2 class="section"><span class="num">03</span>Pattern <span class="ital">menu</span>.</h2>
+        <table class="matrix"><thead><tr><th>Problem</th><th>Pattern</th><th>Chapter</th></tr></thead><tbody>
+          <tr><th>Too many reads</th><td>Cache (Memcache/Redis)</td><td><a href="caching-patterns.html">Caching</a></td></tr>
+          <tr><th>Too many writes</th><td>Shard by key</td><td><a href="database-sharding.html">Sharding</a></td></tr>
+          <tr><th>Hot key</th><td>Coalesce reads / split key</td><td><a href="case-discord-cassandra.html">Discord</a></td></tr>
+          <tr><th>Cross-service transaction</th><td>Saga</td><td><a href="saga-pattern.html">Saga</a></td></tr>
+          <tr><th>Write + publish atomically</th><td>Outbox</td><td><a href="change-data-capture.html">CDC</a></td></tr>
+          <tr><th>At-least-once delivery</th><td>Idempotency keys</td><td><a href="idempotency-keys.html">Idempotency</a></td></tr>
+          <tr><th>Real-time push</th><td>WebSocket / SSE + backplane</td><td><a href="realtime-channels.html">Realtime</a></td></tr>
+          <tr><th>Multi-tenant scale</th><td>Cell architecture</td><td><a href="fundamental-cell-architecture.html">Cells</a></td></tr>
+          <tr><th>Hot geo lookup</th><td>S2 / H3 spatial index</td><td><a href="case-uber-nearby.html">Uber</a></td></tr>
+          <tr><th>Probabilistic membership</th><td>Bloom filter</td><td><a href="bloom-filters.html">Bloom</a></td></tr>
+          <tr><th>Resilient downstream calls</th><td>Polly v8 pipeline</td><td><a href="resilience-polly.html">Resilience</a></td></tr>
+          <tr><th>Global consistency</th><td>Spanner-style + TrueTime</td><td><a href="paper-spanner.html">Spanner</a></td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="vocab">
+        <h2 class="section"><span class="num">04</span>Tradeoff <span class="ital">vocabulary</span>.</h2>
+        <table class="matrix"><thead><tr><th>Term</th><th>What you choose between</th></tr></thead><tbody>
+          <tr><th>CAP</th><td>During partition: consistency vs availability</td></tr>
+          <tr><th>PACELC</th><td>Else: latency vs consistency</td></tr>
+          <tr><th>BASE vs ACID</th><td>Eventually consistent vs transactional</td></tr>
+          <tr><th>Push vs pull (feed)</th><td>Write-time fanout vs read-time merge</td></tr>
+          <tr><th>Sync vs async</th><td>User waits vs queue absorbs</td></tr>
+          <tr><th>Vertical vs horizontal</th><td>Bigger box vs more boxes</td></tr>
+          <tr><th>Strong vs eventual consistency</th><td>Wait for replicas vs accept staleness</td></tr>
+          <tr><th>Optimistic vs pessimistic concurrency</th><td>Retry on conflict vs lock upfront</td></tr>
+          <tr><th>Stateless vs stateful</th><td>Scale free vs sticky routing</td></tr>
+          <tr><th>Read-through vs write-through cache</th><td>Lazy-loaded vs cache-coherent</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="prompts">
+        <h2 class="section"><span class="num">05</span>Prompts to <span class="ital">surface</span>.</h2>
+        <div class="prose">
+          <p>Things to bring up unprompted to signal seniority:</p>
+        </div>
+        <table class="matrix"><thead><tr><th>Domain</th><th>What to say</th></tr></thead><tbody>
+          <tr><th>Idempotency</th><td>"Mutations need idempotency keys; this matters because retries are at-least-once."</td></tr>
+          <tr><th>Failure modes</th><td>"What happens when this dependency is slow? Circuit breaker; bounded queue; cached fallback."</td></tr>
+          <tr><th>Monitoring</th><td>"Key metrics: p99 latency, error rate, queue depth, cache hit rate. SLO on top."</td></tr>
+          <tr><th>Cost</th><td>"At this scale, the cost line is X; we can save by Y at the expense of Z."</td></tr>
+          <tr><th>Security</th><td>"Auth at the gateway; rate-limit; secrets in a manager; mTLS internally."</td></tr>
+          <tr><th>Migration / rollback</th><td>"Forward-only migrations; feature-flag the new path; old code handles both schemas."</td></tr>
+          <tr><th>Scope cuts</th><td>"For v1, I'd drop X and Y; they're complex and not core."</td></tr>
+        </tbody></table>
+        <div class="pull">"The cheat sheet isn't a script. It's a reminder of what to surface when the moment matches."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="interview-failure-modes.html"><div class="label">Prev</div><div class="ttl">7 ways to fail</div></a>
+        <a class="next-fwd" href="../system-design.html"><div class="label">Index</div><div class="ttl">All chapters →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Interview · Cheat sheet · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Geographic Distribution · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">19 · Geographic Distribution</span>
+    </div>
+    <nav>
+      <a href="search-architecture.html">← Prev</a>
+      <a href="cdn-architecture.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>19</b></span>
+        <span>Difficulty <b>★★★★★</b></span>
+        <span>Read <b>~15 min</b></span>
+        <span>Stack <b>Cosmos DB · Azure Front Door · Traffic Manager · Spanner</b></span>
+      </div>
+      <h1>Do you <span class="ital">actually</span> need multi-region?</h1>
+      <p class="lede">The architecture review wants two regions. The customer wants 50ms latency. The CFO wants the bill to stay one digit lower. The honest question is which of these constraints is binding — and the answer is rarely all three at once.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>Light travels 200ms round-trip from Sydney to London. <em>You cannot solve geographic latency with more replicas.</em> You solve it by putting the data closer.</p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Active/passive is the right default. Active/active is correct only when single-region latency is unacceptable AND your data tolerates conflict resolution. Spanner-class strong-consistency-with-distance is the most expensive correct answer.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Cosmos DB</span>
+          <span class="pill on">Azure Front Door</span>
+          <span class="pill on">Traffic Manager</span>
+          <span class="pill on">Google Spanner</span>
+          <span class="pill">Aurora Global</span>
+          <span class="pill">DynamoDB Global Tables</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why multi-region is the wrong default</a></li>
+        <li><a href="#shapes">Three shapes</a></li>
+        <li><a href="#conflict">Conflict resolution</a></li>
+        <li><a href="#dotnet">In .NET</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why multi-region is the <span class="ital">wrong</span> default.</h2>
+        <div class="prose">
+          <p>Two reasons people add a second region: <strong>disaster recovery</strong> ("what if the primary region goes down") and <strong>latency</strong> ("we have customers in Tokyo"). They are different problems. The first is solved by a passive replica you fail over to. The second is solved by serving reads — and possibly writes — from a region close to the user. Conflating them produces architectures that are expensive for both.</p>
+          <p>The honest baseline: <strong>a single Azure or AWS region has &gt;99.99% uptime by SLA</strong>. Most outages people remember as "the cloud went down" were single-zone failures in a single region, mitigated by multi-AZ rather than multi-region. Going multi-region adds a 2–3× cost for the second region plus the operational complexity of cross-region replication, conflict handling, and failover testing. <em>Do it because you measured a real problem, not because the architecture review demanded it.</em></p>
+        </div>
+
+        <div class="pull">"You don't earn multi-region. You inherit the bill for it the next quarter, every quarter, forever."</div>
+      </section>
+
+      <!-- 2 shapes -->
+      <section class="dd-section" id="shapes">
+        <h2 class="section"><span class="num">02</span>Three <span class="ital">shapes</span>.</h2>
+
+        <div class="prose">
+          <p>By increasing cost and complexity: active/passive, active/active by partition, active/active fully replicated.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 500" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="geoa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 20 · THREE TOPOLOGIES</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- Active/Passive -->
+            <g transform="translate(20, 80)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Active / Passive</text>
+
+              <rect x="0"   y="30" width="160" height="100" fill="#c2410c"/>
+              <text x="80"  y="58" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">PRIMARY</text>
+              <text x="80"  y="76" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">East US</text>
+              <text x="80"  y="100" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">reads + writes</text>
+
+              <rect x="200" y="30" width="160" height="100" fill="#1a1814"/>
+              <text x="280" y="58" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">PASSIVE</text>
+              <text x="280" y="76" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">West Europe</text>
+              <text x="280" y="100" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">async replica</text>
+
+              <line x1="160" y1="80" x2="198" y2="80" stroke="#c2410c" stroke-width="2" marker-end="url(#geoa)"/>
+              <text x="180" y="70" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#c2410c">replicate</text>
+
+              <text x="0" y="160" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">DR-only. Failover is a 15–30 min event.</text>
+              <text x="0" y="176" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">RPO ≈ replication lag. RTO ≈ minutes.</text>
+            </g>
+
+            <!-- Active/Active by Partition -->
+            <g transform="translate(420, 80)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Active / Active by Region (partitioned)</text>
+
+              <rect x="0"   y="30" width="160" height="100" fill="#c2410c"/>
+              <text x="80"  y="58" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">EU CUSTOMERS</text>
+              <text x="80"  y="76" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">West Europe</text>
+              <text x="80"  y="100" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">primary for EU data</text>
+
+              <rect x="200" y="30" width="160" height="100" fill="#c2410c"/>
+              <text x="280" y="58" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">US CUSTOMERS</text>
+              <text x="280" y="76" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">East US</text>
+              <text x="280" y="100" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">primary for US data</text>
+
+              <text x="0" y="160" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Each tenant lives in one region.</text>
+              <text x="0" y="176" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">No conflicts. GDPR-friendly.</text>
+            </g>
+
+            <line x1="20" y1="290" x2="1180" y2="290" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+            <!-- Active/Active Fully -->
+            <g transform="translate(20, 310)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Active / Active fully replicated (Cosmos multi-master)</text>
+
+              <rect x="0"   y="30" width="160" height="100" fill="#c2410c"/>
+              <text x="80"  y="58" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">EAST US</text>
+              <text x="80"  y="100" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">reads + writes</text>
+
+              <rect x="200" y="30" width="160" height="100" fill="#c2410c"/>
+              <text x="280" y="58" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">WEST EUROPE</text>
+              <text x="280" y="100" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">reads + writes</text>
+
+              <rect x="400" y="30" width="160" height="100" fill="#c2410c"/>
+              <text x="480" y="58" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">SOUTHEAST ASIA</text>
+              <text x="480" y="100" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">reads + writes</text>
+
+              <line x1="160" y1="60" x2="198" y2="60" stroke="#c2410c" stroke-width="2" marker-end="url(#geoa)"/>
+              <line x1="360" y1="60" x2="398" y2="60" stroke="#c2410c" stroke-width="2" marker-end="url(#geoa)"/>
+              <line x1="198" y1="100" x2="160" y2="100" stroke="#c2410c" stroke-width="2" marker-end="url(#geoa)"/>
+              <line x1="398" y1="100" x2="360" y2="100" stroke="#c2410c" stroke-width="2" marker-end="url(#geoa)"/>
+
+              <text x="600" y="60" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Every region accepts writes.</text>
+              <text x="600" y="76" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Replication is async (~100ms).</text>
+              <text x="600" y="100" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">Concurrent writes need a conflict policy.</text>
+              <text x="600" y="116" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">RPO ≈ 0 (best effort). RTO ≈ seconds.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 20</span><span>Each topology trades a different pair of CAP letters. Partitioning sidesteps conflicts entirely — it's the most often correct, least often used pattern.</span></div>
+        </div>
+
+        <h3 class="sub">Active/passive: what most people actually need</h3>
+        <div class="prose">
+          <p>One region serves all traffic. A second region runs continuously with replicated data, ready to take over. The replication is async, so the passive region lags by milliseconds to seconds. Failover is a deliberate operation — promote the passive, point DNS at it, accept a brief outage. <strong>RPO (data loss) is the replication lag at the moment of failure; RTO (time to recover) is your failover runbook's wall-clock.</strong> A well-rehearsed failover happens in 5–15 minutes; an unrehearsed one is a panic-call from your CTO.</p>
+        </div>
+
+        <h3 class="sub">Active/active by partition: the underrated answer</h3>
+        <div class="prose">
+          <p>European customers' data lives in <code>europe-west</code>. American customers' data lives in <code>us-east</code>. Each region has the same code, the same schema, but disjoint datasets. There are <em>no replication conflicts</em> because there is no cross-region write contention — a row exists in exactly one region. <strong>This is the topology Salesforce, Shopify, and Stripe use for tenanted SaaS</strong>, and it neatly aligns with GDPR data-residency. The downside: a customer that moves countries requires a tenant migration; rare cross-tenant queries become harder.</p>
+        </div>
+
+        <h3 class="sub">Active/active fully replicated: when you really need it</h3>
+        <div class="prose">
+          <p>Every region accepts writes for the same data. Cosmos DB multi-master, DynamoDB Global Tables, Aurora Global Database (read replicas only, but Aurora DSQL is changing that). The tech works; the application has to handle conflicts. <strong>This is the most operationally complex shape and is rarely what you actually need.</strong> The use case that justifies it: a globally consistent shopping cart, a global user profile, a global session — anything where the same logical record is written from multiple regions in a short window. Even there, "stickiness by hash of user-id" often gives you partition-style isolation with less pain.</p>
+        </div>
+      </section>
+
+      <!-- 3 conflict -->
+      <section class="dd-section" id="conflict">
+        <h2 class="section"><span class="num">03</span>Conflict <span class="ital">resolution</span>.</h2>
+        <div class="prose">
+          <p>Two regions accept a write to the same record in the same 100ms. Replication brings them together. The database has to pick. Four strategies, in order of correctness:</p>
+        </div>
+
+        <h3 class="sub">Last-write-wins (LWW)</h3>
+        <div class="prose">
+          <p>Each write carries a timestamp; the one with the larger timestamp wins. Cosmos DB's default. <strong>Easy to implement, easy to get wrong.</strong> Clock skew between regions can be 10–50ms; a logically-later write can appear chronologically earlier and lose. LWW works fine for use cases where "the data is whatever the most recent thing the user did" is acceptable — user preferences, last-seen-at timestamps, theme settings. It is wrong for counters, balances, or anything that aggregates.</p>
+        </div>
+
+        <h3 class="sub">Custom resolver function</h3>
+        <div class="prose">
+          <p>Cosmos and DynamoDB let you register a stored-procedure-like function that runs on conflict: "given the two conflicting versions, return the merged result." For a counter, sum the deltas. For a cart, take the union. For an inventory level, take the minimum. <strong>This is where most real conflicts get handled.</strong> The function is application-specific; the database can't infer the merge for you.</p>
+        </div>
+
+        <h3 class="sub">CRDTs (Conflict-free Replicated Data Types)</h3>
+        <div class="prose">
+          <p>A data structure that is mathematically guaranteed to converge regardless of write order. Counters (G-Counter, PN-Counter), sets (G-Set, OR-Set), maps (Map-of-Maps). Azure Cosmos DB's "counter" type is a CRDT under the hood. <strong>If your data fits a CRDT, you've removed conflict from the architecture by construction.</strong> Riak and Redis Enterprise also expose CRDT types. Collaborative editing (Figma, Linear) is built on CRDTs end-to-end.</p>
+        </div>
+
+        <h3 class="sub">Strong consistency (Spanner, Cosmos Strong)</h3>
+        <div class="prose">
+          <p>The database refuses to acknowledge a write until a quorum across regions has accepted it. Google Spanner uses GPS+atomic clocks ("TrueTime") to bound clock skew, then runs a Paxos quorum across regions. Writes pay the cross-region round-trip on every commit — typically 50–150ms. <strong>Strong consistency over distance is correctness at the cost of latency you cannot get back.</strong> Use it when "two simultaneous writes returning different values" is a regulatory or financial bug; avoid it for everything else.</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">.NET</span>.</h2>
+
+        <div class="prose">
+          <p>Cosmos DB is the most common multi-region database in the .NET ecosystem. The client routes reads and writes to the nearest region; the database handles replication. Front Door does the front-end traffic routing. The interesting code is the configuration — not the application code.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">CosmosMultiRegion.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Microsoft.Azure.Cosmos</span>
+<span class="k">using</span> <span class="t">Microsoft.Azure.Cosmos</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Geo</span>;
+
+<span class="k">public sealed class</span> <span class="t">OrderRepository</span>
+{
+    <span class="k">private readonly</span> <span class="t">Container</span> _orders;
+
+    <span class="k">public</span> <span class="fn">OrderRepository</span>(<span class="t">CosmosClient</span> cosmos)
+    { _orders = cosmos.<span class="fn">GetDatabase</span>(<span class="s">"shop"</span>).<span class="fn">GetContainer</span>(<span class="s">"orders"</span>); }
+
+    <span class="c">// Reads automatically go to the closest replica region (preferred read locations).</span>
+    <span class="k">public async</span> <span class="t">Task</span>&lt;<span class="t">Order</span>?&gt; <span class="fn">GetAsync</span>(<span class="t">Guid</span> id, <span class="k">string</span> customerId, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">try</span>
+        {
+            <span class="k">var</span> resp = <span class="k">await</span> _orders.<span class="fn">ReadItemAsync</span>&lt;<span class="t">Order</span>&gt;(
+                id: id.<span class="fn">ToString</span>(),
+                partitionKey: <span class="k">new</span> <span class="t">PartitionKey</span>(customerId),
+                cancellationToken: ct);
+            <span class="k">return</span> resp.<span class="t">Resource</span>;
+        }
+        <span class="k">catch</span> (<span class="t">CosmosException</span> ex) <span class="k">when</span> (ex.<span class="t">StatusCode</span> == <span class="t">HttpStatusCode</span>.<span class="t">NotFound</span>)
+        { <span class="k">return null</span>; }
+    }
+
+    <span class="c">// Writes go to the nearest write-enabled region (multi-master) or the single hub region.</span>
+    <span class="k">public async</span> <span class="t">Task</span> <span class="fn">UpsertAsync</span>(<span class="t">Order</span> order, <span class="t">CancellationToken</span> ct)
+    {
+        <span class="k">await</span> _orders.<span class="fn">UpsertItemAsync</span>(order,
+            partitionKey: <span class="k">new</span> <span class="t">PartitionKey</span>(order.<span class="t">CustomerId</span>),
+            cancellationToken: ct);
+    }
+}
+
+<span class="c">// Configure the CosmosClient at startup with regional preferences and a conflict resolver.</span>
+<span class="k">public static class</span> <span class="t">CosmosRegistration</span>
+{
+    <span class="k">public static</span> <span class="t">IServiceCollection</span> <span class="fn">AddMultiRegionCosmos</span>(
+        <span class="k">this</span> <span class="t">IServiceCollection</span> services, <span class="t">IConfiguration</span> cfg)
+    {
+        <span class="k">var</span> options = <span class="k">new</span> <span class="t">CosmosClientOptions</span>
+        {
+            <span class="t">ConnectionMode</span> = <span class="t">ConnectionMode</span>.<span class="t">Direct</span>,
+            <span class="t">ApplicationRegion</span> = cfg[<span class="s">"Azure:Region"</span>],     <span class="c">// what region this pod is in</span>
+            <span class="t">ApplicationPreferredRegions</span> = cfg
+                .<span class="fn">GetSection</span>(<span class="s">"Cosmos:PreferredRegions"</span>).<span class="fn">Get</span>&lt;<span class="t">List</span>&lt;<span class="k">string</span>&gt;&gt;(),
+            <span class="t">ConsistencyLevel</span> = <span class="t">ConsistencyLevel</span>.<span class="t">Session</span>,   <span class="c">// read your writes per session</span>
+            <span class="t">MaxRetryAttemptsOnRateLimitedRequests</span> = <span class="n">9</span>,
+            <span class="t">MaxRetryWaitTimeOnRateLimitedRequests</span>    = <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">30</span>),
+        };
+
+        services.<span class="fn">AddSingleton</span>(_ =&gt; <span class="k">new</span> <span class="t">CosmosClient</span>(
+            cfg.<span class="fn">GetConnectionString</span>(<span class="s">"Cosmos"</span>)!, options));
+
+        services.<span class="fn">AddScoped</span>&lt;<span class="t">OrderRepository</span>&gt;();
+        <span class="k">return</span> services;
+    }
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Traffic routing: Front Door (or Traffic Manager) decides which region serves the incoming request. Front Door is L7 with global anycast and TLS termination at the edge; Traffic Manager is DNS-based and cheaper but coarser. For most apps, Front Door is the right choice — anycast latency wins, and the integrated WAF is included.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">bicep</span> &nbsp; <span class="file">frontdoor-failover.bicep</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">resource</span> profile <span class="s">'Microsoft.Cdn/profiles@2024-02-01'</span> = {
+  name: <span class="s">'shop-fd'</span>
+  location: <span class="s">'global'</span>
+  sku: { name: <span class="s">'Premium_AzureFrontDoor'</span> }
+}
+
+<span class="k">resource</span> origin <span class="s">'Microsoft.Cdn/profiles/originGroups@2024-02-01'</span> = {
+  parent: profile
+  name: <span class="s">'shop-origins'</span>
+  properties: {
+    loadBalancingSettings: {
+      sampleSize: <span class="n">4</span>
+      successfulSamplesRequired: <span class="n">3</span>
+      additionalLatencyInMilliseconds: <span class="n">50</span>
+    }
+    healthProbeSettings: {
+      probePath: <span class="s">'/healthz'</span>
+      probeRequestType: <span class="s">'HEAD'</span>
+      probeProtocol: <span class="s">'Https'</span>
+      probeIntervalInSeconds: <span class="n">30</span>
+    }
+    sessionAffinityState: <span class="s">'Disabled'</span>
+  }
+}
+
+<span class="c">// East US — priority 1, weight 1000</span>
+<span class="k">resource</span> originEast <span class="s">'Microsoft.Cdn/profiles/originGroups/origins@2024-02-01'</span> = {
+  parent: origin
+  name: <span class="s">'east-us'</span>
+  properties: {
+    hostName: <span class="s">'shop-east.azurewebsites.net'</span>
+    priority: <span class="n">1</span>
+    weight: <span class="n">1000</span>
+    enabledState: <span class="s">'Enabled'</span>
+  }
+}
+
+<span class="c">// West Europe — priority 2, takes over on health-check failure</span>
+<span class="k">resource</span> originWest <span class="s">'Microsoft.Cdn/profiles/originGroups/origins@2024-02-01'</span> = {
+  parent: origin
+  name: <span class="s">'west-eu'</span>
+  properties: {
+    hostName: <span class="s">'shop-west.azurewebsites.net'</span>
+    priority: <span class="n">2</span>
+    weight: <span class="n">1000</span>
+    enabledState: <span class="s">'Enabled'</span>
+  }
+}</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Test failover. Monthly. In production.</div>
+          <p>A failover plan you haven't executed is a failover plan you don't have. Schedule a real cutover quarterly. Chaos Monkey for regions — pick a region, fail it, see what happens. <strong>The runbook that hasn't been used is wrong.</strong></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Egress is the cost line nobody budgets</div>
+          <p>Inter-region data transfer on Azure is ~$0.02–0.04 per GB. A multi-region app pushing 10 TB/month of replication traffic is ~$300/mo in egress alone, separate from compute and storage. Plan for it; the bill shows up at month-end and surprises CFOs.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Session consistency is the right Cosmos default</div>
+          <p><code>ConsistencyLevel.Session</code> guarantees a client reads its own writes and reads in monotonic order. It costs nothing extra. <code>Strong</code> is the wrong default for multi-region — every write pays cross-region latency. <code>Eventual</code> is the wrong default for app code — your user clicks "save", refreshes, doesn't see their change, files a bug.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Failover is more than DNS</div>
+          <p>Sticky session state, in-flight WebSockets (see <a href="realtime-channels.html">Chapter 10</a>), open SQL transactions, in-memory caches — none of these survive a region failover. The app has to be designed for the warm region to start cold and the cold region to take 30–60 seconds to be ready for traffic. <em>Capacity in the passive region must be pre-warmed or you'll cold-start through the outage.</em></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Partitioning by tenant is the cheap win</div>
+          <p>If your customers are tenanted (B2B SaaS), pin each tenant to a region. EU customers in West Europe, US customers in East US. Reads and writes both stay local. No conflicts. GDPR-clean. <strong>It's the topology Stripe, Shopify, Salesforce use</strong> and the one most B2C apps should consider before reaching for multi-master.</p>
+        </div>
+
+        <div class="pull">"Latency is a function of distance and the speed of light. Architecture cannot beat physics."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Technology</th>
+              <th>Shape</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Active/passive (single-region write)<span class="sub">DR pattern</span></th>
+              <td>1 write region</td>
+              <td>Simple · cheap · correct semantics</td>
+              <td><strong>1.5–2×</strong> single-region</td>
+              <td>Failover runbook to maintain</td>
+              <td><span class="verdict good">Default for "we need DR"</span></td>
+            </tr>
+            <tr>
+              <th>Active/active by partition<span class="sub">data residency</span></th>
+              <td>N write regions, disjoint data</td>
+              <td>No conflicts · low latency · GDPR-clean</td>
+              <td><strong>2–3×</strong></td>
+              <td>Tenant routing layer</td>
+              <td><span class="verdict good">Best fit for tenanted SaaS</span></td>
+            </tr>
+            <tr>
+              <th>Cosmos DB multi-master<span class="sub">multi-write</span></th>
+              <td>N write regions, full replication</td>
+              <td>Sub-10ms regional writes · LWW or custom resolver</td>
+              <td><strong>$1k – $20k</strong> per region</td>
+              <td>Managed; conflict resolution code</td>
+              <td><span class="verdict warn">When latency requires it and conflicts can be handled</span></td>
+            </tr>
+            <tr>
+              <th>Google Spanner<span class="sub">strong consistency global</span></th>
+              <td>Multi-region quorum</td>
+              <td>Linearisable transactions across regions · TrueTime</td>
+              <td><strong>$650 – $5k+</strong> per node</td>
+              <td>Vendor-managed</td>
+              <td><span class="verdict warn">Worth it for genuinely global ACID needs</span></td>
+            </tr>
+            <tr>
+              <th>DynamoDB global tables<span class="sub">multi-master</span></th>
+              <td>N write regions</td>
+              <td>Same DDB API · sub-10ms regional · LWW default</td>
+              <td><strong>1.5×</strong> per region</td>
+              <td>AWS-managed</td>
+              <td><span class="verdict good">AWS-native equivalent of Cosmos multi-master</span></td>
+            </tr>
+            <tr>
+              <th>Aurora global database<span class="sub">read replicas</span></th>
+              <td>1 write + N read regions</td>
+              <td>Sub-second cross-region replication · MySQL/Postgres compat</td>
+              <td><strong>$500 – $5k</strong> per replica region</td>
+              <td>AWS-managed</td>
+              <td><span class="verdict good">When you need active/passive on RDBMS</span></td>
+            </tr>
+            <tr>
+              <th>App-level sharding by region<span class="sub">routing layer</span></th>
+              <td>You build it</td>
+              <td>Full control · works with any DB</td>
+              <td>—</td>
+              <td>You own the routing</td>
+              <td><span class="verdict warn">Only if the vendor pattern doesn't fit</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>"We need DR" — single region today</h5>
+            <p>Active/passive in a second region. Replica running, traffic not. Quarterly failover drill. The cheapest correct DR posture.</p>
+          </div>
+          <div class="cell">
+            <h5>B2B SaaS with EU + US customers</h5>
+            <p>Partition by tenant region. Pin each customer to their nearest region. No replication conflicts; GDPR happy.</p>
+          </div>
+          <div class="cell">
+            <h5>B2C, global user base, sticky sessions OK</h5>
+            <p>Hash the user-id to a home region; route their traffic and data there. Effectively partition-by-user.</p>
+          </div>
+          <div class="cell">
+            <h5>Global shopping cart, true multi-writer</h5>
+            <p>Cosmos multi-master or DynamoDB global tables with a custom conflict resolver. Be honest about the resolver complexity.</p>
+          </div>
+          <div class="cell">
+            <h5>Cross-region ACID transactions</h5>
+            <p>Spanner. Accept the latency. There is no second option that gives you the same semantics.</p>
+          </div>
+          <div class="cell">
+            <h5>"The architecture review asked for multi-region"</h5>
+            <p>Ask which constraint is binding: DR, latency, or compliance. Pick the topology that answers <em>that</em> constraint; don't conflate them.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — conflating DR with latency.</strong> Active/passive solves DR. Active/active solves latency. They are different costs, different complexities, different patterns. Pick the topology for the problem you actually have.</p>
+        <p><strong>Two — assuming LWW is safe.</strong> LWW silently loses data on concurrent writes. Counters, balances, anything aggregated needs CRDT or a custom resolver — not LWW.</p>
+        <p><strong>Three — never failing over.</strong> An untested failover is a fictional failover. The drill is the architecture; the diagram is the marketing. Run the drill.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="search-architecture.html">
+          <div class="label">Chapter 18</div>
+          <div class="ttl">Search architecture</div>
+        </a>
+        <a class="next-fwd" href="cdn-architecture.html">
+          <div class="label">Chapter 20</div>
+          <div class="ttl">CDN architecture →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 19 · Geographic Distribution · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

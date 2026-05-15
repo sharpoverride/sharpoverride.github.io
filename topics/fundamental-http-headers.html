@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>HTTP Headers · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">HTTP headers</span>
+    </div>
+    <nav><a href="fundamental-redis-use-cases.html">← Prev</a><a href="fundamental-password-storage.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★☆☆☆</b></span>
+        <span>Read <b>~9 min</b></span>
+        <span>Stack <b>Caching · CORS · CSP · content negotiation</b></span>
+      </div>
+      <h1>The headers you'll <span class="ital">actually</span> use.</h1>
+      <p class="lede">There are hundreds of HTTP headers. Most you'll never see. The two dozen that matter — caching, security, content type, conditional requests, rate limits — are worth learning. The others are vocabulary you can look up.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The categories</h5><p>(1) Caching. (2) Content. (3) Auth. (4) CORS. (5) Security. (6) Rate-limit / metadata.</p></div>
+      <div><h5>The big shift</h5><p>HTTP/2 and HTTP/3 compress headers (HPACK / QPACK). The "headers are expensive" lore is mostly false in modern HTTP.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#cache">Caching</a></li>
+      <li><a href="#content">Content negotiation</a></li>
+      <li><a href="#auth">Auth</a></li>
+      <li><a href="#cors">CORS</a></li>
+      <li><a href="#security">Security</a></li>
+      <li><a href="#api">API metadata</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="cache">
+        <h2 class="section"><span class="num">01</span><span class="ital">Caching</span>.</h2>
+        <table class="matrix"><thead><tr><th>Header</th><th>What it does</th></tr></thead><tbody>
+          <tr><th>Cache-Control</th><td><code>public, max-age=3600, s-maxage=86400, immutable, stale-while-revalidate=60</code></td></tr>
+          <tr><th>Expires</th><td>Absolute date; superseded by Cache-Control</td></tr>
+          <tr><th>ETag</th><td>Opaque version tag; client sends back as <code>If-None-Match</code> for 304</td></tr>
+          <tr><th>Last-Modified</th><td>Same idea, timestamp-based; weaker</td></tr>
+          <tr><th>Vary</th><td>"Cache by these request headers too" — careful, fragments cache</td></tr>
+          <tr><th>Age</th><td>How long since the origin served this; set by CDN/proxy</td></tr>
+        </tbody></table>
+        <div class="prose">
+          <p><strong><code>Cache-Control</code> is the most-important-and-most-skipped header in production.</strong> See <a href="cdn-architecture.html">CDN chapter</a>; CDN hit rates are mostly a story of getting this right.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="content">
+        <h2 class="section"><span class="num">02</span>Content <span class="ital">negotiation</span>.</h2>
+        <table class="matrix"><thead><tr><th>Header</th><th>What it does</th></tr></thead><tbody>
+          <tr><th>Content-Type</th><td>Body media type: <code>application/json; charset=utf-8</code></td></tr>
+          <tr><th>Content-Length</th><td>Body bytes</td></tr>
+          <tr><th>Content-Encoding</th><td><code>gzip</code>, <code>br</code> (brotli), <code>zstd</code></td></tr>
+          <tr><th>Accept</th><td>Client says what it can read</td></tr>
+          <tr><th>Accept-Encoding</th><td>Client says what compressions it accepts</td></tr>
+          <tr><th>Accept-Language</th><td>Client's preferred languages</td></tr>
+          <tr><th>Transfer-Encoding: chunked</th><td>Streaming response without Content-Length</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="auth">
+        <h2 class="section"><span class="num">03</span><span class="ital">Auth</span>.</h2>
+        <table class="matrix"><thead><tr><th>Header</th><th>What it does</th></tr></thead><tbody>
+          <tr><th>Authorization</th><td><code>Bearer eyJ…</code> (JWT), <code>Basic ZXhhb…</code>, <code>Digest</code></td></tr>
+          <tr><th>WWW-Authenticate</th><td>Server says "you need auth"; how (Bearer, Basic…)</td></tr>
+          <tr><th>Set-Cookie</th><td><code>name=value; Secure; HttpOnly; SameSite=Lax; Path=/</code></td></tr>
+          <tr><th>Cookie</th><td>Client's stored cookies</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="cors">
+        <h2 class="section"><span class="num">04</span><span class="ital">CORS</span>.</h2>
+        <div class="prose">
+          <p>Cross-Origin Resource Sharing. Browser security mechanism; backend has to opt in to cross-origin requests. <strong>Get the headers right or every API call from a different domain fails.</strong></p>
+        </div>
+        <table class="matrix"><thead><tr><th>Header</th><th>Set on</th><th>What</th></tr></thead><tbody>
+          <tr><th>Origin</th><td>Request</td><td>Calling page's origin (browser fills in)</td></tr>
+          <tr><th>Access-Control-Allow-Origin</th><td>Response</td><td><code>https://example.com</code> or <code>*</code> (the latter blocks cookies)</td></tr>
+          <tr><th>Access-Control-Allow-Credentials</th><td>Response</td><td><code>true</code> if cookies are needed</td></tr>
+          <tr><th>Access-Control-Allow-Methods</th><td>Preflight response</td><td><code>GET, POST, PUT, DELETE</code></td></tr>
+          <tr><th>Access-Control-Allow-Headers</th><td>Preflight response</td><td>Custom headers the request will use</td></tr>
+          <tr><th>Access-Control-Max-Age</th><td>Preflight response</td><td>How long the browser may cache the preflight (seconds)</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="security">
+        <h2 class="section"><span class="num">05</span><span class="ital">Security</span>.</h2>
+        <table class="matrix"><thead><tr><th>Header</th><th>What it does</th></tr></thead><tbody>
+          <tr><th>Strict-Transport-Security</th><td>HSTS — force HTTPS for <code>max-age</code> seconds (see <a href="fundamental-https.html">HTTPS</a>)</td></tr>
+          <tr><th>Content-Security-Policy</th><td>CSP — what scripts/styles/images are allowed; the most-misunderstood header</td></tr>
+          <tr><th>X-Content-Type-Options: nosniff</th><td>Disable MIME-sniffing — prevents some XSS vectors</td></tr>
+          <tr><th>X-Frame-Options / frame-ancestors</th><td>Clickjacking defence</td></tr>
+          <tr><th>Referrer-Policy</th><td>What goes in <code>Referer</code> on outgoing links</td></tr>
+          <tr><th>Permissions-Policy</th><td>Restrict camera/mic/geolocation per page</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="api">
+        <h2 class="section"><span class="num">06</span>API <span class="ital">metadata</span>.</h2>
+        <table class="matrix"><thead><tr><th>Header</th><th>What it does</th></tr></thead><tbody>
+          <tr><th>X-RateLimit-Limit / Remaining / Reset</th><td>Rate-limit budget; standard since Stripe popularised it</td></tr>
+          <tr><th>Retry-After</th><td>How long to wait before retrying (response to 429 or 503)</td></tr>
+          <tr><th>Idempotency-Key</th><td>Client-supplied retry key for write idempotency (see <a href="idempotency-keys.html">idempotency</a>)</td></tr>
+          <tr><th>X-Request-ID</th><td>Trace-id propagated end-to-end</td></tr>
+          <tr><th>Sunset / Deprecation</th><td>Tells callers an endpoint or version is going away (see <a href="fundamental-api-versioning.html">API versioning</a>)</td></tr>
+          <tr><th>Server-Timing</th><td>Performance breakdown sent from server to browser dev tools</td></tr>
+        </tbody></table>
+
+        <div class="callout"><div class="ctag">"X-" prefix is deprecated</div><p>RFC 6648 (2012) deprecated the <code>X-</code> convention for custom headers. New headers should use plain names. But <code>X-RateLimit-*</code> stuck because it was useful before standardisation; nobody renamed.</p></div>
+
+        <div class="pull">"Headers are how you do mature API design without overloading the body."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-redis-use-cases.html"><div class="label">Prev</div><div class="ttl">Redis use cases</div></a>
+        <a class="next-fwd" href="fundamental-password-storage.html"><div class="label">Next</div><div class="ttl">Password storage →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · HTTP headers · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

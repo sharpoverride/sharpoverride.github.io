@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Design WhatsApp · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive interview">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#interviews">Interviews</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Design WhatsApp</span>
+    </div>
+    <nav>
+      <a href="interview-framework.html">← Prev</a>
+      <a href="interview-design-youtube.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Interview <b>walkthrough</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~14 min</b></span>
+        <span>Scale <b>2B users · 100B msgs/day</b></span>
+      </div>
+      <h1>Design <span class="ital">WhatsApp</span>.</h1>
+      <p class="lede">A real-time messaging system at planetary scale. The interesting parts: connection management for hundreds of millions of concurrent devices, end-to-end encryption, group fan-out, and offline message delivery.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>Anchor numbers</h5>
+        <p>2B users · 100B msgs/day · 1.2M msgs/sec avg · ~10M concurrent connections peak per cluster. ~80% mobile, varying network quality.</p>
+      </div>
+      <div>
+        <h5>The hard parts</h5>
+        <p>(1) Keeping hundreds of millions of TCP connections alive. (2) Delivering messages to offline recipients. (3) Group fan-out at low cost. (4) End-to-end encryption.</p>
+      </div>
+      <div>
+        <h5>Out of scope (probably)</h5>
+        <p>Voice/video calling, status stories, business API, search. Pin scope early.</p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#clarify">Clarify</a></li>
+        <li><a href="#estimate">Estimate</a></li>
+        <li><a href="#architecture">High-level architecture</a></li>
+        <li><a href="#connections">Deep dive — connections</a></li>
+        <li><a href="#delivery">Deep dive — message delivery</a></li>
+        <li><a href="#e2ee">Deep dive — E2E encryption</a></li>
+        <li><a href="#scale">Scale &amp; bottlenecks</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="clarify">
+        <h2 class="section"><span class="num">01</span><span class="ital">Clarify</span>.</h2>
+        <div class="prose">
+          <p>The interviewer says "Design WhatsApp." Confirm scope:</p>
+        </div>
+        <table class="matrix">
+          <thead><tr><th>Aspect</th><th>Confirmed scope</th></tr></thead>
+          <tbody>
+            <tr><th>Core flows</th><td>1:1 messaging, group messaging (≤256 members), delivery receipts, read receipts</td></tr>
+            <tr><th>Out of scope</th><td>voice/video, status, business API</td></tr>
+            <tr><th>Users</th><td>2B registered, ~1B DAU</td></tr>
+            <tr><th>Messages</th><td>~100B / day</td></tr>
+            <tr><th>Encryption</th><td>End-to-end (Signal protocol)</td></tr>
+            <tr><th>Offline support</th><td>Yes — messages must deliver when recipient comes online</td></tr>
+            <tr><th>Latency target</th><td>p99 &lt; 500ms message delivery online</td></tr>
+            <tr><th>Geographic</th><td>Global, with regional clusters</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="estimate">
+        <h2 class="section"><span class="num">02</span><span class="ital">Estimate</span>.</h2>
+        <div class="prose">
+          <p>Anchor numbers (back-of-envelope):</p>
+        </div>
+        <table class="matrix">
+          <thead><tr><th>Quantity</th><th>Value</th><th>Math</th></tr></thead>
+          <tbody>
+            <tr><th>Messages / sec (avg)</th><td>~1.2M</td><td>100B / 86400</td></tr>
+            <tr><th>Messages / sec (peak)</th><td>~5M</td><td>4× avg</td></tr>
+            <tr><th>Avg message size</th><td>~100 bytes</td><td>text-heavy, some media references</td></tr>
+            <tr><th>Daily message volume</th><td>~10 TB/day</td><td>100B × 100 bytes</td></tr>
+            <tr><th>Concurrent connections</th><td>~500M peak</td><td>~50% of DAU online at peak</td></tr>
+            <tr><th>Connections / pod</th><td>~50k</td><td>OS limits, kernel tuning</td></tr>
+            <tr><th>Connection pods needed</th><td>~10k</td><td>500M / 50k</td></tr>
+            <tr><th>Storage / year (messages)</th><td>~3.6 PB</td><td>10 TB × 365</td></tr>
+          </tbody>
+        </table>
+        <div class="prose">
+          <p>The 500M concurrent connections is the number that drives the whole design. <strong>You can't put that many on a small fleet.</strong> The connection tier is the cost driver.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="architecture">
+        <h2 class="section"><span class="num">03</span>High-level <span class="ital">architecture</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 380" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="wma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · MESSAGE DELIVERY PATH</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0"   y="40" width="120" height="50" fill="#1a1814"/>
+              <text x="60"  y="68" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CLIENT A</text>
+
+              <rect x="160" y="40" width="180" height="50" fill="#c2410c"/>
+              <text x="250" y="62" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CONNECTION TIER</text>
+              <text x="250" y="76" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">~10k pods · 50k conn each</text>
+
+              <rect x="380" y="40" width="180" height="50" fill="#1a1814"/>
+              <text x="470" y="62" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">ROUTER / DISPATCH</text>
+              <text x="470" y="76" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">resolves recipient → connection pod</text>
+
+              <rect x="600" y="0"  width="160" height="50" fill="#c2410c"/>
+              <text x="680" y="22" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">SESSION DIRECTORY</text>
+              <text x="680" y="36" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">user → pod (Redis)</text>
+
+              <rect x="600" y="80"  width="160" height="50" fill="#c2410c"/>
+              <text x="680" y="102" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">OFFLINE QUEUE</text>
+              <text x="680" y="116" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">per-user pending msgs</text>
+
+              <rect x="800" y="40" width="180" height="50" fill="#1a1814"/>
+              <text x="890" y="62" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CONNECTION TIER</text>
+              <text x="890" y="76" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">(recipient's pod)</text>
+
+              <rect x="1010" y="40" width="120" height="50" fill="#1a1814"/>
+              <text x="1070" y="68" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CLIENT B</text>
+
+              <line x1="120" y1="65" x2="158" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#wma)"/>
+              <line x1="340" y1="65" x2="378" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#wma)"/>
+              <line x1="560" y1="55" x2="598" y2="25" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#wma)"/>
+              <line x1="560" y1="75" x2="598" y2="105" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#wma)"/>
+              <line x1="560" y1="65" x2="798" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#wma)"/>
+              <line x1="980" y1="65" x2="1008" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#wma)"/>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Message hops: sender pod → dispatch → recipient pod → recipient. If recipient is offline, message goes to the offline queue.</span></div>
+        </div>
+
+        <h3 class="sub">Components, briefly</h3>
+        <div class="prose">
+          <p><strong>Connection tier</strong>: holds persistent TCP/WebSocket connections to clients. Stateless beyond the connection itself; ~10k pods, ~50k connections each. <strong>Router/dispatch</strong>: receives an incoming message, looks up the recipient's current connection pod, forwards. <strong>Session directory</strong>: small Redis-shaped store mapping <code>user_id → connection_pod</code>. Updated on connect/disconnect. <strong>Offline queue</strong>: per-user durable queue of pending messages, drained when the user reconnects. <strong>Message store</strong>: long-term storage for chat history (if WhatsApp stored content — it doesn't, see below).</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="connections">
+        <h2 class="section"><span class="num">04</span>Deep dive — <span class="ital">connections</span>.</h2>
+        <div class="prose">
+          <p>The connection tier is where the design lives or dies. <strong>500M concurrent TCP connections is the unusual constraint.</strong> A pod can hold ~50k connections at most with tuning — Linux socket limits, file descriptors, ephemeral ports, conntrack table size. Each connection idles on a few KB of kernel buffer; aggregate memory is ~10 GB per 50k connections.</p>
+        </div>
+
+        <h3 class="sub">Keepalives must be cheap</h3>
+        <div class="prose">
+          <p>Most connections sit idle most of the time. Keepalives — ping/pong — are needed to detect dead clients. <strong>Tune them long</strong>: every 30–60 seconds. Shorter wastes battery on mobile and bandwidth at scale; longer means dead connections linger. WhatsApp uses a custom protocol (modified XMPP); the keepalive cadence is part of the protocol.</p>
+        </div>
+
+        <h3 class="sub">Sticky routing</h3>
+        <div class="prose">
+          <p>The session directory says "user 12345 is connected to <code>conn-pod-7</code>". When a message arrives for user 12345, the router forwards to <code>conn-pod-7</code> directly. <strong>Reconnect → updates the directory.</strong> A user with two devices has two entries; messages are sent to both (or to one and synced). The directory is a Redis hash, sharded, replicated.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="delivery">
+        <h2 class="section"><span class="num">05</span>Deep dive — message <span class="ital">delivery</span>.</h2>
+
+        <h3 class="sub">Online recipient</h3>
+        <div class="prose">
+          <p>Sender → sender's conn pod → router → recipient's conn pod → recipient. p99 &lt; 500ms is achievable end-to-end in-region; cross-region adds ~150ms. <strong>The router can run in the sender's region</strong>; the recipient lookup hits the global session directory, which is regionally replicated.</p>
+        </div>
+
+        <h3 class="sub">Offline recipient</h3>
+        <div class="prose">
+          <p>If the session directory shows no active connection, the message goes to the offline queue (one queue per user, stored durably — typically in a sharded key-value store). <strong>When the user reconnects</strong>, the conn pod drains their queue in order, delivers the messages, gets ACKs, deletes from the queue.</p>
+        </div>
+
+        <h3 class="sub">Delivery and read receipts</h3>
+        <div class="prose">
+          <p>Three states: <em>sent</em> (server has it), <em>delivered</em> (recipient device has it), <em>read</em> (user opened the chat). Each transition is its own small message back to the sender. <strong>Receipts are just inverted messages</strong>: sender becomes recipient, payload is a status update. Goes through the same path.</p>
+        </div>
+
+        <h3 class="sub">Group messages — server-side fanout</h3>
+        <div class="prose">
+          <p>Group of 256 members. Sender posts one message. <strong>Server fans out to each member's conn pod (or offline queue)</strong>. WhatsApp's published number: groups of up to 1,024 members supported (some tiers higher). Fanout is O(group size) per message; for huge groups, this is a cost knob.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="e2ee">
+        <h2 class="section"><span class="num">06</span>Deep dive — <span class="ital">end-to-end</span> encryption.</h2>
+        <div class="prose">
+          <p>WhatsApp uses the Signal protocol. Each pair of users derives a session key via X3DH (Extended Triple Diffie-Hellman) using their long-term public keys (registered at signup, on WhatsApp's key server) and per-session ephemeral keys. <strong>The server never has the plaintext.</strong> It routes ciphertext.</p>
+        </div>
+
+        <h3 class="sub">What's encrypted</h3>
+        <div class="prose">
+          <p>The message body. Metadata (sender, recipient, timestamp) is unencrypted — the server needs it to route. <em>This is the fundamental privacy compromise of E2EE messaging</em>: content is private; the social graph is not.</p>
+        </div>
+
+        <h3 class="sub">Group keys</h3>
+        <div class="prose">
+          <p>Groups use a Sender Keys protocol: each member encrypts their messages with a per-group symmetric key shared with the other members. <strong>Adding a member requires re-keying</strong>; this is why some E2EE group operations are slow.</p>
+        </div>
+
+        <h3 class="sub">Server is a routing fabric, not a content store</h3>
+        <div class="prose">
+          <p>Critical consequence: <em>the server does not store message history.</em> Once delivered, the message is gone from the server. The history lives on the user's devices, optionally backed up to user-controlled cloud storage (iCloud, Google Drive) encrypted with a user-held key. <strong>This is also why WhatsApp doesn't have search across the whole archive on the server — the server can't see it.</strong></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="scale">
+        <h2 class="section"><span class="num">07</span>Scale &amp; <span class="ital">bottlenecks</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Connection tier scales horizontally — almost linearly</div>
+          <p>Add more pods; the session directory updates. <strong>The real ceiling is the OS</strong>: file descriptors, ephemeral ports. Custom kernels and careful tuning let WhatsApp historically hit ~1M connections per machine in tests; production typically runs lower for headroom.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Session directory is the hot path</div>
+          <p>Every message does a lookup. <strong>Cache the directory aggressively</strong>; the router holds a local cache of recent recipients. Misses go to Redis. A directory shard handling 1M lookups/sec is the realistic capacity per shard.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Group fanout is the cost line</div>
+          <p>A 1000-member group means 1000 fanout writes per message. For a small percentage of users in many groups, this is the dominant cost. <strong>Tune by capping group size</strong>; if business needs huge groups, build a separate broadcast-list product (one-way, not many-way), which is what WhatsApp did.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Tradeoffs to mention</div>
+          <p><strong>E2EE limits server features</strong>: no server-side search, no spam classification on content, no moderation. <strong>Eventual consistency on read receipts</strong>: a slow recipient may have read receipts arriving out of order. <strong>Offline queue is durable but bounded</strong>: if a user is offline for months, the queue is pruned.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Open questions you'd raise</div>
+          <p>How do we handle multi-device sync? (WhatsApp's recent multi-device support uses an extra "primary device" pairing.) How do we handle voice/video? (Different protocol path; uses WebRTC peer-to-peer with TURN relay fallback.) How do we handle abuse / spam reports? (Hash-based; users can report messages, which forwards the hash and metadata to the moderation team.)</p>
+        </div>
+
+        <div class="pull">"The hard part isn't the messaging. The hard part is keeping 500 million sockets open and knowing where every one of them is."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="interview-framework.html">
+          <div class="label">Prev</div>
+          <div class="ttl">Framework</div>
+        </a>
+        <a class="next-fwd" href="interview-design-youtube.html">
+          <div class="label">Next walkthrough</div>
+          <div class="ttl">Design YouTube →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Interview · Design WhatsApp · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

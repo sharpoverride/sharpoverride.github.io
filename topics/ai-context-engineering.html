@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Context Engineering · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive ai">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#ai">AI</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Context engineering</span>
+    </div>
+    <nav><a href="ai-coding-workflow.html">← Prev</a><a href="ai-reinforcement-learning.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>AI <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>System prompt · retrieval · memory · tool selection</b></span>
+      </div>
+      <h1>Prompt engineering grew <span class="ital">up</span>.</h1>
+      <p class="lede">"Prompt engineering" was about clever wordings of one prompt. Context engineering is about <em>everything</em> the model sees on a call: the system prompt, the retrieval, the recent conversation, the tools available, the structured input. Production LLM systems live or die on this.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The shift</h5><p>2023: "rewrite this prompt." 2025: "redesign the context pipeline." The center of gravity moved from words to architecture.</p></div>
+      <div><h5>The five levers</h5><p>(1) System prompt. (2) Retrieved context. (3) Conversation memory. (4) Tool descriptions. (5) Structured I/O.</p></div>
+      <div><h5>Tech we'll touch</h5>
+        <div><span class="pill on">RAG</span><span class="pill on">Tool design</span><span class="pill on">Memory strategies</span><span class="pill on">Structured output</span></div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">From prompt to context</a></li>
+        <li><a href="#levers">The five levers</a></li>
+        <li><a href="#anti">Common anti-patterns</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>From prompt to <span class="ital">context</span>.</h2>
+        <div class="prose">
+          <p>The early-2023 advice was "tell the model what role it is, what format to use, give it examples." All correct. <strong>But shipping a real LLM feature is mostly not about that.</strong> It's about: which user-specific data do you retrieve? How do you summarise yesterday's session? Which tools are exposed? How do you format the response so downstream code can use it?</p>
+          <p>Context engineering names this larger discipline. <em>The model is the substrate; the context pipeline is the product.</em></p>
+        </div>
+        <div class="pull">"Prompt engineering writes a sentence. Context engineering builds an information pipeline."</div>
+      </section>
+
+      <section class="dd-section" id="levers">
+        <h2 class="section"><span class="num">02</span>The five <span class="ital">levers</span>.</h2>
+
+        <h3 class="sub">System prompt</h3>
+        <div class="prose">
+          <p>Role, rules, output format, refusal policy. <strong>Short and concrete beats long and aspirational.</strong> A 200-word system prompt outperforms a 2000-word one almost always; the model attends to it better. Cache it via prompt-caching APIs — it's identical across calls.</p>
+        </div>
+
+        <h3 class="sub">Retrieved context</h3>
+        <div class="prose">
+          <p>For "answer about my data" use cases: RAG. Pick the chunks that maximise relevance, minimise noise. <strong>Re-rank harder than you index</strong>; the 5 best chunks beat the 50 mediocre ones. See <a href="ai-rag.html">RAG chapter</a>.</p>
+        </div>
+
+        <h3 class="sub">Conversation memory</h3>
+        <div class="prose">
+          <p>Long conversations exceed context windows. Three strategies: <strong>sliding window</strong> (lossy), <strong>summary memory</strong> (compress old turns), <strong>retrieval memory</strong> (vector-index past turns; fetch on demand). Mix and match per use case.</p>
+        </div>
+
+        <h3 class="sub">Tool descriptions</h3>
+        <div class="prose">
+          <p>For agents: the description of each tool is the prompt. "Searches for files" is bad; "Lists files matching a glob pattern; returns up to 100 results sorted by modified time" is good. <strong>The model picks tools by their descriptions</strong>; the time you spend on these compounds.</p>
+        </div>
+
+        <h3 class="sub">Structured I/O</h3>
+        <div class="prose">
+          <p>JSON schema for output. <strong>Don't parse free-form text; constrain the generation.</strong> OpenAI's <code>response_format</code>, Anthropic tools, Gemini's structured output — all enforce shape. Downstream code becomes deterministic.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 240" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · ONE CONTEXT, FIVE INPUTS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+            <g transform="translate(40, 80)">
+              <rect x="0"   y="0"  width="140" height="40" fill="#c2410c"/><text x="70" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">SYSTEM</text>
+              <rect x="160" y="0"  width="140" height="40" fill="#c2410c"/><text x="230" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">RETRIEVED</text>
+              <rect x="320" y="0"  width="140" height="40" fill="#c2410c"/><text x="390" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">MEMORY</text>
+              <rect x="480" y="0"  width="140" height="40" fill="#c2410c"/><text x="550" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">TOOLS</text>
+              <rect x="640" y="0"  width="140" height="40" fill="#c2410c"/><text x="710" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">USER MSG</text>
+              <rect x="800" y="0"  width="160" height="40" fill="#1a1814"/><text x="880" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">→ MODEL</text>
+              <line x1="780" y1="20" x2="798" y2="20" stroke="#c2410c" stroke-width="2"/>
+              <text x="40" y="100" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">"Five inputs. Engineer each one separately. The model is the constant."</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Each lever is independently tunable. Most quality wins come from one of the middle three, not the system prompt.</span></div>
+        </div>
+      </section>
+
+      <section class="dd-section" id="anti">
+        <h2 class="section"><span class="num">03</span>Common <span class="ital">anti-patterns</span>.</h2>
+
+        <div class="callout"><div class="ctag">Stuffing the system prompt</div><p>"Just one more rule" creeps to a 4000-word system prompt that the model attends to poorly. Cap it. Move rules into structured tool definitions or examples.</p></div>
+
+        <div class="callout"><div class="ctag">Over-retrieving</div><p>20 chunks of 500 tokens = 10k tokens of context. The signal is in 2–3; the rest is noise that dilutes. <em>Re-rank, prune, summarise.</em></p></div>
+
+        <div class="callout"><div class="ctag">All of memory, always</div><p>Including the entire conversation history on every call. Fine for the first 5 turns; disastrous by turn 50. Summarise older turns; retrieve on-demand.</p></div>
+
+        <div class="callout"><div class="ctag">Tool descriptions written for humans</div><p>"Calls the search API." Tells the model nothing. Describe inputs, outputs, when to use it, when not to. The description is prompt; write it like one.</p></div>
+
+        <div class="callout"><div class="ctag">Parsing JSON from chat output</div><p>The model returns "Sure! Here's the JSON: <code>{...}</code>". You parse, mostly. Sometimes the wrapping breaks; you ship a hotfix. Use structured output APIs; let the runtime enforce the schema.</p></div>
+
+        <div class="pull">"Every quality bug is a context bug somewhere up the pipeline."</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">04</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>Quality is poor</h5><p>Profile your context. Print the actual prompt going to the model. The bug is almost always in <em>what's being included</em>, not in the model.</p></div>
+          <div class="cell"><h5>Long-running agents</h5><p>Summarise older trajectory. Vector-index past steps. Don't carry the whole tape into every call.</p></div>
+          <div class="cell"><h5>Multiple tools confuse the model</h5><p>Reduce. 5–10 tools is the sweet spot. Tighten descriptions. Group rarely-used tools behind a "look-up" indirection.</p></div>
+          <div class="cell"><h5>JSON output unreliable</h5><p>Switch to structured output API. Don't parse chat-format JSON.</p></div>
+          <div class="cell"><h5>System prompt too long</h5><p>Move examples into few-shot turns. Move rules into tool definitions. Aim for ~200 words.</p></div>
+          <div class="cell"><h5>Costs are high</h5><p>Cache the system prompt. Shrink retrieval. Use a smaller model for triage; route to big model only for complex queries.</p></div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="ai-coding-workflow.html"><div class="label">Prev</div><div class="ttl">Coding workflow</div></a>
+        <a class="next-fwd" href="ai-reinforcement-learning.html"><div class="label">Next</div><div class="ttl">Reinforcement learning →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>AI · Context engineering · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

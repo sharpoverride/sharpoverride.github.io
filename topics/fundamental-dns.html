@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>DNS · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#fundamentals">Fundamentals</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">DNS</span>
+    </div>
+    <nav>
+      <a href="fundamental-https.html">← Prev</a>
+      <a href="fundamental-kafka.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~11 min</b></span>
+        <span>Stack <b>Recursive resolvers · authoritative · TTLs</b></span>
+      </div>
+      <h1>The world's largest <span class="ital">cache</span> hierarchy.</h1>
+      <p class="lede">DNS is a global hierarchy of caches in front of a tiny authoritative truth. A lookup almost never reaches the authoritative servers; it terminates at one of millions of recursive caches scattered across the internet. That's why it's fast — and that's why TTLs are the most important number nobody on your team knows.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The three actors</h5>
+        <p><strong>Authoritative</strong>: owns the records. <strong>Recursive resolver</strong>: queries on your behalf, caches aggressively. <strong>Stub resolver</strong>: the one in your OS, asks the recursive.</p>
+      </div>
+      <div>
+        <h5>The trick</h5>
+        <p>Almost every lookup hits a cache somewhere on the path. The authoritative servers are visited rarely. <em>DNS is fast not because it's smart but because it's lazy.</em></p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Recursive resolution</span>
+          <span class="pill on">A, AAAA, CNAME</span>
+          <span class="pill on">TTLs</span>
+          <span class="pill">DNSSEC</span>
+          <span class="pill">DoH / DoT</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The naming problem</a></li>
+        <li><a href="#hierarchy">The hierarchy</a></li>
+        <li><a href="#ttl">TTLs and propagation</a></li>
+        <li><a href="#dotnet">In .NET / production</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The naming <span class="ital">problem</span>.</h2>
+        <div class="prose">
+          <p>Computers connect by IP address. Humans connect by names. The mapping has to be global, fast, and let a domain owner change their IP without re-issuing business cards to the world. DNS is that mapping: a hierarchical, cache-friendly, eventually-consistent key-value store at planetary scale.</p>
+          <p>The clever shape is the hierarchy. <strong>One root, ~1500 TLDs, 350M+ second-level domains.</strong> Each level only knows where to find the next. The root knows about the TLDs (<code>.com</code>, <code>.org</code>); <code>.com</code>'s servers know about <code>example.com</code>; <code>example.com</code>'s servers know about <code>www.example.com</code>. <em>No single authority knows everything; every authority knows enough to delegate further.</em></p>
+        </div>
+
+        <div class="pull">"DNS works because nobody owns it. Or rather: many somebodies each own a tiny piece of it."</div>
+      </section>
+
+      <section class="dd-section" id="hierarchy">
+        <h2 class="section"><span class="num">02</span>The <span class="ital">hierarchy</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 360" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="dnsa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 25 · A LOOKUP FROM YOUR BROWSER</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0"    y="0" width="120" height="50" fill="#1a1814"/>
+              <text x="60"   y="30" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">STUB</text>
+              <text x="60"   y="44" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1" opacity="0.7">your OS</text>
+
+              <rect x="200"  y="0" width="160" height="50" fill="#c2410c"/>
+              <text x="280"  y="30" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">RECURSIVE</text>
+              <text x="280"  y="44" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1">ISP / 8.8.8.8 / 1.1.1.1</text>
+
+              <rect x="420"  y="-40" width="140" height="40" fill="#1a1814"/>
+              <text x="490"  y="-15" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">ROOT (.)</text>
+
+              <rect x="420"  y="20" width="140" height="40" fill="#1a1814"/>
+              <text x="490"  y="44" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">TLD (.com)</text>
+
+              <rect x="420"  y="80" width="140" height="40" fill="#1a1814"/>
+              <text x="490"  y="104" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">example.com NS</text>
+
+              <line x1="120" y1="25" x2="198" y2="25" stroke="#c2410c" stroke-width="2" marker-end="url(#dnsa)"/>
+              <text x="160" y="18" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#c2410c">A? www.example.com</text>
+
+              <line x1="360" y1="20" x2="418" y2="-15" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#dnsa)"/>
+              <line x1="360" y1="25" x2="418" y2="40"  stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#dnsa)"/>
+              <line x1="360" y1="30" x2="418" y2="100" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#dnsa)"/>
+
+              <text x="600" y="-12" font-family="JetBrains Mono" font-size="9" fill="#1a1814">"ask the .com NS"</text>
+              <text x="600" y="44" font-family="JetBrains Mono" font-size="9" fill="#1a1814">"ask example.com NS"</text>
+              <text x="600" y="104" font-family="JetBrains Mono" font-size="9" fill="#c2410c">"A 93.184.216.34, TTL 300"</text>
+
+              <text x="0" y="180" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">Walks once. Caches everywhere on the path.</text>
+              <text x="0" y="210" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Recursive caches the answer for the TTL.</text>
+              <text x="0" y="226" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Stub may also cache (OS resolver cache).</text>
+              <text x="0" y="242" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">Browser may also cache (Chrome's HTTP cache + DNS cache).</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 25</span><span>One uncached lookup is 4 round-trips. Every layer caches. Most lookups in production traverse one — the stub-to-recursive — and the recursive answers from cache.</span></div>
+        </div>
+
+        <h3 class="sub">Record types you'll meet</h3>
+        <div class="prose">
+          <p><strong>A / AAAA</strong>: hostname → IPv4 / IPv6 address. The most common record. <strong>CNAME</strong>: an alias to another hostname; resolves to the target's A. <strong>MX</strong>: mail server for the domain. <strong>TXT</strong>: arbitrary text, used for SPF, DKIM, domain-verification challenges. <strong>NS</strong>: which authoritative servers serve this domain. <strong>SRV</strong>: service discovery for non-HTTP protocols. <em>You'll spend 90% of your time with A and CNAME.</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="ttl">
+        <h2 class="section"><span class="num">03</span>TTLs and <span class="ital">propagation</span>.</h2>
+        <div class="prose">
+          <p>Every record has a TTL — how long downstream caches may hold it before refreshing. A 300-second TTL means a recursive resolver will serve the cached answer for 5 minutes, then re-fetch. <strong>Pick the TTL based on how often you change the record</strong>: low for things that fail over (60s for production load-balancer IPs), high for things that never change (24h for vanity domain CNAMEs).</p>
+        </div>
+
+        <h3 class="sub">"DNS propagation" is the TTL of your old record</h3>
+        <div class="prose">
+          <p>When you change an A record, the change is instant at the authoritative servers. But every recursive resolver in the world has the old answer cached for as long as the old TTL says. <strong>If the old TTL was 24 hours, you wait 24 hours for the world to converge on the new record.</strong> The standard trick before a known cutover: lower the TTL to 60 seconds 24 hours in advance. The cache fills with short-TTL versions; the cutover then propagates in a minute.</p>
+        </div>
+
+        <h3 class="sub">Negative caching</h3>
+        <div class="prose">
+          <p>If a name doesn't exist, the resolver caches the "doesn't exist" answer too — typically for 5 minutes by default, controlled by the SOA record's negative TTL. <em>This is why a typo'd domain returning NXDOMAIN keeps returning NXDOMAIN for a few minutes even after you fix the typo</em>: the resolver remembers your error.</p>
+        </div>
+
+        <h3 class="sub">Health-aware DNS</h3>
+        <div class="prose">
+          <p>Managed DNS providers (Route 53, Azure DNS, Cloudflare, NS1) tie records to health checks. If the IP behind your A record fails its health probe, the provider returns a different IP. <strong>This is the most common cross-region failover mechanism</strong> — works for any TCP-based service, not just HTTP. Caveat: the failover speed is bounded by the TTL.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">.NET</span> / production.</h2>
+
+        <div class="prose">
+          <p>The most important .NET DNS configuration is one line: <code>PooledConnectionLifetime</code> on <code>HttpClient</code>'s handler. Without it, the HttpClient never re-resolves DNS — see <a href="service-discovery.html">Service Discovery</a>.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">HttpClientFactorySetup.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre>builder.<span class="t">Services</span>.<span class="fn">AddHttpClient</span>&lt;<span class="t">PaymentsClient</span>&gt;(c =&gt;
+{
+    c.<span class="t">BaseAddress</span> = <span class="k">new</span> <span class="t">Uri</span>(<span class="s">"https://payments.internal"</span>);
+})
+.<span class="fn">ConfigurePrimaryHttpMessageHandler</span>(() =&gt; <span class="k">new</span> <span class="t">SocketsHttpHandler</span>
+{
+    <span class="c">// Most important DNS config in .NET. Force re-resolve every 2 min.</span>
+    <span class="t">PooledConnectionLifetime</span>    = <span class="t">TimeSpan</span>.<span class="fn">FromMinutes</span>(<span class="n">2</span>),
+    <span class="t">PooledConnectionIdleTimeout</span> = <span class="t">TimeSpan</span>.<span class="fn">FromMinutes</span>(<span class="n">5</span>),
+});</pre>
+        </div>
+
+        <h3 class="sub">DNS for K8s and ECS</h3>
+        <div class="prose">
+          <p>Inside a Kubernetes cluster, CoreDNS resolves <code>service.namespace.svc.cluster.local</code>. The TTL defaults to 30 seconds. Inside ECS, AWS Cloud Map (or Route 53) does the same. <strong>Cluster DNS is real DNS</strong>; the same caching, TTL, and propagation rules apply — see <a href="service-discovery.html">Service Discovery</a>.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Lower TTL before a cutover</div>
+          <p>24 hours before flipping an A record, drop the TTL to 60 seconds. Caches age out. Day-of, you can switch in a minute. Restore the TTL to its normal value after.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">CNAME at the apex is forbidden</div>
+          <p>RFC says <code>example.com</code> can't be a CNAME (the apex must be SOA + NS). Solutions: ALIAS records (Cloudflare, Route 53) that the DNS provider resolves and returns as A records; or use <code>www.example.com</code> as the canonical and redirect from apex.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Use 1.1.1.1 or 8.8.8.8 as your debug resolver</div>
+          <p>When debugging DNS issues, query a known-good public resolver (<code>dig @1.1.1.1 example.com</code>) to bypass your local resolver. If the answer is correct there but wrong at your stub, the bug is in your network's resolver chain.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">DNSSEC: real, niche, often broken</div>
+          <p>DNSSEC signs records cryptographically. It prevents poisoning attacks. <em>It's also infamous for breaking domains when keys rotate incorrectly</em> — high-profile outages have hit organisations that enabled it. Use it for compliance-sensitive domains; for general use, the additional security is small and the operational risk is real.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">DoH / DoT encrypts the lookup</div>
+          <p>DNS-over-HTTPS and DNS-over-TLS encrypt the resolver-to-recursive traffic. Modern browsers default to DoH (Cloudflare or NextDNS or whatever the OS prefers). <strong>Your corporate network monitoring won't see DNS lookups by default</strong>; if you rely on them for security, the policy needs to push enterprise-DNS configuration to the endpoints.</p>
+        </div>
+
+        <div class="pull">"DNS is the protocol everyone thinks is simple until they ship a TTL of 86400 the day before a launch."</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">06</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Hosting a domain</h5>
+            <p>Cloudflare DNS or Route 53. Both are fast, well-engineered, well-priced. Pick the one matching your cloud unless Cloudflare's free tier wins.</p>
+          </div>
+          <div class="cell">
+            <h5>Health-based failover</h5>
+            <p>Route 53 health checks or Cloudflare load balancer. TTL 30–60s. Failover happens in ~1 minute after detection.</p>
+          </div>
+          <div class="cell">
+            <h5>Multi-region geographic routing</h5>
+            <p>Route 53 latency policies, Azure Traffic Manager performance routing, or Cloudflare's geo-routing. Routes user to nearest healthy region.</p>
+          </div>
+          <div class="cell">
+            <h5>Inside Kubernetes</h5>
+            <p>CoreDNS handles it. Set the default 30s TTL; <code>HttpClient.PooledConnectionLifetime</code> in .NET clients is the matching configuration.</p>
+          </div>
+          <div class="cell">
+            <h5>Big migration coming</h5>
+            <p>Lower the TTL on the migrated records to 60s, 24h before the cutover. Restore after. Don't try to cut over with the production TTL still set.</p>
+          </div>
+          <div class="cell">
+            <h5>You think DNS is causing slowness</h5>
+            <p>Probably right. Check <code>HttpClient</code> connection lifetime, DNS resolver health, and stub-resolver TTL. The fix is usually one config line.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-https.html">
+          <div class="label">Prev fundamental</div>
+          <div class="ttl">HTTPS</div>
+        </a>
+        <a class="next-fwd" href="fundamental-kafka.html">
+          <div class="label">Next fundamental</div>
+          <div class="ttl">Kafka deep dive →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Fundamental · DNS · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Code Review Best Practices · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Code review</span>
+    </div>
+    <nav><a href="fundamental-frugal-architecture.html">← Prev</a><a href="fundamental-cloud-pitfalls.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>PR conventions · review depth · async vs sync</b></span>
+      </div>
+      <h1>The slowest-moving part of <span class="ital">engineering</span>.</h1>
+      <p class="lede">Most teams' velocity bottleneck isn't writing code; it's waiting for review. The cultural and tooling conventions around code review compound — small PRs reviewed in hours produce a different organisation than 2000-line PRs reviewed in days.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The biggest lever</h5><p>PR size. A 100-line PR gets a careful review in 30 minutes. A 1000-line PR gets a glance in 30 minutes. <em>Same author time; tenfold different review quality.</em></p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#size">PR size</a></li>
+      <li><a href="#depth">Review depth</a></li>
+      <li><a href="#culture">Culture &amp; tone</a></li>
+      <li><a href="#tools">Tooling that helps</a></li>
+      <li><a href="#decision">Decision guide</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="size">
+        <h2 class="section"><span class="num">01</span>PR <span class="ital">size</span>.</h2>
+        <div class="prose">
+          <p>The studies are consistent: reviewer attention scales sub-linearly with diff size. Reviewers who see a 1500-line PR spend roughly the same time on it as on a 200-line one — and miss proportionally more bugs. <strong>Big PRs are reviewed badly</strong>; the second half gets skimmed.</p>
+          <p>Target: <strong>&lt;400 lines of change per PR</strong>. Tooling note: that's lines of <em>logic</em> changed, not auto-generated files. Lockfile updates, codegen, formatting — exclude.</p>
+        </div>
+
+        <h3 class="sub">Stacked diffs</h3>
+        <div class="prose">
+          <p>Splitting one big change into N small dependent PRs. <strong>Each PR reviewed independently; merged in order.</strong> See <a href="fundamental-stacked-diffs.html">stacked diffs chapter</a>. The technique that makes "small PRs only" feasible for big changes.</p>
+        </div>
+        <div class="pull">"Authors write the diff once. Reviewers see it cold. The size that respects that is small."</div>
+      </section>
+
+      <section class="dd-section" id="depth">
+        <h2 class="section"><span class="num">02</span>Review <span class="ital">depth</span>.</h2>
+
+        <h3 class="sub">What the reviewer is actually checking</h3>
+        <table class="matrix"><thead><tr><th>Layer</th><th>What</th></tr></thead><tbody>
+          <tr><th>Tests pass</th><td>CI did this; reviewer can skip</td></tr>
+          <tr><th>Linting clean</th><td>CI did this; reviewer can skip</td></tr>
+          <tr><th>Correctness</th><td>Does this code do what its description says?</td></tr>
+          <tr><th>Edge cases</th><td>Empty input, null, concurrent calls, errors?</td></tr>
+          <tr><th>Security</th><td>SQL injection, XSS, auth bypass?</td></tr>
+          <tr><th>Architecture fit</th><td>Does this belong here? Is there a cleaner shape?</td></tr>
+          <tr><th>Naming &amp; readability</th><td>Will the next engineer understand?</td></tr>
+          <tr><th>Style nits</th><td>Defer to the linter; manual nits = noise</td></tr>
+        </tbody></table>
+        <div class="prose">
+          <p><strong>The reviewer's value is in the middle four rows.</strong> CI handles the top; style is automated; the human is for architecture, correctness, edge cases. <em>Don't waste review time on whitespace.</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="culture">
+        <h2 class="section"><span class="num">03</span>Culture &amp; <span class="ital">tone</span>.</h2>
+        <div class="callout"><div class="ctag">"Why?" beats "no"</div><p>"This is wrong" stops the conversation. "What's the case for this approach over X?" opens it. The author often has context the reviewer doesn't.</p></div>
+        <div class="callout"><div class="ctag">Praise specific things</div><p>"Nice use of the visitor here" is worth a hundred "lgtm" comments. Reviewing is teaching; praise reinforces what to do more of.</p></div>
+        <div class="callout"><div class="ctag">Distinguish blocking from suggestion</div><p>"nit:" or "suggestion:" prefix for "I prefer this but you can ignore." "blocking:" or no prefix for "this must change." Conventions documented; reviewers stick to them.</p></div>
+        <div class="callout"><div class="ctag">Time-bound the review</div><p>Target: PRs reviewed within 4 hours of request during business hours. Above that, the author has switched context; the cost of resuming compounds. Set the team's SLA.</p></div>
+        <div class="callout"><div class="ctag">Async vs sync</div><p>Async (GitHub comments) is default. <em>Sync review (over a call) for genuinely complex changes</em>; saves a 30-comment thread.</p></div>
+      </section>
+
+      <section class="dd-section" id="tools">
+        <h2 class="section"><span class="num">04</span>Tooling that <span class="ital">helps</span>.</h2>
+        <div class="prose">
+          <p><strong>Auto-formatters</strong> (Prettier, Black, gofmt): eliminate style review entirely. <strong>Linters with auto-fix</strong>: ditto for common bug patterns. <strong>Type checkers</strong>: catch a class of bugs before review. <strong>Pre-commit hooks</strong>: don't even open a PR with violations.</p>
+          <p><strong>Coverage / mutation testing</strong>: tells you whether the new code is tested, beyond pass/fail. <strong>Static analysis</strong> (CodeQL, Semgrep): catches security smells. <strong>AI review</strong> (CodeRabbit, Greptile, Sourcery): a useful "first reviewer" that catches obvious issues so humans focus on architecture.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">05</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell"><h5>PRs sit unreviewed for &gt;1 day</h5><p>Set a team SLA. 4 hours for first response in business hours. Make it visible (dashboard, Slack reminders).</p></div>
+          <div class="cell"><h5>PRs are routinely huge</h5><p>Adopt stacked diffs. Train the team to chop. 400-line ceiling for "non-mechanical" diffs.</p></div>
+          <div class="cell"><h5>Style-bikeshedding in reviews</h5><p>Auto-formatter wins. Move the argument to the linter config; settle it once.</p></div>
+          <div class="cell"><h5>Senior engineers are review bottlenecks</h5><p>Spread review load. Junior + senior pair on harder PRs; junior on routine. AI tools as first-pass screen.</p></div>
+          <div class="cell"><h5>Cross-team / cross-org PRs</h5><p>CODEOWNERS file. Each file path has owners; PR can't merge without their approval. Github / GitLab built-in.</p></div>
+          <div class="cell"><h5>Repeated bug class in reviews</h5><p>Promote to a lint rule. If you've caught the same mistake five times in PRs, automate the catch.</p></div>
+        </div>
+        <div class="pull">"Code review is the slowest part of engineering. Treat it like the production system it is."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-frugal-architecture.html"><div class="label">Prev</div><div class="ttl">Frugal architecture</div></a>
+        <a class="next-fwd" href="fundamental-cloud-pitfalls.html"><div class="label">Next</div><div class="ttl">Cloud pitfalls →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Code review · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

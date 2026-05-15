@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Design Spotify · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive interview">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#interviews">Interviews</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Design Spotify</span>
+    </div>
+    <nav>
+      <a href="interview-design-youtube.html">← Prev</a>
+      <a href="interview-design-chatgpt.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Interview <b>walkthrough</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~12 min</b></span>
+        <span>Scale <b>600M users · 100M tracks</b></span>
+      </div>
+      <h1>Design <span class="ital">Spotify</span>.</h1>
+      <p class="lede">A music streaming service plus recommendations. The streaming half looks like a simpler YouTube; the recommendation half is the actual product. Where you spend your time depends on what the interviewer signals.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>Anchor numbers</h5>
+        <p>~600M users · 100M+ tracks · ~250 KB/min audio at 128 kbps · ~50B plays/month · catalog roughly static (curated, not user-uploaded).</p>
+      </div>
+      <div>
+        <h5>The two halves</h5>
+        <p>Streaming (small catalog, predictable access pattern, CDN-friendly). Recommendations (the secret sauce — Discover Weekly, Daily Mix, Now Playing radio).</p>
+      </div>
+      <div>
+        <h5>Out of scope (probably)</h5>
+        <p>Podcasts, video, social features. Pin scope; play to your strengths.</p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#clarify">Clarify</a></li>
+        <li><a href="#estimate">Estimate</a></li>
+        <li><a href="#architecture">High-level architecture</a></li>
+        <li><a href="#streaming">Deep dive — streaming</a></li>
+        <li><a href="#recommendations">Deep dive — recommendations</a></li>
+        <li><a href="#scale">Scale &amp; bottlenecks</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="clarify">
+        <h2 class="section"><span class="num">01</span><span class="ital">Clarify</span>.</h2>
+        <table class="matrix">
+          <thead><tr><th>Aspect</th><th>Scope</th></tr></thead>
+          <tbody>
+            <tr><th>Flows</th><td>Search/browse tracks, play a track, generate personalised playlists</td></tr>
+            <tr><th>Catalog</th><td>~100M tracks, curated (not user-uploaded), updated daily</td></tr>
+            <tr><th>Users</th><td>600M total, ~200M concurrent peak</td></tr>
+            <tr><th>Audio</th><td>Adaptive bitrate, 96/160/320 kbps, AAC + Ogg Vorbis</td></tr>
+            <tr><th>Recommendations</th><td>Discover Weekly (cold-start to long-tail), Daily Mix (by genre), per-track "radio"</td></tr>
+            <tr><th>Latency</th><td>Search &lt; 300ms · play-start &lt; 500ms · rec compute can be async</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="estimate">
+        <h2 class="section"><span class="num">02</span><span class="ital">Estimate</span>.</h2>
+        <table class="matrix">
+          <thead><tr><th>Quantity</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><th>Catalog size (avg track 5 min)</th><td>~500M minutes audio</td></tr>
+            <tr><th>Storage / track (3 bitrates)</th><td>~3 MB × 3 = ~10 MB</td></tr>
+            <tr><th>Total audio storage</th><td>~1 PB (100M × 10 MB)</td></tr>
+            <tr><th>Plays / sec (avg)</th><td>~20k (50B/mo / ~2.6M sec)</td></tr>
+            <tr><th>Plays / sec (peak)</th><td>~80k</td></tr>
+            <tr><th>Stream bandwidth / user</th><td>~128 kbps avg</td></tr>
+            <tr><th>Peak egress</th><td>~10 Gbps (200M concurrent × 128 kbps × some active%)</td></tr>
+          </tbody>
+        </table>
+        <div class="prose">
+          <p>The catalog is tiny by streaming-service standards: ~1 PB total, compared to YouTube's PB/day. <strong>The whole catalog fits on CDN.</strong> That changes the architecture significantly — there is no "cold storage tier" of long-tail content.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="architecture">
+        <h2 class="section"><span class="num">03</span>High-level <span class="ital">architecture</span>.</h2>
+
+        <div class="prose">
+          <p><strong>Catalog ingestion</strong>: labels submit tracks; ingestion service validates, transcodes to multiple bitrates, writes to object storage, pushes to CDN, indexes metadata in search. <strong>Playback</strong>: client requests track → metadata API returns CDN URL → client streams via HLS or progressive download. <strong>Recommendations</strong>: an offline ML pipeline computes per-user playlists nightly; an online ranker re-ranks the top of feeds in real time.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 300" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="spa1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · STREAMING + RECOMMENDATIONS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0"   y="0"  width="120" height="40" fill="#1a1814"/>
+              <text x="60"  y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CLIENT</text>
+
+              <rect x="160" y="0"  width="160" height="40" fill="#c2410c"/>
+              <text x="240" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">METADATA / SEARCH</text>
+
+              <rect x="360" y="0"  width="160" height="40" fill="#c2410c"/>
+              <text x="440" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">REC SERVICE</text>
+
+              <rect x="560" y="-30" width="180" height="40" fill="#1a1814"/>
+              <text x="650" y="-5" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">USER FEATURES (Redis)</text>
+
+              <rect x="560" y="30" width="180" height="40" fill="#1a1814"/>
+              <text x="650" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">REC CANDIDATES (offline)</text>
+
+              <rect x="780" y="0"  width="160" height="40" fill="#c2410c"/>
+              <text x="860" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CDN EDGE</text>
+
+              <rect x="980" y="0"  width="160" height="40" fill="#1a1814"/>
+              <text x="1060" y="25" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">AUDIO ORIGIN</text>
+
+              <line x1="120" y1="20" x2="158" y2="20" stroke="#c2410c" stroke-width="2" marker-end="url(#spa1)"/>
+              <line x1="320" y1="20" x2="358" y2="20" stroke="#c2410c" stroke-width="2" marker-end="url(#spa1)"/>
+              <line x1="520" y1="10" x2="558" y2="-10" stroke="#c2410c" stroke-width="1.5" marker-end="url(#spa1)"/>
+              <line x1="520" y1="30" x2="558" y2="50"  stroke="#c2410c" stroke-width="1.5" marker-end="url(#spa1)"/>
+              <line x1="120" y1="30" x2="778" y2="30" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#spa1)"/>
+              <line x1="940" y1="20" x2="978" y2="20" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#spa1)"/>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Recommendation reads precomputed candidates and re-ranks in real time. Audio bytes are served by CDN.</span></div>
+        </div>
+      </section>
+
+      <section class="dd-section" id="streaming">
+        <h2 class="section"><span class="num">04</span>Deep dive — <span class="ital">streaming</span>.</h2>
+
+        <h3 class="sub">CDN with full catalog at most POPs</h3>
+        <div class="prose">
+          <p>The catalog is small enough (~1 PB) that Spotify can keep most of it on CDN. <strong>Long-tail tracks pre-cached as well</strong>: when a user requests a track not at the edge, fetch from origin and cache. The miss rate is low because the catalog is closed (no user uploads), and popularity is power-law — top 10k tracks dominate but the next 1M still account for serious volume.</p>
+        </div>
+
+        <h3 class="sub">Predict the next track</h3>
+        <div class="prose">
+          <p>Spotify knows what you're playing next — it's in the queue. <strong>Pre-fetch the next track's first chunk while the current track is playing.</strong> Gapless playback; sub-100ms transition. Same trick on shuffle: pre-fetch the 1–2 most likely candidates.</p>
+        </div>
+
+        <h3 class="sub">Offline downloads</h3>
+        <div class="prose">
+          <p>Premium users can download tracks for offline play. Downloads are DRM-protected; the encryption key is bound to the user's subscription. <strong>Periodic re-validation</strong>: the app calls home every ~30 days; if the subscription lapsed, the keys expire and the downloads stop working. Caching tier for downloads is the same CDN.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="recommendations">
+        <h2 class="section"><span class="num">05</span>Deep dive — <span class="ital">recommendations</span>.</h2>
+
+        <h3 class="sub">Two-stage system</h3>
+        <div class="prose">
+          <p><strong>Offline candidate generation</strong> (batch, ~daily): for each user, generate a few thousand candidate tracks using collaborative filtering, content-based features, and embedding nearest-neighbour. Store in <code>user_candidates</code> table. <strong>Online ranking</strong> (real-time): when the user opens the app, take the candidates and re-rank using fresher signals (current session, time of day, device). <em>The offline step does the heavy ML; the online step does the personalisation.</em></p>
+        </div>
+
+        <h3 class="sub">Embeddings everywhere</h3>
+        <div class="prose">
+          <p>Each track is a vector in some learned embedding space (~128 dims). Each user is a vector — typically the average of recent-play track embeddings. <strong>Similarity is cosine distance.</strong> Tracks "near" the user's vector are candidates. The embeddings are computed by a model that ingests listening history, playlist co-occurrence, audio features, label metadata.</p>
+        </div>
+
+        <h3 class="sub">Discover Weekly</h3>
+        <div class="prose">
+          <p>The flagship — 30 tracks personalised weekly. <strong>Generated by a batch pipeline</strong>: for each user, take their recent listening, find tracks "near" in embedding space that the user has not heard, filter out content they're predicted to dislike, sample diverse-but-coherent set. <em>The trick is balancing familiarity with discovery</em>; pure nearest-neighbour gives you songs that sound like what you already love (boring); too much exploration gives you songs you'll skip.</p>
+        </div>
+
+        <h3 class="sub">Feedback loop</h3>
+        <div class="prose">
+          <p>Every play, skip, like, save is a signal. <strong>Recent signals weighted heavier</strong>; a skipped track within 5 seconds is strong negative; a track completed is strong positive. These flow into the next day's batch computation and the same day's online ranking. <em>The system that doesn't have this feedback loop produces recommendations that go stale within a week.</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="scale">
+        <h2 class="section"><span class="num">06</span>Scale &amp; <span class="ital">bottlenecks</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Recommendation compute is the cost line</div>
+          <p>Generating candidates for 600M users daily is a large batch job. <strong>Approximately 600M × 1k candidates = 600B candidate scores per day.</strong> Done on a Hadoop/Spark/Beam cluster. Scaling is by adding nodes; the bottleneck is the embedding index lookups (use Faiss or ScaNN for ANN search).</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Cold-start is the hard product problem</div>
+          <p>A user with no listening history has no embedding. <strong>Cold-start strategy</strong>: ask them genres/artists at signup; fall back to popular-by-region. After ~10 plays the model has enough signal to personalise.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Tradeoffs to mention</div>
+          <p><strong>Catalog freshness vs cache hit rate</strong>: new releases need to be pushed to CDN promptly. <strong>Storage strategy</strong>: 3 bitrates × 100M tracks = ~3 PB total; could go higher with lossless tier (which Spotify added in 2024). <strong>Per-region catalog</strong>: licensing means some tracks are unavailable in some countries; metadata API filters before returning URLs.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Open questions</div>
+          <p>Live audio (concert streams, radio): different bitrate, lower latency. Social features (friends listening, shared playlists): adds a fanout problem. Podcasts: different content shape, longer durations, ad insertion — Spotify built a separate ingestion pipeline.</p>
+        </div>
+
+        <div class="pull">"Streaming is the table stakes. The product is what plays next."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="interview-design-youtube.html">
+          <div class="label">Prev</div>
+          <div class="ttl">Design YouTube</div>
+        </a>
+        <a class="next-fwd" href="interview-design-chatgpt.html">
+          <div class="label">Next</div>
+          <div class="ttl">Design ChatGPT →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Interview · Design Spotify · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

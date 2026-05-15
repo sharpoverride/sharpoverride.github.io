@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Sidecar Pattern · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#fundamentals">Fundamentals</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Sidecar</span>
+    </div>
+    <nav>
+      <a href="fundamental-load-balancing.html">← Prev</a>
+      <a href="fundamental-webhooks.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>Envoy · Dapr · Linkerd · OpenTelemetry Collector</b></span>
+      </div>
+      <h1>A helper next to every <span class="ital">pod</span>.</h1>
+      <p class="lede">The sidecar pattern co-locates a helper process with your application — same pod, same lifecycle, separate process. Logging, tracing, mTLS, service discovery, secret rotation, retries — features your app gets for free, by living alongside something that does them properly.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>What you outsource</h5>
+        <p>Cross-cutting concerns: TLS termination, mTLS, retries, circuit breaking, observability, log shipping, config reload.</p>
+      </div>
+      <div>
+        <h5>What you keep</h5>
+        <p>Business logic. Domain code. The bits that are actually specific to your service.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Envoy</span>
+          <span class="pill on">Linkerd proxy</span>
+          <span class="pill on">Dapr</span>
+          <span class="pill on">OTel Collector</span>
+          <span class="pill">Vault Agent</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The shared concerns problem</a></li>
+        <li><a href="#shape">What a sidecar looks like</a></li>
+        <li><a href="#mesh">Service mesh = sidecar squared</a></li>
+        <li><a href="#dotnet">In Kubernetes</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The shared-concerns <span class="ital">problem</span>.</h2>
+        <div class="prose">
+          <p>Every service needs the same boring infrastructure features. mTLS to internal callers. Retry policies. Circuit breakers. Distributed traces. Metrics emission. Log shipping. Secret rotation. <strong>Implementing these in every service in every language is the polyglot tax</strong> — and even in a monoglot shop, it's a maintenance burden that scales with service count.</p>
+          <p>Three options for centralisation. <strong>Library</strong>: every service links the same SDK. Same code, but versioning across N services is painful; polyglot multiplies the work. <strong>Gateway</strong>: a central proxy at the edge does it. Works for ingress, doesn't work for service-to-service. <strong>Sidecar</strong>: every service runs a small helper process alongside it; the helper does the work. <em>The sidecar wins because it covers service-to-service traffic without burdening the application.</em></p>
+        </div>
+
+        <div class="pull">"Outsource the boring problems. Keep the interesting ones."</div>
+      </section>
+
+      <section class="dd-section" id="shape">
+        <h2 class="section"><span class="num">02</span>What a sidecar <span class="ital">looks like</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 320" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="sca" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 29 · POD WITH SIDECAR</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0" y="0" width="500" height="180" fill="none" stroke="#1a1814" stroke-width="2" stroke-dasharray="5 4"/>
+              <text x="20" y="22" font-family="JetBrains Mono" font-size="10" fill="#1a1814">POD</text>
+
+              <rect x="40" y="50" width="180" height="100" fill="#1a1814"/>
+              <text x="130" y="80" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">APP CONTAINER</text>
+              <text x="130" y="100" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">business logic</text>
+              <text x="130" y="116" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">localhost only</text>
+
+              <rect x="280" y="50" width="180" height="100" fill="#c2410c"/>
+              <text x="370" y="80" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">SIDECAR</text>
+              <text x="370" y="100" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">mTLS · retry · trace · logs</text>
+              <text x="370" y="116" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">talks to the network</text>
+
+              <line x1="220" y1="100" x2="278" y2="100" stroke="#f1ece1" stroke-width="2" marker-end="url(#sca)"/>
+              <text x="250" y="92" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#1a1814">localhost</text>
+
+              <line x1="460" y1="100" x2="560" y2="100" stroke="#c2410c" stroke-width="2" marker-end="url(#sca)"/>
+
+              <rect x="560" y="60" width="200" height="80" fill="#1a1814"/>
+              <text x="660" y="100" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">REST OF THE WORLD</text>
+
+              <text x="800" y="80"  font-family="IBM Plex Sans" font-size="12" fill="#1a1814">App speaks plain HTTP to localhost.</text>
+              <text x="800" y="98"  font-family="IBM Plex Sans" font-size="12" fill="#1a1814">Sidecar adds mTLS, retries, traces.</text>
+              <text x="800" y="116" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">App is unaware. Operationally, transparent.</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 29</span><span>The sidecar shares the pod's network namespace. The app talks to <code>localhost</code>; the sidecar handles everything that touches the wire.</span></div>
+        </div>
+
+        <h3 class="sub">Shared pod lifecycle</h3>
+        <div class="prose">
+          <p>The sidecar starts before the app, terminates after it. Kubernetes models this as multiple containers in one pod, sharing the network namespace and (optionally) volumes. <strong>The app and the sidecar are deployed together, scale together, fail together.</strong> They are not "two services that happen to talk"; they are one operational unit.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="mesh">
+        <h2 class="section"><span class="num">03</span>Service mesh = <span class="ital">sidecar squared</span>.</h2>
+        <div class="prose">
+          <p>A service mesh — Istio, Linkerd, Consul Connect — is "sidecar deployed automatically to every pod, configured centrally." Each pod gets an Envoy (Istio) or linkerd2-proxy. The control plane pushes routing rules, mTLS certs, retry policies. <strong>The app code stops needing to think about mTLS at all</strong>; the sidecar mesh issues and rotates certs and terminates TLS at both ends of every internal call.</p>
+        </div>
+
+        <h3 class="sub">Sidecarless meshes — Cilium, Istio Ambient</h3>
+        <div class="prose">
+          <p>Sidecars cost CPU and memory: ~50–100 MB per pod, sometimes more. At 10,000 pods, that's serious. <strong>Newer mesh designs move the proxy to a per-node daemon or kernel-level eBPF</strong>: Cilium (eBPF), Istio Ambient mode (per-node ztunnel + waypoint proxies). Same features, lower overhead. <em>This is the active frontier in service-mesh design.</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">Kubernetes</span>.</h2>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">yaml</span> &nbsp; <span class="file">pod-with-otel-sidecar.yaml</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre>apiVersion: v1
+kind: Pod
+metadata:
+  name: orders-api
+  labels: { app: orders }
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/example/orders:v2
+      ports: [{ containerPort: 5000 }]
+      env:
+        <span class="c"># App emits OTLP to localhost — the sidecar picks it up.</span>
+        - { name: OTEL_EXPORTER_OTLP_ENDPOINT, value: <span class="s">"http://localhost:4317"</span> }
+
+    - name: otel-collector
+      image: otel/opentelemetry-collector-contrib:0.95.0
+      ports:
+        - { containerPort: 4317 }   <span class="c"># OTLP gRPC ingest</span>
+      volumeMounts:
+        - { name: otel-config, mountPath: /etc/otelcol }
+      args: [<span class="s">"--config=/etc/otelcol/config.yaml"</span>]
+
+  volumes:
+    - name: otel-config
+      configMap: { name: otel-collector-config }</pre>
+        </div>
+
+        <div class="prose">
+          <p>The app exports traces, metrics, logs to <code>localhost:4317</code> — no DNS lookup, no auth, no mTLS in app code. The sidecar forwards to the collector pool, adds enrichment, batches, exports to multiple backends. <strong>If the backend is down, the sidecar buffers; the app doesn't notice.</strong></p>
+        </div>
+
+        <h3 class="sub">Dapr — sidecar as platform</h3>
+        <div class="prose">
+          <p>Dapr is the most ambitious of the application-sidecar designs: one runtime sidecar provides service invocation, pub/sub, state management, secrets, and bindings via HTTP/gRPC APIs. <strong>Your app calls localhost; Dapr translates to whatever backend (Redis, Kafka, Azure Service Bus, etc.) is configured.</strong> Same code runs against different infrastructure by changing a YAML file. The cost: an extra abstraction layer, and you're tied to Dapr's API shape.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Resource overhead is real</div>
+          <p>An Envoy sidecar idles around 50–100 MB RAM and 5–10% of a core; under load, much more. For pod-dense clusters, the mesh tax is significant. <em>Budget for it</em>; benchmark before committing.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Sidecar startup order matters</div>
+          <p>The app starts and tries to call out — but the sidecar isn't ready yet. Connection refused. <strong>K8s 1.28+ has native sidecar lifecycle</strong> (the sidecar starts before app containers and runs in a separate init phase). Pre-1.28, the pattern was a startup script in the app that waits for sidecar readiness.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Don't try to debug through the sidecar</div>
+          <p>Production weirdness is harder when traffic flows through Envoy. <strong>Have a kill-switch that disables the mesh sidecar for one pod</strong> so you can compare bare-app behavior. Linkerd and Istio both support pod-level opt-out.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Sidecars vs daemonsets</div>
+          <p>A sidecar is per-pod. A daemonset is per-node. <strong>For genuinely shared services (a log forwarder, an eBPF probe), daemonset is cheaper</strong>: one instance per node, shared across pods. Use sidecars when per-pod isolation matters (mTLS identity, per-pod retry policy).</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Ambient mode is the future</div>
+          <p>The sidecar-per-pod model is being replaced by per-node "ambient" proxies + waypoints for L7 logic. Istio Ambient, Cilium service mesh. <em>For new mesh deployments in 2026</em>, look at ambient before committing to sidecar-per-pod.</p>
+        </div>
+
+        <div class="pull">"The sidecar is the architecture pattern that admits cross-cutting concerns deserve their own runtime."</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">06</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Observability for a polyglot fleet</h5>
+            <p>OpenTelemetry Collector as a sidecar. App emits OTLP to localhost; collector batches and forwards. Language-agnostic.</p>
+          </div>
+          <div class="cell">
+            <h5>Internal service-to-service mTLS</h5>
+            <p>Linkerd is the simplest mesh. Istio if you need richer L7 policy. Both auto-issue and rotate certs.</p>
+          </div>
+          <div class="cell">
+            <h5>Secret rotation</h5>
+            <p>Vault Agent sidecar. Renews short-lived credentials; writes them to a tmpfs mount the app reads.</p>
+          </div>
+          <div class="cell">
+            <h5>Want service-mesh features, cheaper</h5>
+            <p>Istio Ambient or Cilium service mesh. Per-node ztunnel instead of per-pod sidecar. Active development; benchmark.</p>
+          </div>
+          <div class="cell">
+            <h5>Polyglot app needs pub/sub, state, secrets</h5>
+            <p>Dapr. One sidecar abstracts multiple backends; app calls localhost APIs.</p>
+          </div>
+          <div class="cell">
+            <h5>Single-pod, no mesh needed</h5>
+            <p>Don't add a sidecar. The libraries (OTel SDK, Polly) are fine when one process is doing the work.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-load-balancing.html">
+          <div class="label">Prev fundamental</div>
+          <div class="ttl">Load balancing</div>
+        </a>
+        <a class="next-fwd" href="fundamental-webhooks.html">
+          <div class="label">Next fundamental</div>
+          <div class="ttl">Webhooks →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Fundamental · Sidecar · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

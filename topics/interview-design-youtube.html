@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Design YouTube · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive interview">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#interviews">Interviews</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Design YouTube</span>
+    </div>
+    <nav>
+      <a href="interview-design-whatsapp.html">← Prev</a>
+      <a href="interview-design-spotify.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Interview <b>walkthrough</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~14 min</b></span>
+        <span>Scale <b>2B users · 500 hr/min uploaded</b></span>
+      </div>
+      <h1>Design <span class="ital">YouTube</span>.</h1>
+      <p class="lede">Two systems: an upload + transcode pipeline that processes terabytes of incoming video, and a global CDN-backed streaming service that serves billions of plays per day. The interesting choices are in transcoding strategy and storage tiering.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>Anchor numbers</h5>
+        <p>500 hours of video uploaded per minute. ~1B hours watched per day. ~2B logged-in users. Average video ~10 minutes.</p>
+      </div>
+      <div>
+        <h5>The two halves</h5>
+        <p>Upload + transcode pipeline (heavy, async). Read + stream (high-volume, CDN-served). They're separately scaled, separately bottlenecked.</p>
+      </div>
+      <div>
+        <h5>Out of scope (probably)</h5>
+        <p>Recommendations, search ranking, comments, monetisation. Pin scope early.</p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#clarify">Clarify</a></li>
+        <li><a href="#estimate">Estimate</a></li>
+        <li><a href="#architecture">High-level architecture</a></li>
+        <li><a href="#upload">Deep dive — upload &amp; transcode</a></li>
+        <li><a href="#serve">Deep dive — playback</a></li>
+        <li><a href="#scale">Scale &amp; bottlenecks</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="clarify">
+        <h2 class="section"><span class="num">01</span><span class="ital">Clarify</span>.</h2>
+        <table class="matrix">
+          <thead><tr><th>Aspect</th><th>Scope</th></tr></thead>
+          <tbody>
+            <tr><th>Flows</th><td>Upload a video, transcode, serve playback</td></tr>
+            <tr><th>Out of scope</th><td>Recs, search, comments, monetisation, live streaming</td></tr>
+            <tr><th>Users</th><td>2B users, 1B hours/day watched</td></tr>
+            <tr><th>Upload rate</th><td>500 hours of video / minute</td></tr>
+            <tr><th>Playback</th><td>Adaptive bitrate, multiple resolutions, geographic delivery</td></tr>
+            <tr><th>Latency target</th><td>Start playback &lt; 1s; rebuffer rate &lt; 0.5%</td></tr>
+            <tr><th>Retention</th><td>Videos kept indefinitely</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="estimate">
+        <h2 class="section"><span class="num">02</span><span class="ital">Estimate</span>.</h2>
+        <table class="matrix">
+          <thead><tr><th>Quantity</th><th>Value</th><th>Math</th></tr></thead>
+          <tbody>
+            <tr><th>Uploads / sec</th><td>~10</td><td>500 hr/min ÷ 60 ÷ avg 10min = ~50/min</td></tr>
+            <tr><th>Original storage / day</th><td>~1 PB</td><td>500 hr × 60 × ~2 GB/hr × original avg</td></tr>
+            <tr><th>Transcoded variants</th><td>×6 per video</td><td>240p, 360p, 480p, 720p, 1080p, 4K</td></tr>
+            <tr><th>Total storage / day</th><td>~5 PB</td><td>after transcoding all variants</td></tr>
+            <tr><th>Playback / sec (avg)</th><td>~700k</td><td>~60B playbacks/day ÷ 86400</td></tr>
+            <tr><th>Playback / sec (peak)</th><td>~3M</td><td>4× avg</td></tr>
+            <tr><th>Avg playback bitrate</th><td>~2 Mbps</td><td>720p average</td></tr>
+            <tr><th>Peak egress bandwidth</th><td>~6 Tbps</td><td>3M plays × 2 Mbps</td></tr>
+          </tbody>
+        </table>
+        <div class="prose">
+          <p>Two scale drivers: <strong>storage</strong> (PB/day forever) and <strong>egress</strong> (Tbps). The egress is what makes a CDN non-optional; you cannot serve 6 Tbps from origin.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="architecture">
+        <h2 class="section"><span class="num">03</span>High-level <span class="ital">architecture</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 400" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="yta" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · UPLOAD AND PLAYBACK PATHS</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">UPLOAD PATH</text>
+
+              <rect x="0"   y="30" width="120" height="40" fill="#1a1814"/>
+              <text x="60"  y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CREATOR</text>
+
+              <rect x="150" y="30" width="140" height="40" fill="#c2410c"/>
+              <text x="220" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">UPLOAD SVC</text>
+
+              <rect x="320" y="30" width="140" height="40" fill="#1a1814"/>
+              <text x="390" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">RAW STORAGE</text>
+
+              <rect x="490" y="30" width="140" height="40" fill="#c2410c"/>
+              <text x="560" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">TRANSCODE QUEUE</text>
+
+              <rect x="660" y="30" width="140" height="40" fill="#1a1814"/>
+              <text x="730" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">TRANSCODE WORKERS</text>
+
+              <rect x="830" y="30" width="140" height="40" fill="#c2410c"/>
+              <text x="900" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CDN ORIGIN</text>
+
+              <line x1="120" y1="50" x2="148" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#yta)"/>
+              <line x1="290" y1="50" x2="318" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#yta)"/>
+              <line x1="460" y1="50" x2="488" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#yta)"/>
+              <line x1="630" y1="50" x2="658" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#yta)"/>
+              <line x1="800" y1="50" x2="828" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#yta)"/>
+            </g>
+
+            <g transform="translate(40, 220)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">PLAYBACK PATH</text>
+
+              <rect x="0"   y="30" width="120" height="40" fill="#1a1814"/>
+              <text x="60"  y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">VIEWER</text>
+
+              <rect x="150" y="30" width="140" height="40" fill="#c2410c"/>
+              <text x="220" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">METADATA API</text>
+
+              <rect x="320" y="30" width="140" height="40" fill="#1a1814"/>
+              <text x="390" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CDN EDGE POP</text>
+
+              <rect x="490" y="30" width="140" height="40" fill="#c2410c"/>
+              <text x="560" y="55" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CDN ORIGIN</text>
+
+              <line x1="120" y1="50" x2="148" y2="50" stroke="#c2410c" stroke-width="2" marker-end="url(#yta)"/>
+              <text x="135" y="44" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#c2410c">manifest</text>
+
+              <line x1="120" y1="60" x2="318" y2="60" stroke="#c2410c" stroke-width="2" marker-end="url(#yta)"/>
+              <text x="220" y="78" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#c2410c">chunks (most served from edge)</text>
+
+              <line x1="460" y1="50" x2="488" y2="50" stroke="#c2410c" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#yta)"/>
+              <text x="475" y="44" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#c2410c">miss</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Upload path is asynchronous (transcoding takes minutes). Playback path is CDN-served; metadata API is in the hot path but lightweight.</span></div>
+        </div>
+      </section>
+
+      <section class="dd-section" id="upload">
+        <h2 class="section"><span class="num">04</span>Deep dive — upload &amp; <span class="ital">transcode</span>.</h2>
+
+        <h3 class="sub">Resumable chunked upload</h3>
+        <div class="prose">
+          <p>A creator uploads a 1 GB file from a flaky mobile connection. <strong>Naive single-request upload fails on disconnect.</strong> Chunked uploads: client splits the file into 5–10 MB chunks, uploads each with its index, resumes on failure. Server tracks which chunks have landed. <em>Same pattern as S3 multipart upload, GCS resumable upload, Tus protocol.</em> Once all chunks land, the server stitches into the original file.</p>
+        </div>
+
+        <h3 class="sub">Transcoding pipeline</h3>
+        <div class="prose">
+          <p>The original ("master") is too large and wrong-codec for most clients. Transcoding produces multiple variants: 240p, 360p, 480p, 720p, 1080p, 4K, each in H.264 and (newer) VP9/AV1 — plus thumbnail extraction, captions, watermarks. <strong>The pipeline is parallelisable</strong>: split the video into ~10-second segments, transcode each in parallel, stitch. A worker pool of GPU-accelerated transcoders handles this. <em>A 10-minute 4K video → ~5 minutes wall-clock transcoding time across many workers.</em></p>
+        </div>
+
+        <h3 class="sub">Adaptive bitrate streaming (HLS / DASH)</h3>
+        <div class="prose">
+          <p>After transcoding, each variant is segmented into ~6-second chunks. A manifest (M3U8 for HLS, MPD for DASH) lists all variants and their chunk URLs. <strong>The player picks a variant based on current bandwidth and switches mid-playback</strong>; this is how YouTube starts at 480p and ramps up to 1080p once the buffer fills. The chunks are the cacheable units.</p>
+        </div>
+
+        <h3 class="sub">Where the chunks live</h3>
+        <div class="prose">
+          <p>Originals → cold object storage (S3 Glacier, GCS Coldline). Transcoded variants of popular videos → hot S3 / GCS, replicated to CDN. <strong>Storage tiering matters at PB/day scale</strong>: cold storage is ~$0.004/GB-month, hot is ~$0.023/GB-month. The 99% of videos rarely watched should live cold.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="serve">
+        <h2 class="section"><span class="num">05</span>Deep dive — <span class="ital">playback</span>.</h2>
+
+        <h3 class="sub">CDN is the entire playback architecture</h3>
+        <div class="prose">
+          <p>You cannot serve 6 Tbps of egress from your data center. <strong>Every popular chunk is replicated to CDN edge POPs around the world.</strong> Viewer hits the edge; edge has the chunk; bytes flow locally. <em>YouTube's CDN is the largest private network outside the carriers</em> — direct peering with ISPs (similar to <a href="case-hotstar-concurrent.html">Hotstar</a>'s ISP peering).</p>
+        </div>
+
+        <h3 class="sub">Manifest is dynamic; chunks are static</h3>
+        <div class="prose">
+          <p>The HLS manifest is generated per-user (DRM-keyed, regional, ad-injected if applicable) and not very cacheable. <strong>The video chunks are static and cached aggressively at the edge.</strong> One M3U8 fetch costs you a hop to your data center; the 100+ chunks the viewer streams come from the local POP.</p>
+        </div>
+
+        <h3 class="sub">Pre-position content for predictable spikes</h3>
+        <div class="prose">
+          <p>A new Taylor Swift video is going to be watched a billion times. <strong>Pre-warm CDN POPs with the chunks before the launch hour</strong>. Same pattern as <a href="case-hotstar-concurrent.html">Hotstar's pre-cached opener</a>. The first viewer at any POP doesn't pay the origin round-trip; the content is already there.</p>
+        </div>
+
+        <h3 class="sub">Metadata API</h3>
+        <div class="prose">
+          <p>"Get video by ID, return title/description/manifest URL/permissions." Lightweight, but hit on every playback start. <strong>Cached aggressively</strong>: per-video record in Redis, with the manifest URL pointing at the CDN. The metadata service handles auth, geo-restrictions, age gating before returning the URL.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="scale">
+        <h2 class="section"><span class="num">06</span>Scale &amp; <span class="ital">bottlenecks</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Transcoding is the bottleneck for upload</div>
+          <p>Transcoding is CPU/GPU expensive. <strong>The queue between upload and transcode is the buffer</strong>; during traffic surges, transcoding falls behind. Acceptable: a creator sees "your video is processing" for an hour. Not acceptable: viewers see "still processing" three days later.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Storage cost is the long-term concern</div>
+          <p>1 PB/day after transcoding = ~365 PB/year. Cold-tier storage at $0.004/GB-month = ~$1.5M/month per year of historical content. <em>Storage is YouTube's biggest infrastructure cost line</em>; the long tail of unwatched videos is the cost driver.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">CDN cost vs control</div>
+          <p>Build your own CDN (YouTube's choice) or pay Cloudflare/CloudFront. Building your own pays at YouTube's scale (~$50B+ company); for everyone else, vendor CDN is correct. The break-even is around ~10 Tbps sustained.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Tradeoffs to mention</div>
+          <p><strong>Eventual availability after upload</strong>: a freshly uploaded video isn't watchable until transcoded. <strong>Storage vs transcode time</strong>: you can transcode on-demand and not pre-encode every variant — saves storage, costs latency. <strong>Per-region storage</strong>: do you replicate the full library to every region? Probably not — replicate hot content, fall back to origin for cold.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Open questions you'd raise</div>
+          <p>Live streaming has a different architecture (low-latency HLS, faster transcoding, fewer variants). DRM (Widevine, FairPlay, PlayReady) for monetised content. Recommendations and search are entirely separate ML systems. Analytics pipeline for view counts uses sampling + approximate counters (HyperLogLog) to avoid hot-key writes.</p>
+        </div>
+
+        <div class="pull">"Two systems pretending to be one product. The interesting design choices are at the seam between them."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="interview-design-whatsapp.html">
+          <div class="label">Prev</div>
+          <div class="ttl">Design WhatsApp</div>
+        </a>
+        <a class="next-fwd" href="interview-design-spotify.html">
+          <div class="label">Next walkthrough</div>
+          <div class="ttl">Design Spotify →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Interview · Design YouTube · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

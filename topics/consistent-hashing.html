@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Consistent Hashing · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">06 · Consistent Hashing</span>
+    </div>
+    <nav>
+      <a href="api-gateway.html">← Prev</a>
+      <a href="database-sharding.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>06</b></span>
+        <span>Difficulty <b>★★★★☆</b></span>
+        <span>Read <b>~14 min</b></span>
+        <span>Stack <b>C# · Postgres · Redis · any-shard</b></span>
+      </div>
+      <h1>Consistent <span class="ital">hashing</span>.</h1>
+      <p class="lede">The ring, virtual nodes, and why your shard rebalance shouldn't be a Friday-night incident. A <em>full implementation in C#</em> you can drop into a shard router.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem</h5>
+        <p>You have N shards. You add one. With <code>hash(key) % N</code>, almost every key now maps to a different shard. You just invalidated 90% of your cache and need to migrate 90% of your data.</p>
+      </div>
+      <div>
+        <h5>The fix</h5>
+        <p>Place shards on a fixed-size ring. Each key maps to one fixed point. Adding a shard moves only <code>1/N</code> of the keys.</p>
+      </div>
+      <div>
+        <h5>Used by</h5>
+        <div>
+          <span class="pill on">DynamoDB</span>
+          <span class="pill on">Cassandra</span>
+          <span class="pill on">Redis Cluster</span>
+          <span class="pill">Memcached</span>
+          <span class="pill">Discord</span>
+          <span class="pill">Vitess</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">The modulo problem</a></li>
+        <li><a href="#ring">The ring</a></li>
+        <li><a href="#vnodes">Virtual nodes</a></li>
+        <li><a href="#code">Full C# implementation</a></li>
+        <li><a href="#shard">Sharded EF Core</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The <span class="ital">modulo</span> problem.</h2>
+        <div class="prose">
+          <p>Most engineers' first attempt at sharding is some flavour of <code>shard = hash(key) % N</code>. It works. Until you change <code>N</code>. The day you go from four shards to five, roughly 80% of keys move. Caches go cold; the database is hammered by a wave of misses; an operation that should have been "add another box" becomes a multi-hour migration.</p>
+          <p>The pathological case is a cache cluster. You scale from 4 to 5 nodes during a traffic spike. The new modulo means cache hit rate craters from 95% to 20%. The backing store, which was sized for the cached load, falls over. You've just turned <em>"scaling up"</em> into <em>"global outage."</em></p>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 800 220" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. 10 · MODULO REMAPPING WHEN N CHANGES</text>
+
+            <g transform="translate(20, 60)">
+              <text x="0" y="0" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">BEFORE · N=4</text>
+              <g font-family="JetBrains Mono" font-size="11">
+                <rect x="0"  y="14" width="60" height="20" fill="#c2410c"/><text x="30"  y="29" text-anchor="middle" fill="#f1ece1">k0 → 0</text>
+                <rect x="64" y="14" width="60" height="20" fill="#c2410c"/><text x="94"  y="29" text-anchor="middle" fill="#f1ece1">k1 → 1</text>
+                <rect x="128" y="14" width="60" height="20" fill="#c2410c"/><text x="158" y="29" text-anchor="middle" fill="#f1ece1">k2 → 2</text>
+                <rect x="192" y="14" width="60" height="20" fill="#c2410c"/><text x="222" y="29" text-anchor="middle" fill="#f1ece1">k3 → 3</text>
+                <rect x="256" y="14" width="60" height="20" fill="#c2410c"/><text x="286" y="29" text-anchor="middle" fill="#f1ece1">k4 → 0</text>
+                <rect x="320" y="14" width="60" height="20" fill="#c2410c"/><text x="350" y="29" text-anchor="middle" fill="#f1ece1">k5 → 1</text>
+              </g>
+            </g>
+            <g transform="translate(20, 130)">
+              <text x="0" y="0" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" fill="#8a8478">AFTER · N=5 &middot; only k0 stays</text>
+              <g font-family="JetBrains Mono" font-size="11">
+                <rect x="0"  y="14" width="60" height="20" fill="#c2410c"/><text x="30"  y="29" text-anchor="middle" fill="#f1ece1">k0 → 0</text>
+                <rect x="64" y="14" width="60" height="20" fill="#1a1814"/><text x="94"  y="29" text-anchor="middle" fill="#f1ece1">k1 → 1</text>
+                <rect x="128" y="14" width="60" height="20" fill="#1a1814"/><text x="158" y="29" text-anchor="middle" fill="#f1ece1">k2 → 2</text>
+                <rect x="192" y="14" width="60" height="20" fill="#1a1814"/><text x="222" y="29" text-anchor="middle" fill="#f1ece1">k3 → 3</text>
+                <rect x="256" y="14" width="60" height="20" fill="#1a1814"/><text x="286" y="29" text-anchor="middle" fill="#f1ece1">k4 → 4</text>
+                <rect x="320" y="14" width="60" height="20" fill="#1a1814"/><text x="350" y="29" text-anchor="middle" fill="#f1ece1">k5 → 0</text>
+              </g>
+              <text x="400" y="29" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#c2410c">→ 80% of keys move</text>
+            </g>
+          </svg>
+          <div class="cap"><span>Fig. 10 · Naive mod-N: every shard change reshuffles almost everything</span></div>
+        </div>
+      </section>
+
+      <!-- 2 ring -->
+      <section class="dd-section" id="ring">
+        <h2 class="section"><span class="num">02</span>The <span class="ital">ring</span>.</h2>
+        <div class="prose">
+          <p>Karger et al., 1997. The idea is one of those rare gems that you look at and think <em>"of course."</em></p>
+          <ol style="padding-left: 20px; max-width: 70ch; line-height: 1.65; color: var(--ink-soft); font-size: 17px;">
+            <li>Imagine the output of your hash function as a giant circle — <code>0</code> through <code>2^32 - 1</code>, wrapping back to <code>0</code>.</li>
+            <li>Place each <strong>node</strong> on the ring at <code>hash(node_id)</code>.</li>
+            <li>Place each <strong>key</strong> on the ring at <code>hash(key)</code>.</li>
+            <li>Each key belongs to the first node clockwise from its position.</li>
+            <li>Add a node and only the arc <em>immediately counter-clockwise from it</em> moves. About <code>1/N</code> of the keys.</li>
+          </ol>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1100 480" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 11 · CONSISTENT HASH RING · BEFORE AND AFTER ADDING NODE D</text>
+            <line x1="20" y1="40" x2="1080" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- ring 1: before -->
+            <g transform="translate(280, 250)">
+              <circle r="160" fill="none" stroke="#1a1814" stroke-width="2"/>
+              <text x="0" y="-180" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" text-anchor="middle" fill="#8a8478">BEFORE · 3 NODES</text>
+              <!-- nodes (large squares) -->
+              <rect x="-12" y="-172" width="24" height="24" fill="#1a1814"/>
+              <text x="0"  y="-156" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">A</text>
+              <rect x="126" y="80"   width="24" height="24" fill="#1a1814"/>
+              <text x="138" y="96" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">B</text>
+              <rect x="-150" y="80"  width="24" height="24" fill="#1a1814"/>
+              <text x="-138" y="96" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">C</text>
+
+              <!-- keys as colored dots -->
+              <!-- region A (clockwise from C → B owned by ??? let's just place keys generally -->
+              <!-- top-right arc: keys to B -->
+              <circle cx="60"   cy="-148" r="5" fill="#c2410c"/>
+              <circle cx="110"  cy="-115" r="5" fill="#c2410c"/>
+              <circle cx="150"  cy="-50"  r="5" fill="#c2410c"/>
+              <circle cx="155"  cy="20"   r="5" fill="#c2410c"/>
+              <text x="160" y="-120" font-family="JetBrains Mono" font-size="11" fill="#1a1814">→ B</text>
+              <!-- bottom arc: keys to C -->
+              <circle cx="-50"  cy="150"  r="5" fill="#c2410c"/>
+              <circle cx="40"   cy="155"  r="5" fill="#c2410c"/>
+              <circle cx="-110" cy="115"  r="5" fill="#c2410c"/>
+              <text x="-100" y="180" font-family="JetBrains Mono" font-size="11" fill="#1a1814">→ C</text>
+              <!-- top-left arc: keys to A -->
+              <circle cx="-160" cy="-30"  r="5" fill="#c2410c"/>
+              <circle cx="-140" cy="-80"  r="5" fill="#c2410c"/>
+              <circle cx="-80"  cy="-140" r="5" fill="#c2410c"/>
+              <text x="-180" y="-100" font-family="JetBrains Mono" font-size="11" fill="#1a1814">→ A</text>
+            </g>
+
+            <!-- arrow -->
+            <text x="540" y="260" font-family="Instrument Serif" font-size="40" fill="#c2410c">→</text>
+            <text x="540" y="280" font-family="JetBrains Mono" font-size="10" letter-spacing="0.14em" fill="#8a8478">+ D</text>
+
+            <!-- ring 2: after -->
+            <g transform="translate(800, 250)">
+              <circle r="160" fill="none" stroke="#1a1814" stroke-width="2"/>
+              <text x="0" y="-180" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" text-anchor="middle" fill="#8a8478">AFTER · 4 NODES · only B→D arc moves</text>
+              <rect x="-12" y="-172" width="24" height="24" fill="#1a1814"/>
+              <text x="0"  y="-156" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">A</text>
+              <rect x="126" y="80"   width="24" height="24" fill="#1a1814"/>
+              <text x="138" y="96" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">B</text>
+              <rect x="-150" y="80"  width="24" height="24" fill="#1a1814"/>
+              <text x="-138" y="96" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">C</text>
+              <!-- new node D between A and B (top-right) -->
+              <rect x="135"  y="-65"  width="24" height="24" fill="#c2410c"/>
+              <text x="147"  y="-49" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#f1ece1">D</text>
+
+              <!-- arc between A and D highlighted -->
+              <path d="M 0 -160 A 160 160 0 0 1 145 -65" stroke="#c2410c" stroke-width="6" fill="none" opacity="0.4"/>
+
+              <!-- keys -->
+              <!-- keys now going to D (in the old A→B arc, between A and D) -->
+              <circle cx="60"   cy="-148" r="5" fill="#c2410c"/>
+              <circle cx="110"  cy="-115" r="5" fill="#c2410c"/>
+              <text x="92" y="-110" font-family="JetBrains Mono" font-size="11" fill="#c2410c" font-weight="600">→ D</text>
+              <!-- still going to B -->
+              <circle cx="150"  cy="-10"  r="5" fill="#1a1814"/>
+              <circle cx="155"  cy="40"   r="5" fill="#1a1814"/>
+              <text x="160" y="20" font-family="JetBrains Mono" font-size="11" fill="#1a1814">→ B</text>
+              <!-- still going to C -->
+              <circle cx="-50"  cy="150"  r="5" fill="#1a1814"/>
+              <circle cx="40"   cy="155"  r="5" fill="#1a1814"/>
+              <circle cx="-110" cy="115"  r="5" fill="#1a1814"/>
+              <text x="-100" y="180" font-family="JetBrains Mono" font-size="11" fill="#1a1814">→ C</text>
+              <!-- still going to A -->
+              <circle cx="-160" cy="-30"  r="5" fill="#1a1814"/>
+              <circle cx="-140" cy="-80"  r="5" fill="#1a1814"/>
+              <circle cx="-80"  cy="-140" r="5" fill="#1a1814"/>
+              <text x="-180" y="-100" font-family="JetBrains Mono" font-size="11" fill="#1a1814">→ A</text>
+            </g>
+
+            <text x="20" y="460" font-family="Instrument Serif" font-size="22" fill="#1a1814">Adding node <tspan font-style="italic" fill="#c2410c">D</tspan> only steals from the previous neighbour <tspan font-style="italic" fill="#c2410c">B</tspan>. Two of B's keys move; everything else stays.</text>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 11</span><span>Only the arc immediately counter-clockwise from the new node migrates</span></div>
+        </div>
+      </section>
+
+      <!-- 3 vnodes -->
+      <section class="dd-section" id="vnodes">
+        <h2 class="section"><span class="num">03</span>Virtual <span class="ital">nodes</span>.</h2>
+        <div class="prose">
+          <p>The naïve ring has two problems. With three nodes hashed onto a 2^32 ring, the three arcs are almost never equal — one node ends up with 50% of the keys, another with 10%. Worse, when a node fails, <em>all of its load goes to a single neighbour</em>, which then collapses.</p>
+          <p>The fix: each physical node owns many <em>virtual</em> positions on the ring. 100–200 replicas per node is a common number. Now:</p>
+          <ul>
+            <li><strong>Load smooths out.</strong> With 100 vnodes per box, the load variance between nodes is &lt;5% (vs. up to 2× without).</li>
+            <li><strong>Failures distribute.</strong> When a node dies, its 100 vnodes' arcs each go to <em>different</em> neighbours. No single survivor takes the full hit.</li>
+            <li><strong>Weighting is trivial.</strong> A bigger box gets more vnodes — 200 instead of 100. It gets ~2× the keys, automatically.</li>
+          </ul>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 800 240" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. 12 · WITHOUT VS WITH VIRTUAL NODES</text>
+
+            <g transform="translate(120, 130)">
+              <circle r="80" fill="none" stroke="#1a1814" stroke-width="2"/>
+              <text x="0" y="-100" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" text-anchor="middle" fill="#8a8478">3 NODES · 3 POSITIONS</text>
+              <rect x="-6" y="-86" width="12" height="12" fill="#1a1814"/>
+              <rect x="68" y="50" width="12" height="12" fill="#1a1814"/>
+              <rect x="-80" y="50" width="12" height="12" fill="#1a1814"/>
+              <text x="0" y="-90" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#c2410c">10%</text>
+              <text x="80" y="78" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#c2410c">50%</text>
+              <text x="-80" y="78" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#c2410c">40%</text>
+              <text x="0" y="120" font-family="Instrument Serif" font-style="italic" font-size="14" text-anchor="middle" fill="#c2410c">imbalanced</text>
+            </g>
+
+            <g transform="translate(400, 130)">
+              <circle r="80" fill="none" stroke="#1a1814" stroke-width="2"/>
+              <text x="0" y="-100" font-family="JetBrains Mono" font-size="10" letter-spacing="0.12em" text-anchor="middle" fill="#8a8478">3 NODES · 36 POSITIONS</text>
+              <!-- 12 small tick marks per node, color-cycled -->
+              <g>
+                <!-- 36 dots evenly distributed -->
+                <g id="vnodes-dots"></g>
+              </g>
+              <!-- pre-rendered dots for the 36 positions, cycling 3 colours -->
+              <g>
+                <!-- node A black, node B orange, node C dark, mixed -->
+              </g>
+              <!-- since we can't loop in plain SVG, hand-place 36 small marks -->
+              <!-- using script-like data: angles 0, 10, 20 ... 350 -->
+            </g>
+            <!-- For brevity render the 36 dots with explicit coords via a transform group -->
+            <g transform="translate(400, 130)">
+              <g>
+                <!-- A-positions (12) -->
+                <circle cx="80"     cy="0"     r="3" fill="#1a1814"/>
+                <circle cx="60"     cy="-53"   r="3" fill="#c2410c"/>
+                <circle cx="20"     cy="-77"   r="3" fill="#1a1814"/>
+                <circle cx="-27"    cy="-75"   r="3" fill="#c2410c"/>
+                <circle cx="-65"    cy="-46"   r="3" fill="#1a1814"/>
+                <circle cx="-79"    cy="-7"    r="3" fill="#c2410c"/>
+                <circle cx="-72"    cy="35"    r="3" fill="#1a1814"/>
+                <circle cx="-44"    cy="67"    r="3" fill="#c2410c"/>
+                <circle cx="-3"     cy="80"    r="3" fill="#1a1814"/>
+                <circle cx="40"     cy="69"    r="3" fill="#c2410c"/>
+                <circle cx="69"     cy="40"    r="3" fill="#1a1814"/>
+                <circle cx="78"     cy="-15"   r="3" fill="#c2410c"/>
+                <!-- B-positions (12) interleaved -->
+                <circle cx="76"     cy="25"    r="3" fill="#7a3a14"/>
+                <circle cx="50"     cy="-62"   r="3" fill="#7a3a14"/>
+                <circle cx="0"      cy="-80"   r="3" fill="#7a3a14"/>
+                <circle cx="-50"    cy="-62"   r="3" fill="#7a3a14"/>
+                <circle cx="-76"    cy="-25"   r="3" fill="#7a3a14"/>
+                <circle cx="-76"    cy="25"    r="3" fill="#7a3a14"/>
+                <circle cx="-50"    cy="62"    r="3" fill="#7a3a14"/>
+                <circle cx="0"      cy="80"    r="3" fill="#7a3a14"/>
+                <circle cx="50"     cy="62"    r="3" fill="#7a3a14"/>
+                <circle cx="76"     cy="-25"   r="3" fill="#7a3a14"/>
+                <circle cx="68"     cy="-44"   r="3" fill="#7a3a14"/>
+                <circle cx="44"     cy="68"    r="3" fill="#7a3a14"/>
+              </g>
+              <text x="0" y="120" font-family="Instrument Serif" font-style="italic" font-size="14" text-anchor="middle" fill="#1a1814">balanced &middot; ~33% each</text>
+            </g>
+
+            <g transform="translate(600, 100)">
+              <text x="0" y="0" font-family="JetBrains Mono" font-size="11" letter-spacing="0.12em" fill="#8a8478">RULE OF THUMB</text>
+              <text x="0" y="22" font-family="Instrument Serif" font-size="16" fill="#1a1814">100–200 vnodes per</text>
+              <text x="0" y="42" font-family="Instrument Serif" font-size="16" fill="#1a1814">physical node.</text>
+              <text x="0" y="74" font-family="JetBrains Mono" font-size="11" letter-spacing="0.12em" fill="#8a8478">LOAD SPREAD</text>
+              <text x="0" y="96" font-family="Instrument Serif" font-size="16" fill="#1a1814">&lt; 5% variance.</text>
+            </g>
+          </svg>
+          <div class="cap"><span>Fig. 12 · Virtual nodes turn an unfair ring into an even one</span></div>
+        </div>
+      </section>
+
+      <!-- 4 code -->
+      <section class="dd-section" id="code">
+        <h2 class="section"><span class="num">04</span>Full <span class="ital">implementation</span>.</h2>
+        <div class="prose">
+          <p>The whole ring in C# below. About 90 lines. Thread-safe for reads, builds atomically on changes, weighted, generic over the node type. You can paste this into a shard router and start using it.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">ConsistentHashRing.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">using</span> <span class="t">System.Collections.Immutable</span>;
+<span class="k">using</span> <span class="t">System.IO.Hashing</span>;            <span class="c">// xxHash — 5× MD5, deterministic, no allocation</span>
+<span class="k">using</span> <span class="t">System.Text</span>;
+
+<span class="k">namespace</span> <span class="t">Academy.Sharding</span>;
+
+<span class="k">public interface</span> <span class="t">IRingNode</span>
+{
+    <span class="k">string</span> <span class="t">Id</span>     { <span class="k">get</span>; }
+    <span class="k">int</span>    <span class="t">Weight</span> { <span class="k">get</span>; }     <span class="c">// 1 = baseline; 2 = double share; …</span>
+}
+
+<span class="c">/// &lt;summary&gt;
+/// Thread-safe consistent hash ring with virtual nodes.
+/// Reads are O(log V) where V = total virtual nodes (≈ nodes × 100).
+/// Add/remove rebuilds the ring atomically; readers never see a partial state.
+/// &lt;/summary&gt;</span>
+<span class="k">public sealed class</span> <span class="t">ConsistentHashRing</span>&lt;<span class="t">TNode</span>&gt; <span class="k">where</span> <span class="t">TNode</span> : <span class="t">IRingNode</span>
+{
+    <span class="k">private const int</span> <span class="t">VirtualNodesPerWeight</span> = <span class="n">100</span>;
+
+    <span class="c">// The ring: a sorted list of (hash, node).
+    // ImmutableSortedDictionary gives us O(log n) reads and copy-on-write builds.</span>
+    <span class="k">private</span> <span class="t">ImmutableSortedDictionary</span>&lt;<span class="k">uint</span>, <span class="t">TNode</span>&gt; _ring =
+        <span class="t">ImmutableSortedDictionary</span>&lt;<span class="k">uint</span>, <span class="t">TNode</span>&gt;.<span class="t">Empty</span>;
+
+    <span class="k">private</span> <span class="t">ImmutableDictionary</span>&lt;<span class="k">string</span>, <span class="t">TNode</span>&gt; _nodes =
+        <span class="t">ImmutableDictionary</span>&lt;<span class="k">string</span>, <span class="t">TNode</span>&gt;.<span class="t">Empty</span>;
+
+    <span class="k">private readonly</span> <span class="k">object</span> _lock = <span class="k">new</span>();
+
+    <span class="k">public</span> <span class="t">IEnumerable</span>&lt;<span class="t">TNode</span>&gt; <span class="t">Nodes</span> =&gt; _nodes.<span class="t">Values</span>;
+
+    <span class="c">/// Replace the entire node set in one atomic swap. Use for bulk reloads.</span>
+    <span class="k">public void</span> <span class="fn">SetNodes</span>(<span class="t">IEnumerable</span>&lt;<span class="t">TNode</span>&gt; nodes)
+    {
+        <span class="k">var</span> ring  = <span class="t">ImmutableSortedDictionary</span>.<span class="fn">CreateBuilder</span>&lt;<span class="k">uint</span>, <span class="t">TNode</span>&gt;();
+        <span class="k">var</span> index = <span class="t">ImmutableDictionary</span>.<span class="fn">CreateBuilder</span>&lt;<span class="k">string</span>, <span class="t">TNode</span>&gt;();
+
+        <span class="k">foreach</span> (<span class="k">var</span> node <span class="k">in</span> nodes)
+        {
+            index[node.<span class="t">Id</span>] = node;
+            <span class="k">var</span> vnodes = <span class="t">VirtualNodesPerWeight</span> * <span class="t">Math</span>.<span class="fn">Max</span>(<span class="n">1</span>, node.<span class="t">Weight</span>);
+            <span class="k">for</span> (<span class="k">var</span> i = <span class="n">0</span>; i &lt; vnodes; i++)
+            {
+                <span class="k">var</span> point = <span class="fn">HashToUInt32</span>($<span class="s">"{node.Id}#{i}"</span>);
+                <span class="c">// Collisions are vanishingly rare with xxh32 across &lt; 10k vnodes; resolve by skipping.</span>
+                <span class="k">if</span> (!ring.<span class="fn">ContainsKey</span>(point)) ring[point] = node;
+            }
+        }
+        <span class="k">lock</span> (_lock)
+        {
+            _ring  = ring.<span class="fn">ToImmutable</span>();
+            _nodes = index.<span class="fn">ToImmutable</span>();
+        }
+    }
+
+    <span class="k">public void</span> <span class="fn">Add</span>(<span class="t">TNode</span> node)    =&gt; <span class="fn">SetNodes</span>(_nodes.<span class="t">Values</span>.<span class="fn">Concat</span>([node]));
+    <span class="k">public void</span> <span class="fn">Remove</span>(<span class="k">string</span> id) =&gt; <span class="fn">SetNodes</span>(_nodes.<span class="t">Values</span>.<span class="fn">Where</span>(n =&gt; n.<span class="t">Id</span> != id));
+
+    <span class="c">/// Map a key to its owning node. O(log V).</span>
+    <span class="k">public</span> <span class="t">TNode</span> <span class="fn">Locate</span>(<span class="k">string</span> key)
+    {
+        <span class="k">var</span> ring = _ring;        <span class="c">// snapshot — readers never block</span>
+        <span class="k">if</span> (ring.<span class="t">Count</span> == <span class="n">0</span>) <span class="k">throw new</span> <span class="t">InvalidOperationException</span>(<span class="s">"empty ring"</span>);
+
+        <span class="k">var</span> h = <span class="fn">HashToUInt32</span>(key);
+
+        <span class="c">// First node clockwise from h. Binary-search the sorted keys.</span>
+        <span class="k">var</span> keys = ring.<span class="t">Keys</span>.<span class="fn">ToArray</span>();   <span class="c">// cache this in production — see notes</span>
+        <span class="k">var</span> idx  = <span class="t">Array</span>.<span class="fn">BinarySearch</span>(keys, h);
+        <span class="k">if</span> (idx &lt; <span class="n">0</span>) idx = ~idx;          <span class="c">// next greater</span>
+        <span class="k">if</span> (idx == keys.<span class="t">Length</span>) idx = <span class="n">0</span>;    <span class="c">// wrap</span>
+        <span class="k">return</span> ring[keys[idx]];
+    }
+
+    <span class="c">/// Replication — return the next N distinct nodes clockwise. Useful for Dynamo-style
+    /// "write to 3 replicas, read with quorum" patterns.</span>
+    <span class="k">public</span> <span class="t">IReadOnlyList</span>&lt;<span class="t">TNode</span>&gt; <span class="fn">LocateReplicas</span>(<span class="k">string</span> key, <span class="k">int</span> count)
+    {
+        <span class="k">var</span> ring = _ring;
+        <span class="k">if</span> (count &gt; _nodes.<span class="t">Count</span>)
+            <span class="k">throw new</span> <span class="t">ArgumentException</span>(<span class="s">"more replicas than nodes"</span>);
+
+        <span class="k">var</span> h    = <span class="fn">HashToUInt32</span>(key);
+        <span class="k">var</span> seen = <span class="k">new</span> <span class="t">HashSet</span>&lt;<span class="k">string</span>&gt;(count);
+        <span class="k">var</span> result = <span class="k">new</span> <span class="t">List</span>&lt;<span class="t">TNode</span>&gt;(count);
+
+        <span class="c">// Walk clockwise — uses the keys' sorted order naturally.</span>
+        <span class="k">foreach</span> (<span class="k">var</span> (point, node) <span class="k">in</span> ring.<span class="t">Concat</span>(ring))   <span class="c">// concat to handle wrap</span>
+        {
+            <span class="k">if</span> (point &lt; h &amp;&amp; result.<span class="t">Count</span> == <span class="n">0</span>) <span class="k">continue</span>;
+            <span class="k">if</span> (seen.<span class="fn">Add</span>(node.<span class="t">Id</span>))
+            {
+                result.<span class="fn">Add</span>(node);
+                <span class="k">if</span> (result.<span class="t">Count</span> == count) <span class="k">return</span> result;
+            }
+        }
+        <span class="k">return</span> result;
+    }
+
+    <span class="k">private static</span> <span class="k">uint</span> <span class="fn">HashToUInt32</span>(<span class="k">string</span> s)
+    {
+        <span class="t">Span</span>&lt;<span class="k">byte</span>&gt; buf = <span class="k">stackalloc</span> <span class="k">byte</span>[<span class="t">Encoding</span>.<span class="t">UTF8</span>.<span class="fn">GetMaxByteCount</span>(s.<span class="t">Length</span>)];
+        <span class="k">var</span> n = <span class="t">Encoding</span>.<span class="t">UTF8</span>.<span class="fn">GetBytes</span>(s, buf);
+        <span class="k">return</span> <span class="t">XxHash32</span>.<span class="fn">HashToUInt32</span>(buf[..n]);
+    }
+}</pre>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">RingTests.cs · the distribution test</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// The test you must write the first time you build one of these.
+// Without it, you don't know whether your ring is balanced.</span>
+[<span class="t">Fact</span>]
+<span class="k">public void</span> <span class="fn">Ring_distributes_within_5_percent_with_100_vnodes</span>()
+{
+    <span class="k">var</span> ring = <span class="k">new</span> <span class="t">ConsistentHashRing</span>&lt;<span class="t">Shard</span>&gt;();
+    ring.<span class="fn">SetNodes</span>([
+        <span class="k">new</span> <span class="t">Shard</span>(<span class="s">"shard-1"</span>, <span class="t">Weight</span>: <span class="n">1</span>),
+        <span class="k">new</span> <span class="t">Shard</span>(<span class="s">"shard-2"</span>, <span class="t">Weight</span>: <span class="n">1</span>),
+        <span class="k">new</span> <span class="t">Shard</span>(<span class="s">"shard-3"</span>, <span class="t">Weight</span>: <span class="n">1</span>),
+        <span class="k">new</span> <span class="t">Shard</span>(<span class="s">"shard-4"</span>, <span class="t">Weight</span>: <span class="n">1</span>),
+    ]);
+
+    <span class="k">var</span> counts = <span class="k">new</span> <span class="t">Dictionary</span>&lt;<span class="k">string</span>, <span class="k">int</span>&gt;();
+    <span class="k">for</span> (<span class="k">var</span> i = <span class="n">0</span>; i &lt; <span class="n">1_000_000</span>; i++)
+    {
+        <span class="k">var</span> owner = ring.<span class="fn">Locate</span>($<span class="s">"user:{i}"</span>);
+        counts[owner.<span class="t">Id</span>] = counts.<span class="fn">GetValueOrDefault</span>(owner.<span class="t">Id</span>) + <span class="n">1</span>;
+    }
+
+    <span class="k">var</span> expected = <span class="n">250_000</span>;
+    <span class="k">foreach</span> (<span class="k">var</span> (id, n) <span class="k">in</span> counts)
+        <span class="t">Assert</span>.<span class="t">InRange</span>(n, expected * <span class="n">0.95</span>, expected * <span class="n">1.05</span>);
+}
+
+[<span class="t">Fact</span>]
+<span class="k">public void</span> <span class="fn">Adding_a_node_moves_only_a_quarter_of_keys</span>()
+{
+    <span class="k">var</span> before = <span class="k">new</span> <span class="t">ConsistentHashRing</span>&lt;<span class="t">Shard</span>&gt;();
+    before.<span class="fn">SetNodes</span>([<span class="k">new</span>(<span class="s">"s1"</span>,<span class="n">1</span>), <span class="k">new</span>(<span class="s">"s2"</span>,<span class="n">1</span>), <span class="k">new</span>(<span class="s">"s3"</span>,<span class="n">1</span>)]);
+
+    <span class="k">var</span> after = <span class="k">new</span> <span class="t">ConsistentHashRing</span>&lt;<span class="t">Shard</span>&gt;();
+    after.<span class="fn">SetNodes</span>([<span class="k">new</span>(<span class="s">"s1"</span>,<span class="n">1</span>), <span class="k">new</span>(<span class="s">"s2"</span>,<span class="n">1</span>), <span class="k">new</span>(<span class="s">"s3"</span>,<span class="n">1</span>), <span class="k">new</span>(<span class="s">"s4"</span>,<span class="n">1</span>)]);
+
+    <span class="k">var</span> moved = <span class="n">0</span>;
+    <span class="k">for</span> (<span class="k">var</span> i = <span class="n">0</span>; i &lt; <span class="n">100_000</span>; i++)
+    {
+        <span class="k">var</span> k = $<span class="s">"key:{i}"</span>;
+        <span class="k">if</span> (before.<span class="fn">Locate</span>(k).<span class="t">Id</span> != after.<span class="fn">Locate</span>(k).<span class="t">Id</span>) moved++;
+    }
+    <span class="c">// Expect ~1/4 to move. Tolerance for randomness.</span>
+    <span class="t">Assert</span>.<span class="t">InRange</span>(moved, <span class="n">20_000</span>, <span class="n">30_000</span>);
+}</pre>
+        </div>
+
+        <div class="prose">
+          <p>Three production caveats you'll discover the first time you ship this:</p>
+          <ul>
+            <li><strong>Cache the sorted keys array.</strong> The snippet above calls <code>ring.Keys.ToArray()</code> in the hot path. In production, materialise it on each <code>SetNodes</code> and keep it next to the ring. Saves ~80% of <code>Locate</code>'s allocations.</li>
+            <li><strong>Use xxHash, not MD5/SHA.</strong> Cryptographic hashes are huge overkill — distribution is what you want, not collision resistance against an adversary. xxHash32 is roughly 5× faster.</li>
+            <li><strong>Persist the ring topology.</strong> The ring is configuration, not state. Write it to your config store (etcd, ConfigMap, Cosmos config doc) and have services subscribe; you'll want every replica to compute the same answer for the same key.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 5 sharded EF -->
+      <section class="dd-section" id="shard">
+        <h2 class="section"><span class="num">05</span>Sharded <span class="ital">EF Core</span>.</h2>
+        <div class="prose">
+          <p>The natural use in a .NET shop: pick the right <code>DbContext</code> based on the tenant or user id. The ring sits in DI as a singleton; each request resolves the shard, opens a context with the right connection string, and proceeds normally.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">ShardResolver.cs &middot; DbContextFactory</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">public sealed record</span> <span class="t">Shard</span>(<span class="k">string</span> <span class="t">Id</span>, <span class="k">int</span> <span class="t">Weight</span>, <span class="k">string</span> <span class="t">ConnectionString</span>) : <span class="t">IRingNode</span>;
+
+<span class="k">public sealed class</span> <span class="t">ShardResolver</span>(<span class="t">ConsistentHashRing</span>&lt;<span class="t">Shard</span>&gt; ring) {
+    <span class="k">public</span> <span class="t">Shard</span> <span class="fn">For</span>(<span class="t">Guid</span> tenantId) =&gt; ring.<span class="fn">Locate</span>(tenantId.<span class="fn">ToString</span>(<span class="s">"N"</span>));
+}
+
+<span class="c">// One DbContext class, many connection strings — one per shard.</span>
+<span class="k">public sealed class</span> <span class="t">ShardedShopFactory</span>(<span class="t">ShardResolver</span> resolver, <span class="t">IDbContextFactory</span>&lt;<span class="t">ShopDbContext</span>&gt; baseFactory) {
+    <span class="k">public</span> <span class="t">ShopDbContext</span> <span class="fn">For</span>(<span class="t">Guid</span> tenantId)
+    {
+        <span class="k">var</span> shard = resolver.<span class="fn">For</span>(tenantId);
+
+        <span class="k">var</span> opts = <span class="k">new</span> <span class="t">DbContextOptionsBuilder</span>&lt;<span class="t">ShopDbContext</span>&gt;()
+            .<span class="fn">UseNpgsql</span>(shard.<span class="t">ConnectionString</span>)
+            .<span class="fn">EnableSensitiveDataLogging</span>(<span class="k">false</span>)
+            .<span class="fn">Options</span>;
+
+        <span class="k">return new</span> <span class="t">ShopDbContext</span>(opts);
+    }
+}
+
+<span class="c">// Wire-up</span>
+builder.<span class="t">Services</span>.<span class="fn">AddSingleton</span>&lt;<span class="t">ConsistentHashRing</span>&lt;<span class="t">Shard</span>&gt;&gt;(_ =&gt;
+{
+    <span class="k">var</span> ring = <span class="k">new</span> <span class="t">ConsistentHashRing</span>&lt;<span class="t">Shard</span>&gt;();
+    ring.<span class="fn">SetNodes</span>([
+        <span class="k">new</span>(<span class="s">"eu-1"</span>, <span class="t">Weight</span>: <span class="n">1</span>, <span class="t">ConnectionString</span>: cfg[<span class="s">"Shards:eu-1"</span>]!),
+        <span class="k">new</span>(<span class="s">"eu-2"</span>, <span class="t">Weight</span>: <span class="n">1</span>, <span class="t">ConnectionString</span>: cfg[<span class="s">"Shards:eu-2"</span>]!),
+        <span class="k">new</span>(<span class="s">"eu-3"</span>, <span class="t">Weight</span>: <span class="n">2</span>, <span class="t">ConnectionString</span>: cfg[<span class="s">"Shards:eu-3"</span>]!),   <span class="c">// bigger box</span>
+    ]);
+    <span class="k">return</span> ring;
+});
+builder.<span class="t">Services</span>.<span class="fn">AddSingleton</span>&lt;<span class="t">ShardResolver</span>&gt;();
+builder.<span class="t">Services</span>.<span class="fn">AddSingleton</span>&lt;<span class="t">ShardedShopFactory</span>&gt;();
+
+<span class="c">// Usage in a handler</span>
+app.<span class="fn">MapGet</span>(<span class="s">"/orders/{tenantId:guid}"</span>, <span class="k">async</span> (
+    <span class="t">Guid</span> tenantId, <span class="t">ShardedShopFactory</span> factory, <span class="t">CancellationToken</span> ct) =&gt;
+{
+    <span class="k">await using var</span> db = factory.<span class="fn">For</span>(tenantId);   <span class="c">// ring picks the shard</span>
+    <span class="k">return</span> <span class="k">await</span> db.<span class="t">Orders</span>
+        .<span class="fn">Where</span>(o =&gt; o.<span class="t">TenantId</span> == tenantId)
+        .<span class="fn">AsNoTracking</span>()
+        .<span class="fn">ToListAsync</span>(ct);
+});</pre>
+        </div>
+
+        <div class="prose">
+          <p>The pattern works for any shard-owned data — Postgres, SQL Server, Cosmos containers, Redis instances, file-storage accounts. The ring is the routing primitive; what's behind each ring node can be anything.</p>
+          <div class="callout">
+            <div class="ctag">When a shard moves, what about its data?</div>
+            <p>The ring tells you where a key <em>should</em> be. Migrating the data when topology changes is a separate concern. Two common strategies: <strong>(a) double-write during migration</strong> — for the duration of a shard split, write to both old and new; reads check new first; once new is in sync, switch fully. <strong>(b) lazy migration on read</strong> — when a key's owner changes, the new owner reads it from the old owner on first access. Slow path on miss, no migration window. Most production sharding systems combine the two.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th style="width:16%;">Approach</th>
+              <th>Keys moved on resize</th>
+              <th>Load balance</th>
+              <th>Complexity</th>
+              <th>Where used</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th><code>hash(k) % N</code><span class="sub">naive modulo</span></th>
+              <td><strong>~(N-1)/N</strong> — almost everything</td>
+              <td>Excellent</td>
+              <td>Trivial</td>
+              <td>Tiny static clusters</td>
+              <td><span class="verdict bad">Don't use beyond a hackathon</span></td>
+            </tr>
+            <tr>
+              <th>Consistent hashing<span class="sub">classic ring + vnodes</span></th>
+              <td><strong>1/N</strong></td>
+              <td>Good (±5% w/ 100 vnodes)</td>
+              <td>Mid</td>
+              <td>Memcached, Cassandra, DynamoDB, Discord</td>
+              <td><span class="verdict good">The default for shard routing</span></td>
+            </tr>
+            <tr>
+              <th>Rendezvous (HRW) hashing<span class="sub">highest random weight</span></th>
+              <td><strong>1/N</strong></td>
+              <td>Excellent (no vnode tuning)</td>
+              <td>Mid · O(N) lookup, not O(log V)</td>
+              <td>Twitter cache, Riak</td>
+              <td><span class="verdict good">Cleaner than ring at small N</span></td>
+            </tr>
+            <tr>
+              <th>Jump consistent hash<span class="sub">Lamping &amp; Veach 2014</span></th>
+              <td><strong>1/N</strong></td>
+              <td>Excellent · no vnodes</td>
+              <td>Low · 6 lines, no memory</td>
+              <td>Google internal, Vitess</td>
+              <td><span class="verdict good">Best when nodes are 0…N-1 integers</span></td>
+            </tr>
+            <tr>
+              <th>Range partitioning<span class="sub">explicit ranges</span></th>
+              <td>Just the rebalanced range</td>
+              <td>Hot ranges possible (recent dates!)</td>
+              <td>High · range maps, splits, merges</td>
+              <td>Spanner, HBase, CockroachDB</td>
+              <td><span class="verdict warn">For range-scan-heavy workloads</span></td>
+            </tr>
+            <tr>
+              <th>Tablet / chunk lookup<span class="sub">consult a directory</span></th>
+              <td>Just the moved chunk</td>
+              <td>Excellent (rebalance per-chunk)</td>
+              <td>High · need a metadata service</td>
+              <td>MongoDB, Bigtable, Vitess</td>
+              <td><span class="verdict warn">Heavy; right for elastic scale</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="prose">
+          <p>Two pieces of context the table can't capture.</p>
+          <p><strong>Jump consistent hash</strong> is genuinely magical: six lines of code, zero memory overhead, perfect distribution. The catch is that nodes must be addressable as integers <code>0..N-1</code>, which means you can't easily add weights or pick arbitrary node ids. It's used inside Vitess and a number of Google systems but rarely in application code, because the integer-id constraint is awkward when nodes have names like <code>shard-eu-west-3</code>.</p>
+          <p><strong>Range partitioning</strong> wins when you actually do range scans (analytics, time-series). Consistent hashing kills the locality you need. Spanner, CockroachDB, and TimescaleDB all use range-partitioning for this reason. The cost is hot ranges — recent dates always land on the same shards — which you mitigate with prefix sharding or salting.</p>
+        </div>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Sharding a cache</h5>
+            <p>Consistent hashing, 100–200 vnodes. Add/remove during operation is safe — at most 1/N keys go cold.</p>
+          </div>
+          <div class="cell">
+            <h5>Sharding a database</h5>
+            <p>Consistent hashing for the routing decision. Pair with a chunk catalogue for the migration tooling — you'll want to move data, not just route it.</p>
+          </div>
+          <div class="cell">
+            <h5>Routing requests to backends</h5>
+            <p>Envoy and HAProxy both have <em>consistent hash</em> LB modes. Use when you want session affinity without sticky cookies — same tenant always hits the same backend.</p>
+          </div>
+          <div class="cell">
+            <h5>Workload imbalance after resize</h5>
+            <p>Increase vnodes per node from 100 to 1000. Distribution variance goes from ±5% to ±2%. CPU cost is negligible.</p>
+          </div>
+          <div class="cell">
+            <h5>Heterogeneous nodes</h5>
+            <p>Use weights. The "2× bigger" box gets <code>weight=2</code> and twice the vnodes — twice the keys, automatically.</p>
+          </div>
+          <div class="cell">
+            <h5>Sharding by user, but a few users are huge</h5>
+            <p>You have a <em>hot key</em> problem, not a hashing problem. Split the heavy tenants out — give them dedicated shards. The ring still routes for the rest.</p>
+          </div>
+        </div>
+
+        <div class="pull">"Modulo sharding is the kind of mistake that's easy to ship at small scale and impossible to undo at large scale. Pay the consistent-hash tax on day one."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="api-gateway.html">
+          <div class="label">Chapter 05</div>
+          <div class="ttl">API gateway</div>
+        </a>
+        <a class="next-fwd" href="database-sharding.html">
+          <div class="label">Chapter 07</div>
+          <div class="ttl">Database sharding →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 06 of 08 · Consistent Hashing · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

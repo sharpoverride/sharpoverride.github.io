@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Uber — Nearby drivers · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#cases">Case Studies</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Uber nearby</span>
+    </div>
+    <nav><a href="../system-design.html">← Index</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Years <b>2014 → 2018</b></span>
+        <span>Scale <b>1M RPS · 7M drivers</b></span>
+        <span>Stack <b>H3 hex grid · Redis · in-memory geo</b></span>
+      </div>
+      <h1>"Drivers <span class="ital">near me</span>" at 1M RPS.</h1>
+      <p class="lede">Every rider's phone polls "show me nearby drivers" every 4 seconds. With millions of riders, that's 1M+ spatial queries per second against millions of moving driver positions. Uber's solution was H3 — a hex-grid spatial index they built and open-sourced.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The constraint</h5><p>Drivers move every second; positions go stale fast. Riders need updated results in milliseconds.</p></div>
+      <div><h5>The move</h5><p>H3 grid: world divided into hexagonal cells at multiple resolutions. Each driver's location is the cell ID at the chosen resolution.</p></div>
+      <div><h5>Why hex, not square</h5><p>Hexagons have only one distance metric (neighbour = same distance in all directions). Squares have two (orthogonal vs diagonal). Makes "find within radius" cleaner.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#problem">The query at scale</a></li>
+      <li><a href="#h3">H3</a></li>
+      <li><a href="#hot">Hot-cell smoothing</a></li>
+      <li><a href="#numbers">The numbers</a></li>
+      <li><a href="#lessons">Lessons</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>The query at <span class="ital">scale</span>.</h2>
+        <div class="prose">
+          <p>"Drivers within 2 km of (37.77, -122.4)" — easy in SQL: <code>WHERE earth_distance(point) &lt; 2000</code>. Easy at 1k QPS; impossible at 1M QPS with 7M moving drivers. <strong>Drivers update positions every ~4 seconds</strong>; rider polls every 4 seconds; the database can't keep up with both the writes and the queries.</p>
+          <p>The architectural moves: <em>(1) keep driver positions in memory, not SQL. (2) Use a spatial index that's cheap to maintain and cheap to query. (3) Shard by cell ID, not by driver ID.</em></p>
+        </div>
+        <div class="pull">"Geospatial at scale is a different category from CRUD. Different tools, different defaults."</div>
+      </section>
+
+      <section class="dd-section" id="h3">
+        <h2 class="section"><span class="num">02</span><span class="ital">H3</span>.</h2>
+        <div class="prose">
+          <p>The world divided into hexagonal cells. <strong>15 resolutions</strong>: resolution 0 is ~4.25M km² per hex (122 hexes covering the planet); resolution 15 is ~1 m². Every (lat, lon) maps to one hex ID per resolution, deterministically and cheaply (microseconds).</p>
+        </div>
+
+        <h3 class="sub">Index by cell</h3>
+        <div class="prose">
+          <p>Each driver's location is their hex ID at resolution ~8 (~1 km² per cell). <strong>Look up "drivers in this hex"</strong> = O(1) hash lookup. Add the 6 neighbouring hexes for an ~3 km radius search. The query becomes 7 fast hash lookups.</p>
+        </div>
+
+        <h3 class="sub">Update is cheap</h3>
+        <div class="prose">
+          <p>Driver moves. New position → new hex ID. <strong>Remove from old hex's set; add to new hex's set.</strong> Two map operations. Done. Compare to SQL: an UPDATE on an indexed table with B-tree maintenance.</p>
+        </div>
+
+        <h3 class="sub">Shard by hex prefix</h3>
+        <div class="prose">
+          <p>The "geo service" is sharded by hex-ID prefix (effectively, by geographic region). <strong>San Francisco's drivers live on the SF shard; New York's on the NY shard.</strong> A rider's "nearby" query touches one shard. No global lookups.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="hot">
+        <h2 class="section"><span class="num">03</span>Hot-cell <span class="ital">smoothing</span>.</h2>
+        <div class="prose">
+          <p>Times Square at 6pm: too many drivers in too few cells. The hot cell's read-write load swamps its shard. <strong>Sub-divide at higher resolution</strong>: when a cell exceeds a threshold, switch to resolution N+1 for that area; the load distributes across more cells. Adaptive grid resolution.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">numbers</span>.</h2>
+        <table class="matrix"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+          <tr><th>Active drivers</th><td>~7M</td></tr>
+          <tr><th>Position updates / sec</th><td>~1.5M</td></tr>
+          <tr><th>Rider "nearby" queries / sec</th><td>~1M</td></tr>
+          <tr><th>p99 query latency</th><td>~5–10 ms</td></tr>
+          <tr><th>Memory per driver</th><td>~100 bytes</td></tr>
+          <tr><th>Geo service nodes</th><td>~hundreds</td></tr>
+          <tr><th>H3 resolution for nearby</th><td>~8 (~1 km² hex)</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">lessons</span>.</h2>
+        <div class="callout"><div class="ctag">Don't put hot geospatial in SQL</div><p>Postgres + PostGIS scales further than people think, but 1M QPS isn't its job. In-memory cell-indexed structures are 100× faster per query.</p></div>
+        <div class="callout"><div class="ctag">Hex grids beat squares for radius queries</div><p>One distance metric, uniform neighbour count, cleaner "ring N" semantics. H3 (Uber, open-source) and S2 (Google, open-source) are the standard libraries.</p></div>
+        <div class="callout"><div class="ctag">Shard by geography, not by entity</div><p>Drivers in SF live on the SF shard. Cross-region queries are rare. The shard key is the spatial index's prefix.</p></div>
+        <div class="callout"><div class="ctag">Adaptive resolution for hot zones</div><p>One hex grid resolution doesn't fit all density. Times Square needs finer cells than rural Wyoming. Switch resolutions per-region by load.</p></div>
+        <div class="pull">"The right data structure makes 1M QPS routine. The wrong one makes 1k QPS a Sev-1."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="../system-design.html"><div class="label">Index</div><div class="ttl">All cases</div></a>
+        <a class="next-fwd" href="case-instagram-scale.html"><div class="label">Next case</div><div class="ttl">Instagram 2.5B users →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Case · Uber nearby · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

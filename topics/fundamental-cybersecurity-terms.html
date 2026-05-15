@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Cybersecurity Terms · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#fundamentals">Fundamentals</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Security terms</span>
+    </div>
+    <nav><a href="../system-design.html">← Index</a><a href="fundamental-timsort.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~11 min</b></span>
+        <span>Stack <b>Authn · Authz · OWASP · NIST · zero-trust</b></span>
+      </div>
+      <h1>The security <span class="ital">vocabulary</span>.</h1>
+      <p class="lede">Software engineers regularly read security tickets, threat models, and audit reports. The vocabulary is dense; the categories are real; the failure modes are recurrent. Twenty terms that come up most often, sorted into buckets that make them stick.</p>
+    </div>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#identity">Identity &amp; access</a></li>
+      <li><a href="#crypto">Crypto fundamentals</a></li>
+      <li><a href="#attacks">Common attacks</a></li>
+      <li><a href="#defence">Defences &amp; frameworks</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="identity">
+        <h2 class="section"><span class="num">01</span>Identity &amp; <span class="ital">access</span>.</h2>
+        <table class="matrix"><thead><tr><th>Term</th><th>What it means</th></tr></thead><tbody>
+          <tr><th>Authentication (AuthN)</th><td>Who are you? Password, MFA, passkey, cert.</td></tr>
+          <tr><th>Authorisation (AuthZ)</th><td>What are you allowed to do? Roles, scopes, policies.</td></tr>
+          <tr><th>SSO</th><td>Single sign-on. Sign in once at an IdP; that token authenticates you to many apps.</td></tr>
+          <tr><th>OAuth 2.0</th><td>Delegated authorisation. "App can act on user's behalf to Service X."</td></tr>
+          <tr><th>OIDC</th><td>OAuth 2.0 + identity layer. The standard for user login in 2026.</td></tr>
+          <tr><th>SAML</th><td>Older XML-based SSO; still common in enterprise.</td></tr>
+          <tr><th>MFA / 2FA</th><td>Multi-factor: something you have + know + are. Phishing-resistant if hardware key.</td></tr>
+          <tr><th>Passkey / WebAuthn</th><td>Public-key auth that bypasses passwords entirely. The post-password world.</td></tr>
+          <tr><th>RBAC vs ABAC</th><td>Role-based (admin/editor) vs attribute-based (any policy expression). RBAC fine for most; ABAC for nuanced.</td></tr>
+          <tr><th>Zero Trust</th><td>"Never trust, always verify." No implicit trust from network position. Per-request authz.</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="crypto">
+        <h2 class="section"><span class="num">02</span>Crypto <span class="ital">fundamentals</span>.</h2>
+        <table class="matrix"><thead><tr><th>Term</th><th>What it means</th></tr></thead><tbody>
+          <tr><th>Symmetric / asymmetric</th><td>Same key for encrypt/decrypt vs key pair (public encrypts, private decrypts).</td></tr>
+          <tr><th>Hash</th><td>One-way function: input → fixed-length digest. SHA-256, SHA-3.</td></tr>
+          <tr><th>HMAC</th><td>Hash-based message authentication. Proves the message wasn't modified and came from someone who knows the secret. See <a href="fundamental-webhooks.html">webhooks</a>.</td></tr>
+          <tr><th>KDF</th><td>Key Derivation Function. Slow hashes for password storage: argon2id, bcrypt. See <a href="fundamental-password-storage.html">password storage</a>.</td></tr>
+          <tr><th>Public-key infrastructure (PKI)</th><td>Certs, CAs, chains. See <a href="fundamental-https.html">HTTPS</a>.</td></tr>
+          <tr><th>HSM / KMS</th><td>Hardware Security Module / Key Management Service. Keys never leave the secure store; signing happens inside.</td></tr>
+          <tr><th>JWT</th><td>JSON Web Token. Signed payload carrying claims. See <a href="jwt-vs-sessions.html">JWT vs sessions</a>.</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="attacks">
+        <h2 class="section"><span class="num">03</span>Common <span class="ital">attacks</span>.</h2>
+        <table class="matrix"><thead><tr><th>Attack</th><th>What it is</th><th>Defence</th></tr></thead><tbody>
+          <tr><th>SQL injection</th><td>User input concatenated into a SQL query</td><td>Parameterised queries, always</td></tr>
+          <tr><th>XSS (Cross-site scripting)</th><td>Attacker JS runs in another user's browser</td><td>Escape output; CSP header</td></tr>
+          <tr><th>CSRF</th><td>Authenticated browser tricked into making a request</td><td>SameSite cookies; CSRF tokens</td></tr>
+          <tr><th>Phishing</th><td>Tricking user to authenticate to attacker</td><td>Passkeys / WebAuthn (origin-bound)</td></tr>
+          <tr><th>Credential stuffing</th><td>Replay leaked passwords on your site</td><td>MFA; passkeys; rate limit on auth</td></tr>
+          <tr><th>SSRF (Server-side request forgery)</th><td>Server tricked into requesting internal URLs</td><td>Allow-list outbound; restrict IMDS access</td></tr>
+          <tr><th>RCE (Remote code execution)</th><td>Attacker runs code on your server</td><td>Input validation; sandboxing; least privilege</td></tr>
+          <tr><th>Supply-chain</th><td>Compromised dependency</td><td>SBOM; pin versions; signature verification</td></tr>
+          <tr><th>DDoS</th><td>Overwhelm with traffic</td><td>CDN; WAF; rate limit; auto-scale capacity headroom</td></tr>
+          <tr><th>Man-in-the-middle</th><td>Eavesdropping / tampering on the wire</td><td>HTTPS / mTLS; cert pinning for clients</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="defence">
+        <h2 class="section"><span class="num">04</span>Defences &amp; <span class="ital">frameworks</span>.</h2>
+        <table class="matrix"><thead><tr><th>Term</th><th>What it is</th></tr></thead><tbody>
+          <tr><th>OWASP Top 10</th><td>The canonical "what to fix first" list for web apps. Refreshed every few years.</td></tr>
+          <tr><th>NIST CSF</th><td>US gov't risk framework. Identify, Protect, Detect, Respond, Recover.</td></tr>
+          <tr><th>Threat model</th><td>Structured thinking about what could go wrong. STRIDE, PASTA, etc.</td></tr>
+          <tr><th>Defence in depth</th><td>Multiple layers. WAF + auth + IAM + audit log. No single point of failure for security.</td></tr>
+          <tr><th>Principle of least privilege</th><td>Every identity has only the permissions it needs. Default deny.</td></tr>
+          <tr><th>Secrets management</th><td>Vault, AWS Secrets Manager, Azure Key Vault. Short-lived; rotated; auditable.</td></tr>
+          <tr><th>SIEM</th><td>Security Information &amp; Event Management. Centralised log aggregation + detection.</td></tr>
+          <tr><th>SOC / SOC 2</th><td>Security Operations Center / the audit certification.</td></tr>
+          <tr><th>Pen-test</th><td>Authorised attempted break-in. Quarterly to annual; remediation tracked.</td></tr>
+          <tr><th>Bug bounty</th><td>Pay researchers for finding issues. HackerOne, Bugcrowd. The cheapest external red-team.</td></tr>
+        </tbody></table>
+        <div class="pull">"Security is a vocabulary first because the surface area is too large to learn by doing without one."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="../system-design.html"><div class="label">Index</div><div class="ttl">All fundamentals</div></a>
+        <a class="next-fwd" href="fundamental-timsort.html"><div class="label">Next</div><div class="ttl">Timsort →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Fundamental · Security terms · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

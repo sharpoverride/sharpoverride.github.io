@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Netflix — Chaos Engineering · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#cases">Case Studies</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Netflix</span>
+    </div>
+    <nav>
+      <a href="case-stripe-rate-limiting.html">← Prev case</a>
+      <a href="case-cloudflare-postgres.html">Next case →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Years <b>2011 → today</b></span>
+        <span>Scale <b>270M+ subscribers</b></span>
+        <span>Stack <b>Chaos Monkey · Simian Army · ChAP</b></span>
+      </div>
+      <h1>Break it on a <span class="ital">Tuesday</span>, not a Sunday.</h1>
+      <p class="lede">Netflix's Chaos Monkey randomly kills production instances during business hours. The first time you read that, it sounds insane. The realisation it forces — that your system fails the same way whether you broke it or AWS did — is the entire point of chaos engineering.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The premise</h5>
+        <p>Failure in production is inevitable. The only question is whether you're testing for it during business hours, with the engineers on call, or during a 3am page no one understands.</p>
+      </div>
+      <div>
+        <h5>What evolved</h5>
+        <p>Chaos Monkey (kill instances) → Chaos Kong (kill regions) → ChAP (Chaos Automation Platform — controlled, targeted experiments). The tool kept getting more surgical.</p>
+      </div>
+      <div>
+        <h5>The four principles</h5>
+        <p>Hypothesise about steady state. Vary real-world events. Run in production. Automate &amp; minimise blast radius. <em>The principles, not the tools, are the export.</em></p>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why chaos engineering exists</a></li>
+        <li><a href="#before">The 2008 outage</a></li>
+        <li><a href="#tools">From Chaos Monkey to ChAP</a></li>
+        <li><a href="#design">The principles</a></li>
+        <li><a href="#numbers">The numbers</a></li>
+        <li><a href="#lessons">Lessons</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why chaos engineering <span class="ital">exists</span>.</h2>
+        <div class="prose">
+          <p>Distributed systems fail in ways their architects never imagined. A network partition that lasts 800ms confuses a leader election. A clock skew of 200ms invalidates JWTs in one region. A retry storm from one upstream takes down a downstream that's been "fine for years". <strong>Most of these bugs are invisible until a real event triggers them in production</strong>; staging environments don't have the load or the topology to surface them.</p>
+          <p>Netflix's insight: <em>"if it's going to fail anyway, fail it on purpose, with the right people watching."</em> Run a controlled experiment during business hours. If the system stays healthy, you've validated a piece of the resilience story. If it breaks, you've found a bug that would have paged you at 3am on a worse day.</p>
+        </div>
+
+        <div class="pull">"The systems that survive partial outages are the ones that practise. The systems that don't, hope."</div>
+      </section>
+
+      <section class="dd-section" id="before">
+        <h2 class="section"><span class="num">02</span>The 2008 <span class="ital">outage</span>.</h2>
+        <div class="prose">
+          <p>The story Netflix tells: in August 2008, a database corruption took down their DVD-shipping service for three days. The fallout: the company decided to move to AWS — and to design every subsequent service so that <em>any single piece failing wouldn't take down the customer experience.</em></p>
+          <p>The Chaos Monkey emerged from that decision. <strong>If your service is going to run on cloud instances that AWS could terminate at any moment, you'd better build it to handle that — and the way to know you have is to terminate instances yourself, on a schedule, in production.</strong> The first version was a script that picked a random instance and killed it. The team running the affected service got paged. If the page was unnecessary — if the system handled the loss gracefully — they could go back to lunch. If not, they had Tuesday afternoon to fix it instead of 3am Sunday morning.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="tools">
+        <h2 class="section"><span class="num">03</span>From Chaos Monkey to <span class="ital">ChAP</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 320" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. A · THE SIMIAN ARMY (TIMELINE)</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0"   y="0"  width="160" height="60" fill="#1a1814"/>
+              <text x="80"  y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">CHAOS MONKEY</text>
+              <text x="80"  y="40" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">2011 · kills instances</text>
+
+              <rect x="200" y="0"  width="160" height="60" fill="#1a1814"/>
+              <text x="280" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">LATENCY MONKEY</text>
+              <text x="280" y="40" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">slow downstream calls</text>
+
+              <rect x="400" y="0"  width="160" height="60" fill="#1a1814"/>
+              <text x="480" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">CHAOS GORILLA</text>
+              <text x="480" y="40" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">kills AZs</text>
+
+              <rect x="600" y="0"  width="160" height="60" fill="#1a1814"/>
+              <text x="680" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">CHAOS KONG</text>
+              <text x="680" y="40" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1" opacity="0.7">kills regions</text>
+
+              <rect x="800" y="0"  width="160" height="60" fill="#c2410c"/>
+              <text x="880" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">ChAP</text>
+              <text x="880" y="40" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">surgical, hypothesised</text>
+
+              <line x1="100" y1="90" x2="100" y2="110" stroke="#c2410c" stroke-width="1.5"/>
+              <text x="100" y="124" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">2011</text>
+              <line x1="280" y1="90" x2="280" y2="110" stroke="#c2410c" stroke-width="1.5"/>
+              <text x="280" y="124" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">2012</text>
+              <line x1="480" y1="90" x2="480" y2="110" stroke="#c2410c" stroke-width="1.5"/>
+              <text x="480" y="124" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">2012</text>
+              <line x1="680" y1="90" x2="680" y2="110" stroke="#c2410c" stroke-width="1.5"/>
+              <text x="680" y="124" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">2013</text>
+              <line x1="880" y1="90" x2="880" y2="110" stroke="#c2410c" stroke-width="1.5"/>
+              <text x="880" y="124" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#1a1814">2017</text>
+
+              <text x="40" y="200" font-family="Instrument Serif" font-style="italic" font-size="16" fill="#1a1814">The arc: from "kill things randomly" to "test a specific hypothesis safely."</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. A</span><span>Each successor tool tested a coarser failure (instance → AZ → region) and ran more deliberately. ChAP is what most "chaos engineering" platforms aspire to be today.</span></div>
+        </div>
+
+        <div class="prose">
+          <p>The arc is the lesson. The first tool — Chaos Monkey — kills instances randomly, with no hypothesis. <strong>You learn something, but you might also break customer experience to learn it.</strong> The current platform — ChAP — runs <em>controlled</em> experiments: a small percentage of traffic, a specific service, a specific failure mode, a hypothesised outcome, a halt-on-degradation circuit breaker. <em>Same idea, infinitely more surgical.</em></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="design">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">principles</span>.</h2>
+
+        <h3 class="sub">Hypothesise about steady state</h3>
+        <div class="prose">
+          <p>Before you break anything, write down what "normal" looks like — error rates, latencies, throughput. <strong>If you can't articulate steady state, you can't tell whether you broke something.</strong> Most teams that try chaos engineering and abandon it skip this step; they "run Chaos Monkey" and conclude "the system is fine" because they didn't measure it carefully enough to see the degradation.</p>
+        </div>
+
+        <h3 class="sub">Vary real-world events</h3>
+        <div class="prose">
+          <p>Test things that actually happen in production: instance kills, slow downstreams, network packet loss, clock skew, DNS lookup failures. Don't test things that don't: malicious adversaries, simultaneous loss of every node. <em>Chaos engineering is empirical; the experiments should mirror real failure modes.</em></p>
+        </div>
+
+        <h3 class="sub">Run in production</h3>
+        <div class="prose">
+          <p>Staging doesn't have the load, the topology, or the dependencies of production. A bug that only manifests at 100k RPS won't surface in staging. <strong>Production is where the bugs are; production is where you have to look for them.</strong> The blast-radius controls are what make this safe, not running in a separate environment.</p>
+        </div>
+
+        <h3 class="sub">Minimise blast radius</h3>
+        <div class="prose">
+          <p>Start with 1% of traffic. Halt automatically if the customer-facing error rate exceeds a threshold. Have a kill switch a human can hit. <em>Chaos engineering is the only branch of testing where the test killing customer experience is worse than the test not running at all.</em> Get this safety net right before you scale the experiments up.</p>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 1100 220" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="22" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. B · A CHAP EXPERIMENT IN FLIGHT</text>
+            <line x1="20" y1="32" x2="1080" y2="32" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(20, 50)">
+              <rect x="0"   y="0"  width="180" height="40" fill="#1a1814"/>
+              <text x="90"  y="24" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">HYPOTHESIS</text>
+
+              <rect x="220" y="0"  width="180" height="40" fill="#c2410c"/>
+              <text x="310" y="24" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">1% TRAFFIC INJECTED</text>
+
+              <rect x="420" y="0"  width="180" height="40" fill="#1a1814"/>
+              <text x="510" y="24" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">CONTROL vs TEST</text>
+
+              <rect x="620" y="0"  width="180" height="40" fill="#c2410c"/>
+              <text x="710" y="24" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">METRICS COMPARED</text>
+
+              <rect x="820" y="0"  width="180" height="40" fill="#1a1814"/>
+              <text x="910" y="24" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">PASS / HALT</text>
+
+              <text x="20" y="90"  font-family="IBM Plex Sans" font-size="12" fill="#1a1814">If the test group degrades vs control beyond the threshold,</text>
+              <text x="20" y="108" font-family="IBM Plex Sans" font-size="12" fill="#1a1814">the experiment halts automatically and routes the test cohort back to healthy paths.</text>
+              <text x="20" y="138" font-family="IBM Plex Sans" font-size="12" fill="#c2410c">No human in the loop for the halt. Humans for the post-mortem.</text>
+            </g>
+          </svg>
+          <div class="cap"><b>Two cohorts, one experiment.</b> The control group sees normal behaviour; the test group sees the injected failure. Difference = signal.</div>
+        </div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">numbers</span>.</h2>
+
+        <table class="matrix">
+          <thead>
+            <tr><th>Metric</th><th>Value</th></tr>
+          </thead>
+          <tbody>
+            <tr><th>Years running Chaos Monkey</th><td>~14 (2011→present)</td></tr>
+            <tr><th>Experiments per year (ChAP)</th><td>1000s</td></tr>
+            <tr><th>Halt threshold</th><td>~1% extra error rate</td></tr>
+            <tr><th>Test cohort size</th><td>1% of traffic (grow if safe)</td></tr>
+            <tr><th>Region failovers practised</th><td>Quarterly</td></tr>
+            <tr><th>Time to recover from a region loss<span class="sub">declared</span></th><td>&lt;10 min</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">06</span>The <span class="ital">lessons</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Measurement before manipulation</div>
+          <p>Most teams' first attempt at chaos engineering fails because they don't measure steady state precisely enough. Define your error-rate, latency, throughput baseline before you inject anything. <strong>Without a clean baseline, you can't tell that your experiment broke things — and you'll either declare success too early or roll back fixes that were working.</strong></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Start small, expand only on green</div>
+          <p>1% of traffic, one experiment at a time, automatic halt on error-rate divergence. The expansion ratchet is: green for a week → 2%, green for a week → 5%, etc. <em>Chaos engineering shouldn't be exciting.</em> The good outcome is "I ran my experiment, nothing happened to customers, and I learned my system handles this failure."</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Practise the worst-case failover</div>
+          <p>Chaos Kong's job is region failovers. Without practice, region failover is a runbook that has never been executed, written by an engineer who left two years ago, in a system that has evolved underneath it. <strong>Practise the failover quarterly</strong>; the practice is the architecture, not the diagram.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">It's a culture, not a tool</div>
+          <p>Buying a chaos-engineering SaaS doesn't give you Netflix's resilience. The cultural piece — engineers who treat the experiments as a routine part of their week, post-mortems that go to design improvements, leadership willing to sponsor "we'll fail things on purpose during business hours" — is the real artefact. <em>The tool is two weeks of work; the culture is two years.</em></p>
+        </div>
+
+        <div class="pull">"Resilience isn't a feature you ship. It's a habit you keep."</div>
+
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-stripe-rate-limiting.html">
+          <div class="label">Prev case</div>
+          <div class="ttl">Stripe — Rate limiting</div>
+        </a>
+        <a class="next-fwd" href="case-cloudflare-postgres.html">
+          <div class="label">Next case</div>
+          <div class="ttl">Cloudflare — Postgres at 55M RPS →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Case Study · Netflix · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

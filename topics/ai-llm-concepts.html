@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>LLM Concepts for Engineers · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive ai">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#ai">AI</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">LLM Concepts</span>
+    </div>
+    <nav>
+      <a href="ai-mcp.html">← Prev</a>
+      <a href="../system-design.html">Index →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>AI <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~13 min</b></span>
+        <span>Stack <b>Tokens · attention · sampling · temperature</b></span>
+      </div>
+      <h1>What an LLM is, for the rest of <span class="ital">us</span>.</h1>
+      <p class="lede">Tokens, context windows, attention, sampling, temperature, prompt caching. The dozen concepts you actually need to know to build with LLMs effectively — without claiming you understand transformer internals.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The honest scope</h5>
+        <p>What you need to ship LLM features and not be confused by the API docs. Not training, not architecture papers.</p>
+      </div>
+      <div>
+        <h5>The mental model</h5>
+        <p>An LLM is a function: text in, probability distribution over the next token out. Wrap that in a loop and you have generation. Almost every concept derives from that primitive.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">Tokens</span>
+          <span class="pill on">Context window</span>
+          <span class="pill on">Sampling</span>
+          <span class="pill on">Temperature</span>
+          <span class="pill">KV cache</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#tokens">Tokens are the unit</a></li>
+        <li><a href="#context">Context window</a></li>
+        <li><a href="#sampling">Sampling, temperature, top-p</a></li>
+        <li><a href="#prompting">Prompting moves that matter</a></li>
+        <li><a href="#cost">Cost &amp; latency</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="tokens">
+        <h2 class="section"><span class="num">01</span>Tokens are the <span class="ital">unit</span>.</h2>
+        <div class="prose">
+          <p>An LLM doesn't see characters or words; it sees <strong>tokens</strong>. A token is roughly a sub-word — common words ("the", "system") are single tokens; rare words ("antidisestablishmentarianism") split into multiple. <strong>For English text, 1 token ≈ 4 characters ≈ 0.75 words</strong>; 1000 tokens ≈ 750 words. For other languages, the ratio is worse (often 2–3× more tokens per character).</p>
+          <p>Pricing is per-token. Context-window limits are per-token. Throughput is per-token. <strong>Every operational metric in the LLM ecosystem is in tokens.</strong> When you read "GPT-4 has a 128k context", that's 128,000 tokens — roughly 96,000 English words.</p>
+        </div>
+
+        <h3 class="sub">Why this matters</h3>
+        <div class="prose">
+          <p>A 10-page document is ~6,000 tokens. A long codebase file is 10–30k tokens. A long agent conversation accumulates tokens fast. <em>The first cost-optimization is "are we sending tokens we don't need to send?"</em> Trim system prompts, summarize history, prune retrieval results.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="context">
+        <h2 class="section"><span class="num">02</span>Context <span class="ital">window</span>.</h2>
+        <div class="prose">
+          <p>The context window is the maximum number of tokens the model can attend to in one call — both your input and its output. <strong>Modern frontier models: 128k to 2M tokens.</strong> Exceeding it errors out. Approaching it degrades quality (most models attend less reliably to the middle of very long contexts — the "lost in the middle" effect).</p>
+        </div>
+
+        <h3 class="sub">Practical context budgeting</h3>
+        <div class="prose">
+          <p>Reserve space for output. If the model's window is 128k and you expect 4k tokens of response, leave 4k headroom — don't fill input to 128k. <strong>Plan for ~75% input, ~25% output</strong> as a starting heuristic, adjust by use case.</p>
+        </div>
+
+        <h3 class="sub">"More context is not always better"</h3>
+        <div class="prose">
+          <p>Adding more retrieved chunks to the prompt past a point hurts quality. <em>The signal-to-noise ratio matters more than the absolute amount of information.</em> The art of RAG is putting the few most-relevant chunks in front; the art of prompt design is keeping the system prompt tight.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="sampling">
+        <h2 class="section"><span class="num">03</span>Sampling, temperature, <span class="ital">top-p</span>.</h2>
+        <div class="prose">
+          <p>At each step, the model outputs a probability distribution over the next token. <strong>Sampling</strong> picks one. Three knobs:</p>
+        </div>
+
+        <h3 class="sub">Temperature</h3>
+        <div class="prose">
+          <p>Reshapes the distribution. <code>temperature=0</code> picks the highest-probability token always (deterministic-ish, repetitive). <code>temperature=1</code> uses the raw distribution. <code>temperature=2</code> flattens — picks more variety, more creative, more hallucinations. <strong>For structured tasks (extraction, classification, code): 0–0.3. For creative tasks: 0.7–1.0.</strong></p>
+        </div>
+
+        <h3 class="sub">Top-p (nucleus sampling)</h3>
+        <div class="prose">
+          <p>Cuts off the tail of the distribution. <code>top_p=0.9</code> means "sample from the smallest set of tokens whose cumulative probability exceeds 0.9." <strong>Filters out implausible tokens.</strong> Often used together with temperature; <code>top_p=0.95</code> + <code>temperature=0.7</code> is a common default for chat.</p>
+        </div>
+
+        <h3 class="sub">Top-k</h3>
+        <div class="prose">
+          <p>Even simpler: only consider the top K most-likely tokens. <code>top_k=40</code> is a default; rarely tuned in modern APIs.</p>
+        </div>
+
+        <h3 class="sub">Stop sequences</h3>
+        <div class="prose">
+          <p>Strings that, if generated, cause the model to halt. Use them for structured output: <em>"stop on <code>\n---\n</code>"</em>, "stop on <code>&lt;/code&gt;</code>". Without stop sequences, the model wanders past your intended response.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="prompting">
+        <h2 class="section"><span class="num">04</span>Prompting moves that <span class="ital">matter</span>.</h2>
+
+        <h3 class="sub">System prompt — set the persona, the rules, the output format</h3>
+        <div class="prose">
+          <p>The system message defines who the model is. <strong>Short and concrete beats long and vague.</strong> "You are a customer support agent for an e-commerce store. Respond in 2–3 sentences. If you're unsure, escalate to a human." Six lines is often plenty.</p>
+        </div>
+
+        <h3 class="sub">Few-shot examples</h3>
+        <div class="prose">
+          <p>Show, don't tell. Give 2–5 examples of input → desired output. The model learns the pattern from the examples better than from instructions. <strong>For classification, extraction, and formatting tasks, 3 examples often beat any amount of prose.</strong></p>
+        </div>
+
+        <h3 class="sub">Structured output</h3>
+        <div class="prose">
+          <p>"Respond in JSON" works inconsistently. <strong>Use the API's structured output feature</strong>: OpenAI's <code>response_format</code>, Anthropic's tool use, Gemini's structured generation. The model is constrained to emit valid JSON matching your schema. <em>Don't parse free-form JSON from chat responses; let the runtime enforce the schema.</em></p>
+        </div>
+
+        <h3 class="sub">Chain-of-thought</h3>
+        <div class="prose">
+          <p>"Think step by step before answering." Gives the model space to reason; improves accuracy on math, logic, multi-step questions. <strong>Modern models do CoT automatically</strong> (especially "reasoning" models like o1, Claude 4 thinking, Gemini Pro). You don't usually need to prompt for it; sometimes you need to prompt against it ("answer directly, no preamble").</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="cost">
+        <h2 class="section"><span class="num">05</span>Cost &amp; <span class="ital">latency</span>.</h2>
+
+        <table class="matrix">
+          <thead>
+            <tr><th>Quantity</th><th>Typical value (2025)</th></tr>
+          </thead>
+          <tbody>
+            <tr><th>Input tokens / sec (small models)</th><td>~50k</td></tr>
+            <tr><th>Output tokens / sec (frontier)</th><td>50–200</td></tr>
+            <tr><th>TTFB (time to first token)</th><td>~300ms – 2s</td></tr>
+            <tr><th>Cost / 1M input tokens (frontier)</th><td>~$3 – $15</td></tr>
+            <tr><th>Cost / 1M output tokens (frontier)</th><td>~$15 – $75</td></tr>
+            <tr><th>Cost / 1M tokens (small)</th><td>~$0.10 – $0.50</td></tr>
+          </tbody>
+        </table>
+
+        <h3 class="sub">Output tokens cost ~5× input tokens</h3>
+        <div class="prose">
+          <p>The asymmetry is a constraint. <strong>Keep responses short when you can</strong>; reply length is the dominant cost driver in chat. "Be concise" in the system prompt actually saves you money.</p>
+        </div>
+
+        <h3 class="sub">Prompt caching</h3>
+        <div class="prose">
+          <p>Modern APIs (Anthropic, OpenAI) cache the KV state of repeated prefixes. <strong>If your system prompt is identical across calls, cache it once and pay ~10% for re-reads.</strong> Big savings on chat-style workloads with a fixed system prompt. Use cache markers in the API as documented.</p>
+        </div>
+
+        <h3 class="sub">Batch API for non-realtime</h3>
+        <div class="prose">
+          <p>OpenAI and Anthropic both have batch APIs that process requests within 24h at 50% cost. <strong>For evals, content generation, document processing</strong> — anything where you can wait — use batch. The cost saving compounds at scale.</p>
+        </div>
+
+        <h3 class="sub">Model tiering</h3>
+        <div class="prose">
+          <p>Don't use the biggest model for everything. <strong>Route by complexity</strong>: a small classifier triages the request; trivial ones go to a small fast model; complex ones to the big model. Saves 10× cost with minimal quality drop on the trivial cases.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Choice</th>
+              <th>What you gain</th>
+              <th>What you give up</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Frontier model<span class="sub">Opus / GPT-4 / Gemini Pro</span></th>
+              <td>Best reasoning, most reliable</td>
+              <td>10× cost, 5× latency</td>
+            </tr>
+            <tr>
+              <th>Small model<span class="sub">Haiku / GPT-4o-mini</span></th>
+              <td>Fast, cheap, fine for simple tasks</td>
+              <td>Worse on reasoning, more hallucinations</td>
+            </tr>
+            <tr>
+              <th>Reasoning model<span class="sub">o1 / Claude thinking</span></th>
+              <td>Better at hard reasoning</td>
+              <td>Slower (extended thinking time), higher cost</td>
+            </tr>
+            <tr>
+              <th>Self-hosted open model<span class="sub">Llama, Mistral, Qwen</span></th>
+              <td>Privacy, no per-token cost</td>
+              <td>GPU ops, ~70-90% of frontier quality</td>
+            </tr>
+            <tr>
+              <th>High temperature</th>
+              <td>Creative variety</td>
+              <td>Less reliable, hard to test</td>
+            </tr>
+            <tr>
+              <th>Low temperature</th>
+              <td>Reproducible, structured</td>
+              <td>Repetitive, less interesting</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="callout">
+          <div class="ctag">Five practical rules</div>
+          <p><strong>One</strong> — model tiering saves money. <strong>Two</strong> — structured output APIs beat parsing JSON yourself. <strong>Three</strong> — temperature 0 for extraction, 0.7 for chat. <strong>Four</strong> — cache the system prompt. <strong>Five</strong> — evals or it's not engineering.</p>
+        </div>
+
+        <div class="pull">"The model is the substrate. The product is the prompt, the retrieval, the tools, and the eval."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="ai-mcp.html">
+          <div class="label">Prev</div>
+          <div class="ttl">MCP</div>
+        </a>
+        <a class="next-fwd" href="../system-design.html">
+          <div class="label">All chapters</div>
+          <div class="ttl">Back to index →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>AI · LLM Concepts · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

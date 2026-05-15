@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>JWT vs Sessions · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">21 · JWT vs Sessions</span>
+    </div>
+    <nav>
+      <a href="cdn-architecture.html">← Prev</a>
+      <a href="grpc-rest-graphql.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>21</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~12 min</b></span>
+        <span>Stack <b>ASP.NET Core Identity · Duende IdentityServer · Azure AD B2C</b></span>
+      </div>
+      <h1>Stateful in Redis, or <span class="ital">signed</span> in the cookie.</h1>
+      <p class="lede">The choice between server-side sessions and JWTs is not which is more modern — it's which failure mode you can live with. Sessions die when Redis dies. JWTs are valid until they expire, even if the user is fired this morning. The honest tradeoff settles in the middle.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The problem in one line</h5>
+        <p>HTTP is stateless. The server has to recognise the same user across requests <em>without</em> trusting whatever the client claims to be.</p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>Short-lived access JWT + opaque refresh token + revocation list is the default for SaaS/B2C. Server-side sessions in Redis remain the default for traditional web apps. Pure JWT-without-revocation is wrong for anything user-facing.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">ASP.NET Core Identity</span>
+          <span class="pill on">Duende IdentityServer</span>
+          <span class="pill on">Azure AD B2C</span>
+          <span class="pill">Auth0</span>
+          <span class="pill">Clerk</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Stateful HTTP from stateless HTTP</a></li>
+        <li><a href="#shapes">Session vs JWT, side by side</a></li>
+        <li><a href="#revocation">Revocation is the whole game</a></li>
+        <li><a href="#dotnet">In ASP.NET Core</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 problem -->
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Stateful HTTP from <span class="ital">stateless</span> HTTP.</h2>
+        <div class="prose">
+          <p>HTTP delivers one request, one response, no memory. Every modern web app needs to know who's calling without re-authenticating on every click. The mechanism: <strong>after login, hand the client an opaque token; on every subsequent request, the client returns the token; the server resolves it to a user.</strong> Two shapes of token: a random string that points at server state (a session) or a signed payload that contains the state (a JWT).</p>
+          <p>That decision — point or contain — is the whole architectural question. Sessions push the cost to the server (a Redis lookup per request) and keep the source of truth there. JWTs push the cost to the client (the token is bigger) and put the source of truth on the wire. <em>Every other tradeoff is downstream of which one you picked.</em></p>
+        </div>
+
+        <div class="pull">"A JWT is a session that doesn't know how to die."</div>
+      </section>
+
+      <!-- 2 shapes -->
+      <section class="dd-section" id="shapes">
+        <h2 class="section"><span class="num">02</span>Session <span class="ital">vs</span> JWT.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 480" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="ja" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 22 · TWO WAYS TO REMEMBER A USER</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- Session -->
+            <g transform="translate(20, 70)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">Server session</text>
+
+              <rect x="0"   y="40" width="100" height="50" fill="#1a1814"/>
+              <text x="50"  y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">BROWSER</text>
+              <text x="50"  y="80" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1" opacity="0.7">cookie=abc...</text>
+
+              <rect x="200" y="40" width="140" height="50" fill="#c2410c"/>
+              <text x="270" y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">APP</text>
+              <text x="270" y="80" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1">lookup(abc) → uid=42</text>
+
+              <rect x="420" y="40" width="160" height="50" fill="#1a1814"/>
+              <text x="500" y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">REDIS / SQL</text>
+              <text x="500" y="80" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1" opacity="0.7">abc → { user, exp, roles }</text>
+
+              <line x1="100" y1="65" x2="198" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#ja)"/>
+              <line x1="340" y1="65" x2="418" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#ja)"/>
+
+              <text x="640" y="50" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Cookie carries a random ID, not data.</text>
+              <text x="640" y="68" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Server is the source of truth.</text>
+              <text x="640" y="86" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">Revoke = delete the row.</text>
+
+              <text x="0"   y="130" font-family="JetBrains Mono" font-size="11" fill="#1a1814">Pro:  · instant revoke   · small cookie   · server controls state</text>
+              <text x="0"   y="148" font-family="JetBrains Mono" font-size="11" fill="#c2410c">Con: · Redis lookup per request   · Redis is a SPOF</text>
+            </g>
+
+            <line x1="20" y1="240" x2="1180" y2="240" stroke="#1a1814" stroke-width="1" stroke-dasharray="2 4"/>
+
+            <!-- JWT -->
+            <g transform="translate(20, 260)">
+              <text x="0" y="14" font-family="Instrument Serif" font-style="italic" font-size="18" fill="#1a1814">JWT (self-contained)</text>
+
+              <rect x="0"   y="40" width="100" height="50" fill="#1a1814"/>
+              <text x="50"  y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">BROWSER</text>
+              <text x="50"  y="80" font-family="JetBrains Mono" font-size="6" text-anchor="middle" fill="#f1ece1" opacity="0.7">eyJ... long payload ...</text>
+
+              <rect x="200" y="40" width="140" height="50" fill="#c2410c"/>
+              <text x="270" y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">APP</text>
+              <text x="270" y="80" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1">verify(sig, pubkey)</text>
+
+              <rect x="420" y="40" width="160" height="50" fill="#1a1814"/>
+              <text x="500" y="65" font-family="JetBrains Mono" font-size="10" text-anchor="middle" fill="#f1ece1">JWKS</text>
+              <text x="500" y="80" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1" opacity="0.7">public keys · fetched + cached</text>
+
+              <line x1="100" y1="65" x2="198" y2="65" stroke="#c2410c" stroke-width="2" marker-end="url(#ja)"/>
+              <line x1="340" y1="65" x2="418" y2="65" stroke="#c2410c" stroke-width="2" stroke-dasharray="3 3" marker-end="url(#ja)"/>
+              <text x="380" y="56" font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#c2410c">cached</text>
+
+              <text x="640" y="50" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Cookie / header carries the user data.</text>
+              <text x="640" y="68" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Signature is the integrity guarantee.</text>
+              <text x="640" y="86" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">No revocation by default.</text>
+
+              <text x="0"   y="130" font-family="JetBrains Mono" font-size="11" fill="#1a1814">Pro:  · no per-request lookup   · multi-service / API-friendly</text>
+              <text x="0"   y="148" font-family="JetBrains Mono" font-size="11" fill="#c2410c">Con: · stale claims (roles)   · revoke is hard   · big cookie</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 22</span><span>The session asks the server every time. The JWT asks the cryptography. Each answers fast; only one knows about the user being fired this morning.</span></div>
+        </div>
+
+        <h3 class="sub">When sessions win</h3>
+        <div class="prose">
+          <p>Traditional web apps, single backend, B2B internal tooling, anything where "log out everywhere now" is a feature you'll use. Cookie auth in ASP.NET Core is one line of <code>AddAuthentication().AddCookie()</code>; the framework handles ticket protection, expiration, sliding renewal. <strong>Redis or SQL holds the ticket data; the cookie is just an opaque ID.</strong> Revocation is a <code>DELETE</code> away. Most "we should JWT" decisions for monolithic apps are over-engineering.</p>
+        </div>
+
+        <h3 class="sub">When JWTs win</h3>
+        <div class="prose">
+          <p>Multiple backends that need to authenticate independently — microservices, mobile + web + third-party, API consumers. The JWT is verified with public-key crypto; <strong>any service can verify without contacting a session store</strong>. The signing authority publishes a JWKS endpoint; each service fetches and caches the public keys. Federated identity (Azure AD, Google, Okta) ships JWTs because that's the only shape that works without every relying party calling back to the issuer.</p>
+        </div>
+
+        <h3 class="sub">The standard SaaS shape: access JWT + opaque refresh</h3>
+        <div class="prose">
+          <p>The pragmatic middle ground. The access JWT lives 5–15 minutes; expiration is its only revocation. The refresh token is opaque (random string) and lives 30 days; it's stored in a server-side table and can be revoked instantly. On every refresh, the access token is reminted from the current claims. <strong>Stale-claim window is bounded to the access token's TTL.</strong> A revoked user keeps access for at most 15 minutes — usually acceptable, never indefinite.</p>
+        </div>
+      </section>
+
+      <!-- 3 revocation -->
+      <section class="dd-section" id="revocation">
+        <h2 class="section"><span class="num">03</span>Revocation is the <span class="ital">whole</span> game.</h2>
+        <div class="prose">
+          <p>Every JWT decision returns to this question. A signed token cannot be "unsigned" — until it expires, anyone holding it can use it. Five mitigations:</p>
+        </div>
+
+        <h3 class="sub">Short TTLs</h3>
+        <div class="prose">
+          <p>Access token expires in 5–15 minutes. The blast radius of "user fired but token still valid" is the access TTL. The refresh-token call requires server contact, which means revocation can take effect on next refresh. <strong>This is the standard fix and the right one for most apps.</strong></p>
+        </div>
+
+        <h3 class="sub">Revocation list (token deny list)</h3>
+        <div class="prose">
+          <p>When a user is revoked, write the JWT's <code>jti</code> (or the user ID) to a Redis list with a TTL matching the access token's expiry. Every request checks the list. <em>This re-introduces a per-request Redis lookup</em> — exactly the cost a JWT was supposed to eliminate. But the list is tiny (only currently-revoked tokens), so the lookup is cheap. <strong>Most "we need instant revoke" production setups end up with this list anyway</strong>; combine it with short TTLs to keep the list small.</p>
+        </div>
+
+        <h3 class="sub">Versioned tokens</h3>
+        <div class="prose">
+          <p>Add a <code>token_version</code> claim. The user row has <code>current_token_version</code>. On revoke, bump the row. Every JWT verify checks <code>jwt.token_version == user.current_token_version</code> from cache. <em>Same cost as a revocation list, slightly more granular</em> — you can invalidate one user's all-sessions without enumerating tokens. Often the cleanest implementation.</p>
+        </div>
+
+        <h3 class="sub">Sliding refresh with rotation</h3>
+        <div class="prose">
+          <p>Each refresh issues a new refresh token and invalidates the old one. If an attacker uses a refresh token, the legitimate user's next refresh fails — both tokens get invalidated, and the user is forced to re-login. <strong>This is the de-facto standard for OAuth refresh-token flows and what Auth0, Okta, Cognito, Azure AD B2C all do by default.</strong></p>
+        </div>
+
+        <h3 class="sub">Key rotation</h3>
+        <div class="prose">
+          <p>Rotate the signing key periodically. Old keys remain in JWKS for the TTL of the longest outstanding token, then are removed. Any token signed with a retired key fails verification. <em>This is the nuclear option for invalidating all tokens at once</em> — useful for breach response, not for daily revocation. Plan key rotation from day one; retrofitting it after years of production tokens is painful.</p>
+        </div>
+      </section>
+
+      <!-- 4 in .net -->
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">ASP.NET Core</span>.</h2>
+
+        <div class="prose">
+          <p>Two complete patterns. Cookie auth for a traditional web app; JWT access + refresh + revocation list for an API. Same framework, different one-time setup.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">CookieAuthSetup.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// Server-side session cookie auth — for traditional web apps.</span>
+<span class="k">using</span> <span class="t">Microsoft.AspNetCore.Authentication.Cookies</span>;
+<span class="k">using</span> <span class="t">Microsoft.AspNetCore.DataProtection</span>;
+
+<span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+<span class="c">// Persist data-protection keys to a shared store (Redis, Azure Blob).</span>
+<span class="c">// Without this, every pod's cookies are invalidated on restart.</span>
+builder.<span class="t">Services</span>.<span class="fn">AddDataProtection</span>()
+    .<span class="fn">SetApplicationName</span>(<span class="s">"shop"</span>)
+    .<span class="fn">PersistKeysToAzureBlobStorage</span>(builder.<span class="t">Configuration</span>[<span class="s">"DP:BlobUri"</span>]!);
+
+builder.<span class="t">Services</span>.<span class="fn">AddAuthentication</span>(<span class="t">CookieAuthenticationDefaults</span>.<span class="t">AuthenticationScheme</span>)
+    .<span class="fn">AddCookie</span>(o =&gt;
+    {
+        o.<span class="t">Cookie</span>.<span class="t">Name</span>             = <span class="s">"__Host-shop-auth"</span>;
+        o.<span class="t">Cookie</span>.<span class="t">SecurePolicy</span>     = <span class="t">CookieSecurePolicy</span>.<span class="t">Always</span>;
+        o.<span class="t">Cookie</span>.<span class="t">HttpOnly</span>         = <span class="k">true</span>;
+        o.<span class="t">Cookie</span>.<span class="t">SameSite</span>         = <span class="t">SameSiteMode</span>.<span class="t">Lax</span>;
+        o.<span class="t">ExpireTimeSpan</span>          = <span class="t">TimeSpan</span>.<span class="fn">FromHours</span>(<span class="n">8</span>);
+        o.<span class="t">SlidingExpiration</span>       = <span class="k">true</span>;
+        o.<span class="t">LoginPath</span>               = <span class="s">"/login"</span>;
+
+        <span class="c">// Validate the principal on every request — picks up role/permission changes.</span>
+        o.<span class="t">Events</span>.<span class="t">OnValidatePrincipal</span> = <span class="k">async</span> ctx =&gt;
+        {
+            <span class="k">var</span> sub = ctx.<span class="t">Principal</span>?.<span class="fn">FindFirstValue</span>(<span class="s">"sub"</span>);
+            <span class="k">var</span> users = ctx.<span class="t">HttpContext</span>.<span class="t">RequestServices</span>
+                .<span class="fn">GetRequiredService</span>&lt;<span class="t">IUserStore</span>&gt;();
+            <span class="k">if</span> (sub is <span class="k">null</span> || !<span class="k">await</span> users.<span class="fn">IsActiveAsync</span>(sub))
+                ctx.<span class="fn">RejectPrincipal</span>();   <span class="c">// instant revoke on next request</span>
+        };
+    });
+
+builder.<span class="t">Services</span>.<span class="fn">AddAuthorization</span>();
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+app.<span class="fn">UseAuthentication</span>();
+app.<span class="fn">UseAuthorization</span>();
+app.<span class="fn">Run</span>();</pre>
+        </div>
+
+        <div class="prose">
+          <p>For an API serving SPAs and mobile clients, JWT with a refresh-rotation flow. The access token is a JWT signed by your IdentityServer (or Azure AD B2C); the refresh token is opaque and stored server-side. A revocation check runs on every authenticated request — the Redis lookup is sub-ms.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">JwtAuthSetup.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">using</span> <span class="t">Microsoft.AspNetCore.Authentication.JwtBearer</span>;
+<span class="k">using</span> <span class="t">Microsoft.IdentityModel.Tokens</span>;
+<span class="k">using</span> <span class="t">StackExchange.Redis</span>;
+
+<span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+builder.<span class="t">Services</span>.<span class="fn">AddSingleton</span>&lt;<span class="t">IConnectionMultiplexer</span>&gt;(
+    <span class="t">ConnectionMultiplexer</span>.<span class="fn">Connect</span>(builder.<span class="t">Configuration</span>.<span class="fn">GetConnectionString</span>(<span class="s">"Redis"</span>)!));
+
+builder.<span class="t">Services</span>.<span class="fn">AddAuthentication</span>(<span class="t">JwtBearerDefaults</span>.<span class="t">AuthenticationScheme</span>)
+    .<span class="fn">AddJwtBearer</span>(o =&gt;
+    {
+        o.<span class="t">Authority</span> = builder.<span class="t">Configuration</span>[<span class="s">"Auth:Issuer"</span>];      <span class="c">// fetches JWKS</span>
+        o.<span class="t">Audience</span>  = builder.<span class="t">Configuration</span>[<span class="s">"Auth:Audience"</span>];
+        o.<span class="t">TokenValidationParameters</span> = <span class="k">new</span> <span class="t">TokenValidationParameters</span>
+        {
+            <span class="t">ValidateLifetime</span>          = <span class="k">true</span>,
+            <span class="t">ClockSkew</span>                 = <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">30</span>),
+            <span class="t">RequireSignedTokens</span>       = <span class="k">true</span>,
+            <span class="t">ValidateIssuerSigningKey</span>  = <span class="k">true</span>,
+        };
+
+        <span class="c">// Revocation check — fast Redis EXISTS on a deny-list keyed by jti.</span>
+        o.<span class="t">Events</span> = <span class="k">new</span> <span class="t">JwtBearerEvents</span>
+        {
+            <span class="t">OnTokenValidated</span> = <span class="k">async</span> ctx =&gt;
+            {
+                <span class="k">var</span> jti = ctx.<span class="t">Principal</span>?.<span class="fn">FindFirstValue</span>(<span class="s">"jti"</span>);
+                <span class="k">if</span> (jti is <span class="k">null</span>) { ctx.<span class="fn">Fail</span>(<span class="s">"missing jti"</span>); <span class="k">return</span>; }
+
+                <span class="k">var</span> redis = ctx.<span class="t">HttpContext</span>.<span class="t">RequestServices</span>
+                    .<span class="fn">GetRequiredService</span>&lt;<span class="t">IConnectionMultiplexer</span>&gt;().<span class="fn">GetDatabase</span>();
+                <span class="k">if</span> (<span class="k">await</span> redis.<span class="fn">KeyExistsAsync</span>($<span class="s">"revoked:{jti}"</span>))
+                    ctx.<span class="fn">Fail</span>(<span class="s">"token revoked"</span>);
+            }
+        };
+    });
+
+builder.<span class="t">Services</span>.<span class="fn">AddAuthorization</span>();
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+app.<span class="fn">UseAuthentication</span>();
+app.<span class="fn">UseAuthorization</span>();
+
+<span class="c">// Refresh endpoint: rotate the refresh token, mint a new access token.</span>
+app.<span class="fn">MapPost</span>(<span class="s">"/auth/refresh"</span>, <span class="k">async</span> (
+    <span class="t">RefreshRequest</span> req, <span class="t">ITokenService</span> tokens, <span class="t">CancellationToken</span> ct) =&gt;
+{
+    <span class="k">var</span> pair = <span class="k">await</span> tokens.<span class="fn">RotateAsync</span>(req.<span class="t">RefreshToken</span>, ct);
+    <span class="k">return</span> pair is <span class="k">null</span>
+        ? <span class="t">Results</span>.<span class="fn">Unauthorized</span>()
+        : <span class="t">Results</span>.<span class="fn">Ok</span>(<span class="k">new</span> { access = pair.<span class="t">Access</span>, refresh = pair.<span class="t">Refresh</span> });
+});
+
+<span class="c">// Logout endpoint: blacklist the current access token's jti until its exp.</span>
+app.<span class="fn">MapPost</span>(<span class="s">"/auth/logout"</span>, <span class="k">async</span> (
+    <span class="t">HttpContext</span> ctx, <span class="t">IConnectionMultiplexer</span> redis, <span class="t">ITokenService</span> tokens) =&gt;
+{
+    <span class="k">var</span> jti = ctx.<span class="t">User</span>.<span class="fn">FindFirstValue</span>(<span class="s">"jti"</span>);
+    <span class="k">var</span> exp = ctx.<span class="t">User</span>.<span class="fn">FindFirstValue</span>(<span class="s">"exp"</span>);
+    <span class="k">if</span> (jti is { } id &amp;&amp; <span class="k">long</span>.<span class="fn">TryParse</span>(exp, <span class="k">out var</span> e))
+    {
+        <span class="k">var</span> ttl = <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="t">Math</span>.<span class="fn">Max</span>(<span class="n">1</span>, e - <span class="t">DateTimeOffset</span>.<span class="t">UtcNow</span>.<span class="t">ToUnixTimeSeconds</span>()));
+        <span class="k">await</span> redis.<span class="fn">GetDatabase</span>().<span class="fn">StringSetAsync</span>($<span class="s">"revoked:{id}"</span>, <span class="s">"1"</span>, ttl);
+    }
+    <span class="k">await</span> tokens.<span class="fn">RevokeRefreshAsync</span>(ctx.<span class="t">User</span>.<span class="fn">FindFirstValue</span>(<span class="s">"sub"</span>)!);
+    <span class="k">return</span> <span class="t">Results</span>.<span class="fn">NoContent</span>();
+});
+
+app.<span class="fn">Run</span>();</pre>
+        </div>
+      </section>
+
+      <!-- 5 detail -->
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Don't put JWTs in localStorage</div>
+          <p>Any XSS reads localStorage and exfiltrates the token. Use <code>HttpOnly</code> cookies (the JWT is in the cookie, browser sends it automatically) or memory-only storage with refresh on page-load. <strong>localStorage is for non-sensitive data.</strong> The "JWT in Authorization header" pattern is fine for native mobile clients; for browsers, cookie auth is safer.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Data-protection keys must be shared</div>
+          <p>ASP.NET Core encrypts cookies and antiforgery tokens with data-protection keys. Default storage is the local filesystem, which means each pod has different keys and cookies issued by pod-1 fail on pod-2. <strong>Persist keys to Redis, Blob storage, or a shared file system — and set <code>SetApplicationName</code></strong> so multiple apps don't trash each other's keys.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">JWT clock skew is real</div>
+          <p>Two servers in different regions can have clocks 100ms apart. A freshly-minted token can fail validation on a server with a slightly-slow clock. Set <code>ClockSkew = TimeSpan.FromSeconds(30)</code> in <code>TokenValidationParameters</code>. Default is 5 minutes (too loose); zero is too tight; 30s is the production default.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Refresh tokens deserve their own table</div>
+          <p>A row per refresh token with <code>UserId</code>, <code>IssuedAt</code>, <code>ExpiresAt</code>, <code>RevokedAt</code>, <code>ReplacedBy</code>. The <code>ReplacedBy</code> column makes rotation auditable. The <code>RevokedAt</code> column is what your "log me out everywhere" button updates. <em>This table is the only stateful part of an otherwise stateless JWT setup, and that's fine.</em></p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Federated identity is almost always the answer</div>
+          <p>Don't write user authentication in 2026. Use Azure AD B2C, Auth0, Clerk, Cognito, Duende IdentityServer — they handle the JWKS, the password hashing, the MFA, the social logins, the compliance audits. Your app is a relying party that consumes JWTs. <strong>The home-grown user-table-plus-password-hash is the wrong default.</strong></p>
+        </div>
+
+        <div class="pull">"The right authentication is the one you didn't write. The wrong authentication is the one you wrote yourself."</div>
+      </section>
+
+      <!-- 6 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">06</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Technology</th>
+              <th>Shape</th>
+              <th>Strengths</th>
+              <th>Cost / mo</th>
+              <th>Operational</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>Server session in Redis<span class="sub">cookie auth</span></th>
+              <td>Session</td>
+              <td>Instant revoke · small cookie · simple</td>
+              <td><strong>$25 – $500</strong> Redis</td>
+              <td>Redis to operate</td>
+              <td><span class="verdict good">Default for traditional web apps</span></td>
+            </tr>
+            <tr>
+              <th>JWT access + refresh<span class="sub">no revocation</span></th>
+              <td>JWT</td>
+              <td>Stateless verification · multi-service · federated</td>
+              <td>$0 (just app cost)</td>
+              <td>None</td>
+              <td><span class="verdict warn">Only if 15-min stale roles are acceptable</span></td>
+            </tr>
+            <tr>
+              <th>JWT + revocation list (Redis)<span class="sub">pragmatic</span></th>
+              <td>JWT + check</td>
+              <td>Fast verify · instant revoke · multi-service</td>
+              <td><strong>$25 – $500</strong> Redis</td>
+              <td>Redis · deny-list maintenance</td>
+              <td><span class="verdict good">Production SaaS default</span></td>
+            </tr>
+            <tr>
+              <th>Duende IdentityServer<span class="sub">.NET-native</span></th>
+              <td>OIDC issuer</td>
+              <td>Best-in-class .NET integration · full OIDC/OAuth2</td>
+              <td><strong>$1.5k – $12k</strong> license</td>
+              <td>You host it; vendor-supported</td>
+              <td><span class="verdict good">When .NET house and need on-prem control</span></td>
+            </tr>
+            <tr>
+              <th>Azure AD B2C<span class="sub">Microsoft Entra External ID</span></th>
+              <td>OIDC issuer (managed)</td>
+              <td>Managed · social login · MFA · custom policies</td>
+              <td><strong>$0+</strong> 50k MAU free, $0.00325/MAU after</td>
+              <td>Vendor-managed</td>
+              <td><span class="verdict good">Azure-native B2C default</span></td>
+            </tr>
+            <tr>
+              <th>Auth0 / Clerk<span class="sub">SaaS</span></th>
+              <td>OIDC issuer (managed)</td>
+              <td>Premium DX · ready-made UI · social/MFA</td>
+              <td><strong>$25 – $4k+</strong> by MAU tier</td>
+              <td>Vendor-managed</td>
+              <td><span class="verdict good">When DX matters more than cost</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Traditional MVC / Razor web app</h5>
+            <p>Cookie auth with server session. <code>__Host-</code> cookie, HttpOnly + SameSite=Lax + Secure. DataProtection keys persisted to Blob.</p>
+          </div>
+          <div class="cell">
+            <h5>SPA + .NET API + mobile</h5>
+            <p>JWT access (15min) + opaque refresh (30 days, rotated). Revocation list in Redis. Federated to Azure AD B2C / Auth0.</p>
+          </div>
+          <div class="cell">
+            <h5>Microservices need to verify the same user</h5>
+            <p>JWT signed by a central issuer. Each service validates via JWKS. Cache the public keys 1h. Don't re-implement per service.</p>
+          </div>
+          <div class="cell">
+            <h5>B2B SaaS with SSO requirement</h5>
+            <p>OIDC federation. Customer's IdP issues a JWT; your app trusts it. Don't store passwords. Don't onboard the customer with usernames.</p>
+          </div>
+          <div class="cell">
+            <h5>"We need to log everyone out NOW"</h5>
+            <p>Bump a global token-version key in Redis; every JWT validate checks it. Or rotate the signing key. Have one of these wired from day one.</p>
+          </div>
+          <div class="cell">
+            <h5>Mobile app with offline support</h5>
+            <p>JWT in secure storage (Keychain / Keystore), long-lived refresh, short access. Offline = valid until access expires; reconnect refreshes.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="callout">
+        <div class="ctag">Three things people get wrong</div>
+        <p><strong>One — JWTs in localStorage.</strong> One XSS and your tokens leave the building. Use HttpOnly cookies for browsers; localStorage is for non-sensitive data.</p>
+        <p><strong>Two — pure JWT with no revocation.</strong> "We're stateless" until someone gets fired and the architecture review meets compliance. Add a revocation list or token-version check from day one.</p>
+        <p><strong>Three — DataProtection keys on the local filesystem.</strong> Every pod issues its own crypto. Cookies break on the second pod. Persist to Blob or Redis with a shared application name.</p>
+      </div>
+
+      <div class="next-up">
+        <a class="next-back" href="cdn-architecture.html">
+          <div class="label">Chapter 20</div>
+          <div class="ttl">CDN architecture</div>
+        </a>
+        <a class="next-fwd" href="grpc-rest-graphql.html">
+          <div class="label">Chapter 22</div>
+          <div class="ttl">gRPC vs REST vs GraphQL →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 21 · JWT vs Sessions · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

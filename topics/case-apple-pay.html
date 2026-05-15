@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Apple Pay — 41M txn/day · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive case">
+<div class="wrap">
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span><a href="../system-design.html#cases">Case Studies</a><span class="sep">/</span>
+      <span style="color:var(--ink);">Apple Pay</span>
+    </div>
+    <nav><a href="case-zoom.html">← Prev</a><a href="case-whatsapp-engineering.html">Next →</a></nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Case <b>study</b></span>
+        <span>Years <b>2014 → today</b></span>
+        <span>Scale <b>~41M txn/day</b></span>
+        <span>Stack <b>Secure Element · tokenisation · NFC · EMVCo</b></span>
+      </div>
+      <h1>The card without the <span class="ital">number</span>.</h1>
+      <p class="lede">Apple Pay's most interesting security property: <em>your real card number is never on your phone</em>. A merchant gets a one-time-use cryptogram tied to a device-specific token. Even if every byte of the transaction were captured, the original PAN can't be recovered.</p>
+    </div>
+    <aside class="dd-side">
+      <div><h5>The actors</h5><p>Phone (Secure Element). Token Service Provider (TSP — issuer or networks). Merchant terminal. Card network (Visa/MC). Issuing bank.</p></div>
+      <div><h5>The trick</h5><p>Tokenisation: the phone stores a token, not the real PAN. Every transaction signs a cryptogram with a device-specific key.</p></div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+    <aside class="toc"><h5>Contents</h5><ol>
+      <li><a href="#provision">Provisioning</a></li>
+      <li><a href="#transact">Transaction flow</a></li>
+      <li><a href="#secure">Why it's secure</a></li>
+      <li><a href="#numbers">The numbers</a></li>
+      <li><a href="#lessons">Lessons</a></li>
+    </ol></aside>
+
+    <main>
+
+      <section class="dd-section" id="provision">
+        <h2 class="section"><span class="num">01</span><span class="ital">Provisioning</span>.</h2>
+        <div class="prose">
+          <p>You add a card to Wallet. Apple sends the card details to the issuer (your bank) via Apple's TSP. <strong>The issuer generates a Device Account Number (DAN)</strong> — a tokenised PAN — tied to your specific device. The DAN, plus a device-specific cryptographic key, is loaded into the Secure Element on your phone.</p>
+          <p>The real PAN is now <em>not</em> on your device. Apple doesn't have it. The Secure Element has the DAN and the key; nothing else can extract them.</p>
+        </div>
+        <div class="pull">"The phone never knew your card number. It only knew a number that looks like one."</div>
+      </section>
+
+      <section class="dd-section" id="transact">
+        <h2 class="section"><span class="num">02</span>Transaction <span class="ital">flow</span>.</h2>
+        <div class="prose">
+          <p>You tap to pay. The Secure Element generates a one-time-use cryptogram — a signed payload containing the DAN, the amount, a counter, the time. <strong>The cryptogram is sent to the merchant terminal via NFC</strong>; the terminal forwards it to the card network like any chip transaction.</p>
+          <p>The network sees a tokenised PAN; it forwards to the issuing bank's TSP, which de-tokenises (looks up the real PAN), authorises against the customer's account, and sends back the approval. <strong>Three-second flow end-to-end.</strong></p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="secure">
+        <h2 class="section"><span class="num">03</span>Why it's <span class="ital">secure</span>.</h2>
+
+        <div class="callout"><div class="ctag">No replay</div><p>Each cryptogram includes a counter. The issuer rejects duplicates. Even if you captured the bytes on the wire, replaying them fails — the counter is "used up."</p></div>
+        <div class="callout"><div class="ctag">No skimming</div><p>The DAN isn't the PAN. A merchant breach that leaks DANs doesn't expose card numbers. The DAN is useless without the device's signing key, which never leaves the Secure Element.</p></div>
+        <div class="callout"><div class="ctag">No Apple in the middle</div><p>Apple is the orchestrator at provisioning time, not the payment processor. The transaction goes phone → terminal → network → bank. Apple doesn't see the transaction details.</p></div>
+        <div class="callout"><div class="ctag">Biometric authorisation</div><p>Face ID / Touch ID must succeed before the Secure Element signs. <strong>A stolen phone, locked, cannot pay.</strong> The biometric isn't network-transmitted; it's local to the Secure Enclave.</p></div>
+      </section>
+
+      <section class="dd-section" id="numbers">
+        <h2 class="section"><span class="num">04</span>The <span class="ital">numbers</span>.</h2>
+        <table class="matrix"><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+          <tr><th>Daily transactions</th><td>~41M (cited 2022; higher now)</td></tr>
+          <tr><th>Active users</th><td>~500M+</td></tr>
+          <tr><th>Annual transaction volume</th><td>~$6T (2023 estimate, all Apple Pay)</td></tr>
+          <tr><th>Latency, tap-to-approval</th><td>~1–3 sec</td></tr>
+          <tr><th>Secure Element OS</th><td>Custom; locked down</td></tr>
+        </tbody></table>
+      </section>
+
+      <section class="dd-section" id="lessons">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">lessons</span>.</h2>
+        <div class="callout"><div class="ctag">Tokenisation moves the threat model</div><p>Pre-Apple-Pay, card numbers were the universal target; one merchant breach leaked millions of cards. Tokenised payments shift the value: stealing a DAN gives you nothing. The card networks adopted tokenisation broadly post-Apple-Pay; it's the modern default.</p></div>
+        <div class="callout"><div class="ctag">Hardware security is real</div><p>The Secure Element / Secure Enclave is a physical chip with its own OS and locked storage. Software-only tokenisation is weaker; hardware-rooted tokenisation is what makes "phone can't be cloned" credible.</p></div>
+        <div class="callout"><div class="ctag">Standards matter for ecosystem reach</div><p>Apple Pay rides EMVCo's tokenisation standards. Any compatible card network and any compliant merchant works. <em>This is interoperability via standardisation, not via proprietary protocol.</em></p></div>
+        <div class="callout"><div class="ctag">Privacy is the differentiator</div><p>Apple Pay is the rare payment system where Apple doesn't see your purchases. Google Pay (different design choices) does store some data. The privacy story is Apple's marketing angle, but it's also architecturally true.</p></div>
+        <div class="pull">"The card number used to be the universal target. Apple Pay made it not worth stealing."</div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="case-zoom.html"><div class="label">Prev</div><div class="ttl">Zoom</div></a>
+        <a class="next-fwd" href="case-whatsapp-engineering.html"><div class="label">Next</div><div class="ttl">WhatsApp engineering →</div></a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="foot"><div>Case · Apple Pay · 2026</div><div>System Design Academy</div></footer>
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body></html>

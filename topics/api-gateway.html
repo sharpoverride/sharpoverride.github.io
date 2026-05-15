@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>API Gateway, LB &amp; Reverse Proxy · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#featured">Deep Dives</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">05 · API Gateway, LB &amp; Proxy</span>
+    </div>
+    <nav>
+      <a href="consistency-patterns.html">← Prev</a>
+      <a href="consistent-hashing.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Chapter <b>05</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~13 min</b></span>
+        <span>Stack <b>YARP · ASP.NET Core · NGINX · Azure</b></span>
+      </div>
+      <h1>Gateway, balancer, <span class="ital">proxy</span>.</h1>
+      <p class="lede">Three layers, three jobs, three places to put a feature flag wrong. A <em>YARP-based gateway</em> in 100 lines and the honest answer to "do I need an API gateway?"</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>The names mean things</h5>
+        <p>"<em>Reverse proxy</em>" is the protocol — accept HTTP, forward HTTP. "<em>Load balancer</em>" is a job — distribute load. "<em>API gateway</em>" is a product — proxy + LB + auth + rate limit + transform.</p>
+      </div>
+      <div>
+        <h5>The thesis</h5>
+        <p>One reverse proxy is non-negotiable. A load balancer is the cheapest insurance you'll buy. An API gateway is a useful pattern that becomes a liability the moment it grows business logic.</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">YARP</span>
+          <span class="pill on">ASP.NET Core</span>
+          <span class="pill">NGINX</span>
+          <span class="pill">Azure Front Door</span>
+          <span class="pill">Kong</span>
+          <span class="pill">APIM</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#three">Three layers</a></li>
+        <li><a href="#balancing">Balancing algorithms</a></li>
+        <li><a href="#yarp">A YARP gateway</a></li>
+        <li><a href="#cross-cutting">Cross-cutting policies</a></li>
+        <li><a href="#tradeoffs">Tradeoff matrix</a></li>
+        <li><a href="#anti">Anti-patterns</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <!-- 1 three layers -->
+      <section class="dd-section" id="three">
+        <h2 class="section"><span class="num">01</span>Three <span class="ital">layers</span>.</h2>
+        <div class="prose">
+          <p>The terms are used interchangeably in casual conversation and that confusion costs teams real time. Here is the precise version.</p>
+        </div>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 380" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="ga" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a1814"/></marker>
+              <marker id="gao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 08 · WHAT EACH LAYER DOES &middot; AND DOES NOT</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <!-- columns header -->
+            <g font-family="JetBrains Mono" font-size="11" letter-spacing="0.12em" fill="#8a8478">
+              <text x="60"  y="68">REVERSE PROXY</text>
+              <text x="440" y="68">LOAD BALANCER</text>
+              <text x="820" y="68">API GATEWAY</text>
+            </g>
+
+            <!-- col 1: reverse proxy -->
+            <g transform="translate(60, 90)">
+              <rect x="0" y="0" width="60" height="40" fill="#1a1814"/>
+              <text x="30" y="24" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">CLIENT</text>
+
+              <rect x="120" y="0" width="80" height="40" fill="#c2410c"/>
+              <text x="160" y="24" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">REV PROXY</text>
+
+              <rect x="220" y="0" width="60" height="40" fill="#1a1814"/>
+              <text x="250" y="24" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">APP</text>
+
+              <line x1="60"  y1="20" x2="118" y2="20" stroke="#1a1814" stroke-width="1.5" marker-end="url(#ga)"/>
+              <line x1="200" y1="20" x2="218" y2="20" stroke="#1a1814" stroke-width="1.5" marker-end="url(#ga)"/>
+            </g>
+            <g transform="translate(60, 150)" font-family="IBM Plex Sans" font-size="13" fill="#1a1814">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="18">Job</text>
+              <text x="0" y="20">Hide topology behind one URL.</text>
+              <text x="0" y="38">Terminate TLS. Buffer. Gzip.</text>
+              <text x="0" y="56">Add headers. Maybe cache.</text>
+              <text x="0" y="80" font-family="Instrument Serif" font-size="18">Example</text>
+              <text x="0" y="100">NGINX · Envoy · YARP · Caddy</text>
+              <text x="0" y="124" font-family="JetBrains Mono" font-size="10" fill="#c2410c" letter-spacing="0.12em">YOUR FOUNDATION LAYER</text>
+            </g>
+
+            <!-- col 2: load balancer -->
+            <g transform="translate(440, 90)">
+              <rect x="0" y="0" width="60" height="40" fill="#1a1814"/>
+              <text x="30" y="24" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">CLIENT</text>
+              <rect x="120" y="0" width="80" height="40" fill="#c2410c"/>
+              <text x="160" y="24" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">LB</text>
+              <rect x="220" y="-20" width="60" height="32" fill="#1a1814"/>
+              <rect x="220" y="20"  width="60" height="32" fill="#1a1814"/>
+              <rect x="220" y="60"  width="60" height="32" fill="#1a1814"/>
+              <text x="250" y="0"  font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">APP·1</text>
+              <text x="250" y="40" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">APP·2</text>
+              <text x="250" y="80" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">APP·3</text>
+              <line x1="60" y1="20" x2="118" y2="20" stroke="#1a1814" stroke-width="1.5" marker-end="url(#ga)"/>
+              <line x1="200" y1="20" x2="218" y2="-4" stroke="#c2410c" stroke-width="1.5" marker-end="url(#gao)"/>
+              <line x1="200" y1="20" x2="218" y2="36" stroke="#c2410c" stroke-width="1.5" marker-end="url(#gao)"/>
+              <line x1="200" y1="20" x2="218" y2="76" stroke="#c2410c" stroke-width="1.5" marker-end="url(#gao)"/>
+            </g>
+            <g transform="translate(440, 200)" font-family="IBM Plex Sans" font-size="13" fill="#1a1814">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="18">Job</text>
+              <text x="0" y="20">Distribute connections across</text>
+              <text x="0" y="38">healthy backends. L4 (TCP) or</text>
+              <text x="0" y="56">L7 (HTTP). Health-check. Bleed.</text>
+              <text x="0" y="80" font-family="Instrument Serif" font-size="18">Example</text>
+              <text x="0" y="100">HAProxy · AWS ALB/NLB · Azure LB · F5</text>
+              <text x="0" y="124" font-family="JetBrains Mono" font-size="10" fill="#c2410c" letter-spacing="0.12em">FAILOVER &amp; SCALE-OUT</text>
+            </g>
+
+            <!-- col 3: api gateway -->
+            <g transform="translate(820, 90)">
+              <rect x="0" y="0" width="60" height="40" fill="#1a1814"/>
+              <text x="30" y="24" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">CLIENT</text>
+              <rect x="120" y="-12" width="80" height="64" fill="#c2410c"/>
+              <text x="160" y="14"  font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">GATEWAY</text>
+              <text x="160" y="30"  font-family="JetBrains Mono" font-size="7" text-anchor="middle" fill="#f1ece1">authn · rl · xform</text>
+              <rect x="220" y="-30" width="60" height="24" fill="#1a1814"/>
+              <rect x="220" y="-2"  width="60" height="24" fill="#1a1814"/>
+              <rect x="220" y="26"  width="60" height="24" fill="#1a1814"/>
+              <rect x="220" y="54"  width="60" height="24" fill="#1a1814"/>
+              <text x="250" y="-13" font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">orders</text>
+              <text x="250" y="15"  font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">cart</text>
+              <text x="250" y="43"  font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">users</text>
+              <text x="250" y="71"  font-family="JetBrains Mono" font-size="9" text-anchor="middle" fill="#f1ece1">search</text>
+              <line x1="60" y1="20" x2="118" y2="20" stroke="#1a1814" stroke-width="1.5" marker-end="url(#ga)"/>
+              <line x1="200" y1="14" x2="218" y2="-16" stroke="#c2410c" stroke-width="1" marker-end="url(#gao)"/>
+              <line x1="200" y1="20" x2="218" y2="10"  stroke="#c2410c" stroke-width="1" marker-end="url(#gao)"/>
+              <line x1="200" y1="26" x2="218" y2="38"  stroke="#c2410c" stroke-width="1" marker-end="url(#gao)"/>
+              <line x1="200" y1="34" x2="218" y2="66"  stroke="#c2410c" stroke-width="1" marker-end="url(#gao)"/>
+            </g>
+            <g transform="translate(820, 200)" font-family="IBM Plex Sans" font-size="13" fill="#1a1814">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="18">Job</text>
+              <text x="0" y="20">Single front door for many</text>
+              <text x="0" y="38">services. Auth, RL, routing,</text>
+              <text x="0" y="56">transforms, observability.</text>
+              <text x="0" y="80" font-family="Instrument Serif" font-size="18">Example</text>
+              <text x="0" y="100">APIM · Kong · YARP · AWS API GW</text>
+              <text x="0" y="124" font-family="JetBrains Mono" font-size="10" fill="#c2410c" letter-spacing="0.12em">POLICY ENVELOPE</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 08</span><span>Three layers · same wire protocol · very different responsibilities</span></div>
+        </div>
+
+        <div class="prose">
+          <p>The relationship is one of <em>containment</em>:</p>
+          <ul>
+            <li>An <strong>API gateway</strong> is always a <strong>load balancer</strong>, which is always a <strong>reverse proxy</strong>.</li>
+            <li>A reverse proxy may or may not balance load. A load balancer may or may not enforce gateway policies.</li>
+            <li>When in doubt, the simpler layer is the right one. The gateway is the easiest place to accumulate accidental business logic.</li>
+          </ul>
+          <div class="pull">"Every minute of business logic in your API gateway will cost you an hour of debugging six months from now, after the person who added it has left."</div>
+        </div>
+      </section>
+
+      <!-- 2 balancing -->
+      <section class="dd-section" id="balancing">
+        <h2 class="section"><span class="num">02</span>Balancing <span class="ital">algorithms</span>.</h2>
+        <div class="prose">
+          <p>The load balancer's job sounds trivial — pick a backend — until you remember that "fair" is not a single thing. Five algorithms, each fair on a different axis.</p>
+        </div>
+
+        <div class="inline-fig">
+          <svg viewBox="0 0 1000 280" preserveAspectRatio="xMidYMid meet">
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="11" letter-spacing="0.14em" fill="#c2410c">FIG. 09 · BALANCING ALGORITHMS</text>
+
+            <g transform="translate(20, 60)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="20" fill="#1a1814">Round-robin</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="9" fill="#8a8478">SIMPLE · OBLIVIOUS</text>
+              <rect x="0"  y="30" width="20" height="10" fill="#c2410c"/>
+              <rect x="0"  y="46" width="20" height="10" fill="#1a1814"/>
+              <rect x="0"  y="62" width="20" height="10" fill="#c2410c"/>
+              <rect x="0"  y="78" width="20" height="10" fill="#1a1814"/>
+              <text x="30" y="40" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">1 → A</text>
+              <text x="30" y="56" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">2 → B</text>
+              <text x="30" y="72" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">3 → A</text>
+              <text x="30" y="88" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">4 → B</text>
+            </g>
+
+            <g transform="translate(220, 60)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="20" fill="#1a1814">Least-connections ★</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="9" fill="#8a8478">ADAPTS TO BACKEND SPEED</text>
+              <text x="0" y="40" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Pick backend with the fewest</text>
+              <text x="0" y="56" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">open connections right now.</text>
+              <text x="0" y="76" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">★ Default for HAProxy/NGINX in 2026.</text>
+            </g>
+
+            <g transform="translate(530, 60)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="20" fill="#1a1814">Least-response-time</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="9" fill="#8a8478">P50 AS THE TIE-BREAKER</text>
+              <text x="0" y="40" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Among fewest-conn, pick the</text>
+              <text x="0" y="56" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">backend with fastest p50.</text>
+              <text x="0" y="76" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Great when nodes are heterogeneous.</text>
+            </g>
+
+            <g transform="translate(20, 170)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="20" fill="#1a1814">IP hash / session affinity</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="9" fill="#8a8478">STICKY · USE SPARINGLY</text>
+              <text x="0" y="40" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Hash client → backend. Same client</text>
+              <text x="0" y="56" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">always hits same node.</text>
+              <text x="0" y="76" font-family="IBM Plex Sans" font-size="11" fill="#c2410c">Couples scaling to client distribution.</text>
+            </g>
+
+            <g transform="translate(380, 170)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="20" fill="#1a1814">Power of two choices ★</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="9" fill="#8a8478">RANDOMNESS + LOCALITY</text>
+              <text x="0" y="40" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Pick 2 random backends, send to the</text>
+              <text x="0" y="56" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">less-loaded one. Near-optimal, no</text>
+              <text x="0" y="72" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">coordination. What Envoy uses.</text>
+            </g>
+
+            <g transform="translate(720, 170)">
+              <text x="0" y="0" font-family="Instrument Serif" font-size="20" fill="#1a1814">Consistent hash</text>
+              <text x="0" y="18" font-family="JetBrains Mono" font-size="9" fill="#8a8478">SHARD-AWARE</text>
+              <text x="0" y="40" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">Hash a header (tenant, user)</text>
+              <text x="0" y="56" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">onto a ring of backends.</text>
+              <text x="0" y="72" font-family="IBM Plex Sans" font-size="11" fill="#1a1814">See chapter 06 for the why.</text>
+            </g>
+          </svg>
+          <div class="cap"><span>Fig. 09 · Pick by what "fair" means in your system</span><b>★ = modern default</b></div>
+        </div>
+
+        <div class="prose">
+          <p>Three practical rules:</p>
+          <ul>
+            <li><strong>Round-robin is wrong by default.</strong> The moment your backends have different request mixes (some doing 10 ms work, some doing 500 ms), round-robin will overload the slow ones. Least-connections or P2C is almost always better.</li>
+            <li><strong>Sticky sessions are a debt.</strong> Cookie-based affinity makes deploys painful (one pod's restart drops 1/N of users), makes hot-key isolation impossible, and makes horizontal scaling lopsided. Use only when you truly cannot move session state out.</li>
+            <li><strong>Health checks must reflect business health.</strong> <code>/healthz</code> that returns 200 even when the DB is down has caused more outages than it has prevented. Probe a critical dependency, not just liveness.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 3 YARP gateway -->
+      <section class="dd-section" id="yarp">
+        <h2 class="section"><span class="num">03</span>A <span class="ital">YARP</span> gateway, 100 lines.</h2>
+        <div class="prose">
+          <p>YARP (Yet Another Reverse Proxy) is Microsoft's reverse-proxy library. Same team as ASP.NET Core; battle-tested at Bing, Azure, and Office. Below: a gateway with authentication, per-tenant routing, rate limiting (via chapter 1), response transforms, and forwarded headers — every piece configured in code, no separate YAML.</p>
+        </div>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">Program.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="c">// dotnet add package Yarp.ReverseProxy Microsoft.AspNetCore.Authentication.JwtBearer</span>
+<span class="k">using</span> <span class="t">Microsoft.AspNetCore.Authentication.JwtBearer</span>;
+<span class="k">using</span> <span class="t">System.Threading.RateLimiting</span>;
+<span class="k">using</span> <span class="t">Yarp.ReverseProxy.Transforms</span>;
+
+<span class="k">var</span> builder = <span class="t">WebApplication</span>.<span class="fn">CreateBuilder</span>(args);
+
+<span class="c">// ── Authentication: JWT, single source of truth for all backends ──</span>
+builder.<span class="t">Services</span>
+    .<span class="fn">AddAuthentication</span>(<span class="t">JwtBearerDefaults</span>.<span class="t">AuthenticationScheme</span>)
+    .<span class="fn">AddJwtBearer</span>(o =&gt;
+    {
+        o.<span class="t">Authority</span> = builder.<span class="t">Configuration</span>[<span class="s">"Auth:Authority"</span>];
+        o.<span class="t">Audience</span>  = <span class="s">"academy-gateway"</span>;
+    });
+builder.<span class="t">Services</span>.<span class="fn">AddAuthorization</span>();
+
+<span class="c">// ── Rate limiting: per-tenant, per-endpoint (see chapter 01) ──</span>
+builder.<span class="t">Services</span>.<span class="fn">AddRateLimiter</span>(o =&gt;
+{
+    o.<span class="t">RejectionStatusCode</span> = <span class="t">StatusCodes</span>.<span class="t">Status429TooManyRequests</span>;
+    o.<span class="t">GlobalLimiter</span> = <span class="t">PartitionedRateLimiter</span>.<span class="fn">Create</span>&lt;<span class="t">HttpContext</span>, <span class="k">string</span>&gt;(ctx =&gt;
+    {
+        <span class="k">var</span> tenant = ctx.<span class="t">User</span>.<span class="fn">FindFirst</span>(<span class="s">"tenant_id"</span>)?.<span class="t">Value</span> ?? <span class="s">"anonymous"</span>;
+        <span class="k">var</span> tier   = ctx.<span class="t">User</span>.<span class="fn">FindFirst</span>(<span class="s">"tier"</span>)?.<span class="t">Value</span>      ?? <span class="s">"free"</span>;
+        <span class="k">return</span> <span class="t">RateLimitPartition</span>.<span class="fn">GetSlidingWindowLimiter</span>(
+            $<span class="s">"{tier}:{tenant}"</span>,
+            _ =&gt; <span class="k">new</span>() {
+                <span class="t">PermitLimit</span> = tier == <span class="s">"enterprise"</span> ? <span class="n">10_000</span>
+                            : tier == <span class="s">"pro"</span>         ? <span class="n">1_000</span>
+                                                       : <span class="n">100</span>,
+                <span class="t">Window</span> = <span class="t">TimeSpan</span>.<span class="fn">FromMinutes</span>(<span class="n">1</span>),
+                <span class="t">SegmentsPerWindow</span> = <span class="n">6</span>,
+            });
+    });
+});
+
+<span class="c">// ── YARP: declare routes + clusters in code (no appsettings YAML) ──</span>
+builder.<span class="t">Services</span>.<span class="fn">AddReverseProxy</span>()
+    .<span class="fn">LoadFromMemory</span>(
+        routes: [
+            <span class="k">new</span> <span class="t">RouteConfig</span>
+            {
+                <span class="t">RouteId</span>   = <span class="s">"orders"</span>,
+                <span class="t">ClusterId</span> = <span class="s">"orders-cluster"</span>,
+                <span class="t">Match</span>     = <span class="k">new</span>() { <span class="t">Path</span> = <span class="s">"/api/orders/{**catch-all}"</span> },
+                <span class="t">AuthorizationPolicy</span> = <span class="s">"authenticated"</span>,
+            },
+            <span class="k">new</span> <span class="t">RouteConfig</span>
+            {
+                <span class="t">RouteId</span>   = <span class="s">"catalog"</span>,
+                <span class="t">ClusterId</span> = <span class="s">"catalog-cluster"</span>,
+                <span class="t">Match</span>     = <span class="k">new</span>() { <span class="t">Path</span> = <span class="s">"/api/catalog/{**catch-all}"</span> },
+                <span class="c">// public; no auth required, but rate-limited by IP</span>
+            }
+        ],
+        clusters: [
+            <span class="k">new</span> <span class="t">ClusterConfig</span>
+            {
+                <span class="t">ClusterId</span> = <span class="s">"orders-cluster"</span>,
+                <span class="t">LoadBalancingPolicy</span> = <span class="s">"PowerOfTwoChoices"</span>,
+                <span class="t">HealthCheck</span> = <span class="k">new</span>() {
+                    <span class="t">Active</span> = <span class="k">new</span>() {
+                        <span class="t">Enabled</span> = <span class="k">true</span>,
+                        <span class="t">Interval</span> = <span class="t">TimeSpan</span>.<span class="fn">FromSeconds</span>(<span class="n">5</span>),
+                        <span class="t">Policy</span> = <span class="t">HealthCheckConstants</span>.<span class="t">ActivePolicy</span>.<span class="t">ConsecutiveFailures</span>,
+                        <span class="t">Path</span> = <span class="s">"/healthz"</span>,
+                    }
+                },
+                <span class="t">Destinations</span> = <span class="k">new</span> <span class="t">Dictionary</span>&lt;<span class="k">string</span>, <span class="t">DestinationConfig</span>&gt;
+                {
+                    [<span class="s">"d1"</span>] = <span class="k">new</span>() { <span class="t">Address</span> = <span class="s">"http://orders-1.internal:8080/"</span> },
+                    [<span class="s">"d2"</span>] = <span class="k">new</span>() { <span class="t">Address</span> = <span class="s">"http://orders-2.internal:8080/"</span> },
+                    [<span class="s">"d3"</span>] = <span class="k">new</span>() { <span class="t">Address</span> = <span class="s">"http://orders-3.internal:8080/"</span> },
+                },
+            },
+            <span class="k">new</span> <span class="t">ClusterConfig</span>
+            {
+                <span class="t">ClusterId</span> = <span class="s">"catalog-cluster"</span>,
+                <span class="t">LoadBalancingPolicy</span> = <span class="s">"LeastRequests"</span>,
+                <span class="t">Destinations</span> = <span class="k">new</span>() {
+                    [<span class="s">"d1"</span>] = <span class="k">new</span>() { <span class="t">Address</span> = <span class="s">"http://catalog.internal:8080/"</span> },
+                },
+            }
+        ])
+    .<span class="fn">AddTransforms</span>(ctx =&gt;
+    {
+        <span class="c">// Strip Authorization, replace with an internal token signed by the gateway.
+        // Backends never see customer JWTs — they trust the gateway's token.</span>
+        ctx.<span class="t">RequestTransforms</span>.<span class="fn">Add</span>(<span class="k">new</span> <span class="t">RemoveRequestHeaderTransform</span>(<span class="s">"Authorization"</span>));
+        ctx.<span class="fn">AddRequestHeader</span>(<span class="s">"X-Internal-Token"</span>, MintInternalToken(ctx));
+        <span class="c">// Forward tenant context as a header — saves backends re-parsing JWT.</span>
+        ctx.<span class="fn">AddRequestHeader</span>(<span class="s">"X-Tenant-Id"</span>,
+            ctx.<span class="t">HttpContext</span>?.<span class="t">User</span>.<span class="fn">FindFirst</span>(<span class="s">"tenant_id"</span>)?.<span class="t">Value</span> ?? <span class="s">""</span>);
+        <span class="c">// Add trace context for distributed tracing.</span>
+        ctx.<span class="fn">AddRequestHeader</span>(<span class="s">"traceparent"</span>,
+            <span class="t">Activity</span>.<span class="t">Current</span>?.<span class="t">Id</span> ?? <span class="s">""</span>);
+    });
+
+<span class="k">var</span> app = builder.<span class="fn">Build</span>();
+
+app.<span class="fn">UseAuthentication</span>();
+app.<span class="fn">UseAuthorization</span>();
+app.<span class="fn">UseRateLimiter</span>();
+app.<span class="fn">MapReverseProxy</span>();
+
+<span class="c">// Gateway-local health endpoint (used by the LB above it).</span>
+app.<span class="fn">MapGet</span>(<span class="s">"/healthz"</span>, () =&gt; <span class="t">Results</span>.<span class="fn">Ok</span>(<span class="k">new</span> { ok = <span class="k">true</span>, t = <span class="t">DateTimeOffset</span>.<span class="t">UtcNow</span> }))
+   .<span class="fn">AllowAnonymous</span>();
+
+app.<span class="fn">Run</span>();</pre>
+        </div>
+
+        <div class="prose">
+          <p>What this small file is quietly buying you:</p>
+          <ul>
+            <li><strong>One auth model.</strong> Customers send JWTs; backends never see them. The gateway strips the customer token and mints an internal one — backends only trust the gateway. Auth breach blast-radius stops at the perimeter.</li>
+            <li><strong>Health-aware routing.</strong> Power-of-two-choices for orders (heterogeneous load), least-requests for catalogue (uniform load). Failed health checks bleed traffic immediately.</li>
+            <li><strong>Tenant context as a header.</strong> Backends don't re-parse the JWT — they read <code>X-Tenant-Id</code> and trust it because only the gateway can stamp it on internal-network traffic.</li>
+            <li><strong>Distributed tracing.</strong> One <code>traceparent</code> from edge to database in your APM tool.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 4 cross-cutting -->
+      <section class="dd-section" id="cross-cutting">
+        <h2 class="section"><span class="num">04</span>Cross-cutting <span class="ital">policies</span>.</h2>
+        <div class="prose">
+          <p>The honest reason API gateways exist: a handful of concerns belong <em>between</em> the client and the service mesh, and putting them in every service is a guaranteed source of drift.</p>
+        </div>
+
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Authentication / authorisation</h5>
+            <p>One token-validation place. Bugs and key rotations happen once. Backends consume a smaller, trusted, internal claim set.</p>
+          </div>
+          <div class="cell">
+            <h5>Rate limiting &amp; quotas</h5>
+            <p>The right layer for "free / pro / enterprise" tier enforcement. Don't put pricing logic in your services.</p>
+          </div>
+          <div class="cell">
+            <h5>Request / response transforms</h5>
+            <p>API versioning by URL prefix, payload shaping for mobile vs. web, response compression. Plays well at the edge.</p>
+          </div>
+          <div class="cell">
+            <h5>Aggregation / BFF</h5>
+            <p>"Get my orders + my profile in one round trip." The gateway calls 3 services and fuses. Use sparingly — see anti-patterns.</p>
+          </div>
+          <div class="cell">
+            <h5>Observability</h5>
+            <p>One place to log every request, attach trace headers, emit metrics. Without it, you have a different log format per service.</p>
+          </div>
+          <div class="cell">
+            <h5>API contracts / docs</h5>
+            <p>OpenAPI aggregated across services. One developer portal. One place to evolve external contracts independently of internal.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5 tradeoffs -->
+      <section class="dd-section" id="tradeoffs">
+        <h2 class="section"><span class="num">05</span>Tradeoff <span class="ital">matrix</span>.</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th style="width:14%;">Technology</th>
+              <th>Class</th>
+              <th>Strengths</th>
+              <th>Weaknesses</th>
+              <th>Cost / mo (mid-scale)</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th>YARP<span class="sub">.NET library</span></th>
+              <td>Proxy / gateway (code)</td>
+              <td>Lives in your codebase · same tooling · transforms are C# · zero new infra</td>
+              <td>You operate it · no fancy UI · no developer portal</td>
+              <td>$0 + your compute</td>
+              <td><span class="verdict good">Best for .NET shops doing modest gateway work</span></td>
+            </tr>
+            <tr>
+              <th>NGINX<span class="sub">battle-hardened C</span></th>
+              <td>Proxy / LB</td>
+              <td>Fastest, smallest footprint · everywhere · proven · scriptable with Lua</td>
+              <td>Config DSL is its own language · gateway features need OSS modules</td>
+              <td>$0</td>
+              <td><span class="verdict good">Default reverse proxy + LB</span></td>
+            </tr>
+            <tr>
+              <th>Envoy<span class="sub">CNCF · L7 proxy</span></th>
+              <td>Proxy / LB / mesh</td>
+              <td>Dynamic config via xDS · gold-standard observability · advanced LB</td>
+              <td>Heavy · operationally complex · YAML-fatigue</td>
+              <td>$0 self-host</td>
+              <td><span class="verdict warn">If you're in service mesh, you're using it</span></td>
+            </tr>
+            <tr>
+              <th>Azure Front Door<span class="sub">global edge</span></th>
+              <td>CDN + WAF + gateway</td>
+              <td>Edge PoPs · DDoS · WAF · simple SSL · global anycast</td>
+              <td>Limited per-route policy · vendor lock</td>
+              <td><strong>$35 + $0.18/GB</strong> Std</td>
+              <td><span class="verdict good">Front door, literally</span></td>
+            </tr>
+            <tr>
+              <th>Azure API Management<span class="sub">managed gateway</span></th>
+              <td>Full gateway</td>
+              <td>Developer portal · policy editor · OAuth flows · subscription keys</td>
+              <td>Latency tax (5–15 ms) · policy XML · cost</td>
+              <td><strong>$50 (Dev) → $2.7k (Prem)</strong></td>
+              <td><span class="verdict warn">Worth it for the portal &amp; APIM-specific features</span></td>
+            </tr>
+            <tr>
+              <th>Kong<span class="sub">OSS + Enterprise</span></th>
+              <td>Full gateway</td>
+              <td>Plugin ecosystem · DB-less mode · Konnect SaaS</td>
+              <td>Postgres / Cassandra as dep · plugin maturity varies</td>
+              <td>$0 OSS · $1.5k+ Enterprise</td>
+              <td><span class="verdict good">Polyglot teams · plugin-driven</span></td>
+            </tr>
+            <tr>
+              <th>AWS API Gateway<span class="sub">managed</span></th>
+              <td>Full gateway</td>
+              <td>Lambda integration · usage plans · pay-per-request</td>
+              <td>Expensive at scale · 30-second timeout · regional</td>
+              <td><strong>$3.50 per M req</strong> HTTP · $1 REST</td>
+              <td><span class="verdict warn">Cheap at small scale, costly at large</span></td>
+            </tr>
+            <tr>
+              <th>HAProxy<span class="sub">L4 / L7 balancer</span></th>
+              <td>LB</td>
+              <td>Best-in-class load balancer · runtime API · proven</td>
+              <td>Pure LB · no gateway policies built-in</td>
+              <td>$0</td>
+              <td><span class="verdict good">When you only want a load balancer</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- 6 anti-patterns -->
+      <section class="dd-section" id="anti">
+        <h2 class="section"><span class="num">06</span>Anti-<span class="ital">patterns</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">The gateway as application</div>
+          <p>The most common failure mode: business logic creeps into gateway policies. Tax calculation in an Azure APIM policy. Order validation in a Kong plug-in. <strong>The gateway has the worst dev loop of any tier</strong> — versioned config, hot-reload semantics, vendor-specific debugging. Once business logic is there, no team wants to own it. Push it back into services; the gateway should only enforce contract.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Sticky sessions to avoid sharing state</div>
+          <p>Cookie-based affinity is sometimes "free scaling" today and "no zero-downtime deploys" tomorrow. The fix is the same as it always was: move session state to Redis / Cosmos / SQL. Pay the small latency now to avoid the deploy pain forever.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Trusting <code>X-Forwarded-For</code> blindly</div>
+          <p>The header is <em>writable by the client</em>. If your gateway terminates from one trusted LB, replace the chain instead of appending. Otherwise an attacker can forge an IP for your rate-limiter or audit logs.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">One gateway for everything</div>
+          <p>Internal-service-to-service traffic should generally not go through the public-facing gateway. The auth / RL / cert work doesn't make sense there, the latency tax is paid twice, and the blast radius of a gateway outage becomes "the whole company." Use service mesh (Linkerd / Istio) or direct calls for east-west; reserve the gateway for north-south.</p>
+        </div>
+      </section>
+
+      <!-- 7 decision -->
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">07</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Single backend service</h5>
+            <p>NGINX or YARP as reverse proxy. Skip the gateway. Add a managed LB in front for HA.</p>
+          </div>
+          <div class="cell">
+            <h5>3–10 backend services</h5>
+            <p>YARP-as-gateway is enough. Code, version-controlled, deployed with your services. Add APIM only if you need a developer portal.</p>
+          </div>
+          <div class="cell">
+            <h5>External partners / monetised API</h5>
+            <p>APIM or Kong. Developer portal, OAuth, subscription keys, usage analytics — these are the actual features you're paying for.</p>
+          </div>
+          <div class="cell">
+            <h5>Global low-latency reads</h5>
+            <p>Azure Front Door / CloudFront / Cloudflare in front. Edge cache + WAF + DDoS for free, the rest of your gateway behind it.</p>
+          </div>
+          <div class="cell">
+            <h5>Microservices &gt; 30 services</h5>
+            <p>Add a service mesh (Linkerd, Istio) for east-west. Gateway only on the perimeter. Don't double up.</p>
+          </div>
+          <div class="cell">
+            <h5>You're a .NET shop</h5>
+            <p>YARP unless something else specifically beats it. Same observability, same DI, same NuGet, same Visual Studio. Zero new ops.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="consistency-patterns.html">
+          <div class="label">Chapter 04</div>
+          <div class="ttl">Consistency patterns</div>
+        </a>
+        <a class="next-fwd" href="consistent-hashing.html">
+          <div class="label">Chapter 06</div>
+          <div class="ttl">Consistent hashing →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Chapter 05 of 06 · API Gateway · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>

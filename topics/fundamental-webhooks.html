@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Webhooks · System Design Academy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles/academy.css" />
+<link rel="stylesheet" href="../styles/deepdive.css" />
+</head>
+<body class="deepdive">
+<div class="wrap">
+
+  <header class="topbar">
+    <div class="crumb">
+      <a href="../system-design.html"><span style="display:inline-block;width:14px;height:14px;background:var(--accent);transform:rotate(45deg);vertical-align:-2px;margin-right:6px;"></span>Academy</a>
+      <span class="sep">/</span>
+      <a href="../system-design.html#fundamentals">Fundamentals</a>
+      <span class="sep">/</span>
+      <span style="color:var(--ink);">Webhooks</span>
+    </div>
+    <nav>
+      <a href="fundamental-sidecar.html">← Prev</a>
+      <a href="fundamental-cell-architecture.html">Next →</a>
+    </nav>
+  </header>
+
+  <section class="dd-hero">
+    <div>
+      <div class="dd-meta">
+        <span>Fundamental <b>deep dive</b></span>
+        <span>Difficulty <b>★★★☆☆</b></span>
+        <span>Read <b>~10 min</b></span>
+        <span>Stack <b>HTTP POST · HMAC signing · retry queue</b></span>
+      </div>
+      <h1>The reverse <span class="ital">API</span> call.</h1>
+      <p class="lede">A webhook is an HTTP POST you didn't ask for — sent by a third party when something interesting happens to your account on their system. Stripe, GitHub, Twilio, Shopify all ship them. The protocol is HTTP. The interesting part is the contract: signing, retries, idempotency, replay protection.</p>
+    </div>
+    <aside class="dd-side">
+      <div>
+        <h5>What a webhook is</h5>
+        <p>"Push instead of poll." The provider sends you an HTTP POST with a JSON event payload when something happens to your account. You acknowledge with 200 OK.</p>
+      </div>
+      <div>
+        <h5>The four problems they solve</h5>
+        <p>Signing (prove it came from the provider). Idempotency (handle retries). Ordering (or accept the lack of it). Backpressure (when you can't keep up).</p>
+      </div>
+      <div>
+        <h5>Tech we'll touch</h5>
+        <div>
+          <span class="pill on">HMAC-SHA256 signing</span>
+          <span class="pill on">Timestamps + replay</span>
+          <span class="pill on">DLQ for stuck deliveries</span>
+          <span class="pill">Standard Webhooks</span>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="dd-body">
+
+    <aside class="toc">
+      <h5>Contents</h5>
+      <ol>
+        <li><a href="#problem">Why webhooks exist</a></li>
+        <li><a href="#signing">Signing &amp; replay protection</a></li>
+        <li><a href="#delivery">Delivery semantics</a></li>
+        <li><a href="#dotnet">In ASP.NET Core</a></li>
+        <li><a href="#detail">The detail</a></li>
+        <li><a href="#decision">Decision guide</a></li>
+      </ol>
+    </aside>
+
+    <main>
+
+      <section class="dd-section" id="problem">
+        <h2 class="section"><span class="num">01</span>Why webhooks <span class="ital">exist</span>.</h2>
+        <div class="prose">
+          <p>Your integration with Stripe needs to know when a payment intent succeeds. The polling answer: hit <code>GET /payment_intents/{id}</code> every few seconds. <strong>This wastes Stripe's API budget, your CPU, and is still seconds-of-latency stale.</strong> The push answer: Stripe POSTs your endpoint when the event fires. The latency is the network's; the cost is one request per event; the consumer (you) controls the URL.</p>
+          <p>The reason webhooks aren't just a different API: <em>the security model is inverted.</em> In a normal API call, the client proves who it is (with an API key). In a webhook, the <strong>server</strong> (the provider) has to prove who it is to the client (you). That's done by signing.</p>
+        </div>
+
+        <div class="pull">"A webhook is a request you accept from someone you don't trust, that you have to be sure came from someone you do."</div>
+      </section>
+
+      <section class="dd-section" id="signing">
+        <h2 class="section"><span class="num">02</span>Signing &amp; <span class="ital">replay</span>.</h2>
+
+        <div class="diagram">
+          <svg viewBox="0 0 1200 260" class="diagram-svg" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <marker id="wha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2410c"/></marker>
+            </defs>
+            <text x="20" y="30" font-family="JetBrains Mono" font-size="13" letter-spacing="0.14em" fill="#c2410c">FIG. 30 · SIGNED WEBHOOK DELIVERY</text>
+            <line x1="20" y1="40" x2="1180" y2="40" stroke="#1a1814" stroke-width="1"/>
+
+            <g transform="translate(40, 80)">
+              <rect x="0"   y="0"  width="180" height="60" fill="#c2410c"/>
+              <text x="90"  y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">PROVIDER (Stripe)</text>
+              <text x="90"  y="40" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">HMAC(secret, ts + body)</text>
+              <text x="90"  y="52" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">→ X-Signature header</text>
+
+              <line x1="180" y1="30" x2="218" y2="30" stroke="#c2410c" stroke-width="2" marker-end="url(#wha)"/>
+
+              <rect x="240" y="0"  width="380" height="60" fill="#1a1814"/>
+              <text x="430" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">POST /webhooks/stripe</text>
+              <text x="430" y="38" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">Stripe-Signature: t=…,v1=…</text>
+              <text x="430" y="50" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1" opacity="0.7">{ "type": "payment_intent.succeeded", … }</text>
+
+              <line x1="620" y1="30" x2="658" y2="30" stroke="#c2410c" stroke-width="2" marker-end="url(#wha)"/>
+
+              <rect x="680" y="0"  width="240" height="60" fill="#c2410c"/>
+              <text x="800" y="22" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">YOUR ENDPOINT</text>
+              <text x="800" y="38" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">verify HMAC, check ts</text>
+              <text x="800" y="50" font-family="JetBrains Mono" font-size="8" text-anchor="middle" fill="#f1ece1">dedupe by event id</text>
+
+              <line x1="800" y1="60" x2="800" y2="98" stroke="#c2410c" stroke-width="2" marker-end="url(#wha)"/>
+              <rect x="680" y="100" width="240" height="40" fill="#1a1814"/>
+              <text x="800" y="125" font-family="JetBrains Mono" font-size="11" text-anchor="middle" fill="#f1ece1">200 OK (queue the work)</text>
+
+              <text x="40" y="180" font-family="Instrument Serif" font-style="italic" font-size="14" fill="#1a1814">"Accept the POST. Verify the HMAC. Queue the work. Return 200 fast."</text>
+            </g>
+          </svg>
+          <div class="diagram-cap"><span class="fig">Fig. 30</span><span>Standard webhook shape: HMAC over the body, timestamp to prevent replay, fast 200 OK, do the work asynchronously.</span></div>
+        </div>
+
+        <h3 class="sub">HMAC over the raw body</h3>
+        <div class="prose">
+          <p>The provider shares a secret with you at signup. On every event, the provider computes <code>HMAC-SHA256(secret, timestamp + body)</code> and sends it in a header. You compute the same HMAC on receipt; <strong>if they don't match, reject with 401.</strong> Don't parse JSON before verifying — the canonical bytes are the signed thing. Use a constant-time comparison (<code>CryptographicOperations.FixedTimeEquals</code>); naive <code>==</code> leaks timing info.</p>
+        </div>
+
+        <h3 class="sub">Timestamp prevents replay</h3>
+        <div class="prose">
+          <p>The signature includes the timestamp. An attacker who captures the POST in flight can't replay it later because <strong>you reject any webhook older than ~5 minutes</strong>. The provider's clock and your clock must agree to within tolerance. <em>This is the second-cheapest improvement to your webhook handler; the first is signing.</em></p>
+        </div>
+
+        <h3 class="sub">Event ID for deduplication</h3>
+        <div class="prose">
+          <p>Every event has a unique ID. <strong>The provider will retry; you must dedupe.</strong> Store processed event IDs in Redis with a TTL longer than the provider's retry window (typically 7 days). On receipt: <code>SETNX event:&lt;id&gt;</code>; if it was already set, ack but skip the work.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="delivery">
+        <h2 class="section"><span class="num">03</span>Delivery <span class="ital">semantics</span>.</h2>
+
+        <h3 class="sub">At-least-once</h3>
+        <div class="prose">
+          <p>Every reasonable webhook provider promises at-least-once delivery. You will receive every event at least once, possibly more than once. <strong>Your handler must be idempotent.</strong> The dedupe-by-event-id pattern above is the standard implementation.</p>
+        </div>
+
+        <h3 class="sub">Ordering is not guaranteed</h3>
+        <div class="prose">
+          <p>Stripe will sometimes deliver <code>charge.refunded</code> before <code>charge.captured</code>. <em>Your handler must not assume order.</em> Use the event's data, not the order it arrived, to reconstruct state. For ordering-sensitive workflows, fetch the current state from the provider's API after receipt rather than reconstruct from the event stream.</p>
+        </div>
+
+        <h3 class="sub">Return 200 fast</h3>
+        <div class="prose">
+          <p>Most providers have a tight timeout (Stripe: ~30s, GitHub: ~10s, Twilio: ~15s). <strong>Acknowledge first, work second.</strong> Receive the webhook, validate the signature, persist to a queue or table, return 200. The actual processing happens in a background worker. If you do synchronous work on the webhook thread and timeout, the provider thinks you failed and retries — duplicates pile up.</p>
+        </div>
+
+        <h3 class="sub">Dead-letter for stuck deliveries</h3>
+        <div class="prose">
+          <p>If your endpoint is unhealthy, the provider retries with exponential backoff for hours or days. After that, they give up. <strong>Stripe sends an email; GitHub keeps a "recent deliveries" page; some providers send to nothing.</strong> Build a dashboard that surfaces <em>missed</em> events; reconcile via the provider's API daily. Webhooks are best-effort; the API is the source of truth.</p>
+        </div>
+      </section>
+
+      <section class="dd-section" id="dotnet">
+        <h2 class="section"><span class="num">04</span>In <span class="ital">ASP.NET Core</span>.</h2>
+
+        <div class="code">
+          <div class="head">
+            <span><span class="lang">C#</span> &nbsp; <span class="file">StripeWebhook.cs</span></span>
+            <div class="dots"><span></span><span></span><span></span></div>
+          </div>
+<pre><span class="k">using</span> <span class="t">System.Security.Cryptography</span>;
+<span class="k">using</span> <span class="t">System.Text</span>;
+<span class="k">using</span> <span class="t">StackExchange.Redis</span>;
+
+app.<span class="fn">MapPost</span>(<span class="s">"/webhooks/stripe"</span>, <span class="k">async</span> (
+    <span class="t">HttpRequest</span> req,
+    <span class="t">IConnectionMultiplexer</span> redis,
+    <span class="t">IConfiguration</span> cfg,
+    <span class="t">IPublishEndpoint</span> bus,
+    <span class="t">CancellationToken</span> ct) =&gt;
+{
+    <span class="c">// Read the raw body — signing is over the exact bytes.</span>
+    <span class="k">using var</span> reader = <span class="k">new</span> <span class="t">StreamReader</span>(req.<span class="t">Body</span>);
+    <span class="k">var</span> body = <span class="k">await</span> reader.<span class="fn">ReadToEndAsync</span>(ct);
+    <span class="k">var</span> sigHeader = req.<span class="t">Headers</span>[<span class="s">"Stripe-Signature"</span>].<span class="fn">ToString</span>();
+
+    <span class="c">// Parse "t=…,v1=…" header format.</span>
+    <span class="k">var</span> parts = sigHeader.<span class="fn">Split</span>(<span class="s">","</span>)
+        .<span class="fn">Select</span>(p =&gt; p.<span class="fn">Split</span>(<span class="s">"="</span>, <span class="n">2</span>))
+        .<span class="fn">ToDictionary</span>(p =&gt; p[<span class="n">0</span>], p =&gt; p[<span class="n">1</span>]);
+
+    <span class="k">if</span> (!parts.<span class="fn">TryGetValue</span>(<span class="s">"t"</span>, <span class="k">out var</span> tsStr) ||
+        !parts.<span class="fn">TryGetValue</span>(<span class="s">"v1"</span>, <span class="k">out var</span> sigHex) ||
+        !<span class="k">long</span>.<span class="fn">TryParse</span>(tsStr, <span class="k">out var</span> ts))
+        <span class="k">return</span> <span class="t">Results</span>.<span class="fn">BadRequest</span>();
+
+    <span class="c">// Reject anything older than 5 minutes (clock-skew tolerant).</span>
+    <span class="k">if</span> (<span class="t">Math</span>.<span class="fn">Abs</span>(<span class="t">DateTimeOffset</span>.<span class="t">UtcNow</span>.<span class="fn">ToUnixTimeSeconds</span>() - ts) &gt; <span class="n">300</span>)
+        <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Unauthorized</span>();
+
+    <span class="c">// Recompute the HMAC over "t.body" with the shared secret.</span>
+    <span class="k">var</span> secret = cfg[<span class="s">"Stripe:WebhookSecret"</span>]!;
+    <span class="k">var</span> signed = $<span class="s">"{ts}.{body}"</span>;
+    <span class="k">using var</span> hmac = <span class="k">new</span> <span class="t">HMACSHA256</span>(<span class="t">Encoding</span>.<span class="t">UTF8</span>.<span class="fn">GetBytes</span>(secret));
+    <span class="k">var</span> computed = hmac.<span class="fn">ComputeHash</span>(<span class="t">Encoding</span>.<span class="t">UTF8</span>.<span class="fn">GetBytes</span>(signed));
+    <span class="k">var</span> provided = <span class="t">Convert</span>.<span class="fn">FromHexString</span>(sigHex);
+
+    <span class="k">if</span> (!<span class="t">CryptographicOperations</span>.<span class="fn">FixedTimeEquals</span>(computed, provided))
+        <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Unauthorized</span>();
+
+    <span class="c">// Parse the event JSON and dedupe by event id.</span>
+    <span class="k">var</span> evt = <span class="t">JsonDocument</span>.<span class="fn">Parse</span>(body);
+    <span class="k">var</span> eventId = evt.<span class="t">RootElement</span>.<span class="fn">GetProperty</span>(<span class="s">"id"</span>).<span class="fn">GetString</span>()!;
+
+    <span class="k">var</span> db = redis.<span class="fn">GetDatabase</span>();
+    <span class="k">var</span> first = <span class="k">await</span> db.<span class="fn">StringSetAsync</span>(
+        $<span class="s">"wh:stripe:{eventId}"</span>, <span class="s">"1"</span>,
+        expiry: <span class="t">TimeSpan</span>.<span class="fn">FromDays</span>(<span class="n">8</span>),
+        when: <span class="t">When</span>.<span class="t">NotExists</span>);
+
+    <span class="k">if</span> (first)
+    {
+        <span class="c">// First time seeing this event — queue the work, don't process inline.</span>
+        <span class="k">await</span> bus.<span class="fn">Publish</span>(<span class="k">new</span> <span class="t">StripeEventReceived</span>(eventId, body), ct);
+    }
+
+    <span class="k">return</span> <span class="t">Results</span>.<span class="fn">Ok</span>();  <span class="c">// 200 fast — work happens in the consumer.</span>
+});</pre>
+        </div>
+      </section>
+
+      <section class="dd-section" id="detail">
+        <h2 class="section"><span class="num">05</span>The <span class="ital">detail</span>.</h2>
+
+        <div class="callout">
+          <div class="ctag">Verify before you parse</div>
+          <p>JSON parsers have bugs. Don't run yours against untrusted input before signature verification. The HMAC is over the raw bytes; verify it first, then parse.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">FixedTimeEquals — always</div>
+          <p>Comparing signatures with <code>byte[].SequenceEqual</code> or <code>==</code> shortcuts on the first byte that differs. A patient attacker can time you and reconstruct the secret. Use <code>CryptographicOperations.FixedTimeEquals</code> in .NET (or <code>hmac.compare_digest</code> in Python, etc.).</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Async after ack</div>
+          <p>The webhook endpoint should only verify, dedupe, queue. Do NOT do database writes or downstream API calls on the webhook thread. A failed downstream means you 5xx the provider; the provider retries; you process again; duplicate work everywhere.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Reconcile via the API daily</div>
+          <p>Webhooks miss events sometimes. Your provider's "list events since timestamp" API is the source of truth. A nightly reconciliation job fetches anything the webhook stream missed.</p>
+        </div>
+
+        <div class="callout">
+          <div class="ctag">Standard Webhooks — a real spec</div>
+          <p>standardwebhooks.com is a 2023 spec proposed by Svix that standardises signing, retries, and headers across providers. Adopt it for your own webhook-publishing system; the spec captures everything this article describes and a few you'd otherwise miss.</p>
+        </div>
+
+        <div class="pull">"A webhook is an API call where you're the API. Treat it accordingly."</div>
+      </section>
+
+      <section class="dd-section" id="decision">
+        <h2 class="section"><span class="num">06</span>Decision <span class="ital">guide</span>.</h2>
+        <div class="dec-grid">
+          <div class="cell">
+            <h5>Receiving webhooks (Stripe, GitHub, etc.)</h5>
+            <p>Verify HMAC against raw body with FixedTimeEquals. Reject old timestamps. Dedupe by event id in Redis. 200 fast; queue the work.</p>
+          </div>
+          <div class="cell">
+            <h5>Sending webhooks to your customers</h5>
+            <p>Adopt Standard Webhooks. HMAC + timestamp + event id. Retry with exponential backoff for ~24h, then DLQ. Expose recent-deliveries UI.</p>
+          </div>
+          <div class="cell">
+            <h5>Customers complain webhooks are missing</h5>
+            <p>They probably aren't (mostly). Add reconciliation: "list events since" API + diff. The missing webhooks are almost always 5xx-ed on the customer's side.</p>
+          </div>
+          <div class="cell">
+            <h5>Self-hosted webhook dispatching</h5>
+            <p>Svix open-source. Saves writing the retry/dedupe/UI infrastructure. Or roll your own with a Kafka topic + worker pool if you have specific needs.</p>
+          </div>
+          <div class="cell">
+            <h5>Customer's endpoint is behind a firewall</h5>
+            <p>Polling fallback. Or tunneled webhooks (Ngrok-style) — provider connects out from their side. Or move to a long-lived gRPC stream.</p>
+          </div>
+          <div class="cell">
+            <h5>You want exactly-once semantics</h5>
+            <p>Doesn't exist on the wire. At-least-once + idempotent handler = the practical equivalent. Dedupe by event id; reconcile via API.</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="next-up">
+        <a class="next-back" href="fundamental-sidecar.html">
+          <div class="label">Prev fundamental</div>
+          <div class="ttl">Sidecar</div>
+        </a>
+        <a class="next-fwd" href="fundamental-cell-architecture.html">
+          <div class="label">Next fundamental</div>
+          <div class="ttl">Cell-based architecture →</div>
+        </a>
+      </div>
+
+    </main>
+  </div>
+
+  <footer class="foot">
+    <div>Fundamental · Webhooks · 2026</div>
+    <div>System Design Academy</div>
+  </footer>
+
+</div>
+<script src="../scripts/deepdive.js"></script>
+</body>
+</html>
