@@ -1,4 +1,4 @@
-const CACHE_NAME = 'artillery-stars-v1';
+const CACHE_NAME = 'artillery-stars-v3';
 const APP_SHELL = [
   './',
   './manifest.webmanifest',

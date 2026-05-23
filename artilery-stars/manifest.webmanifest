@@ -4,6 +4,7 @@
   "description": "A tactical artillery campaign game.",
   "start_url": "./",
   "scope": "./",
+  "display_override": ["fullscreen", "standalone"],
   "display": "fullscreen",
   "orientation": "landscape",
   "background_color": "#020617",
