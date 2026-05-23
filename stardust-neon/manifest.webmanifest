@@ -1,0 +1,19 @@
+{
+  "name": "Stardust Neon",
+  "short_name": "Stardust",
+  "description": "A neon arcade space game.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#05010f",
+  "theme_color": "#05010f",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
