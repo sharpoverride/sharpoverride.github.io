@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bistro-gem-v1';
+const CACHE_NAME = 'bistro-gem-v2';
 const ASSETS = [
   './',
   './index.html',
