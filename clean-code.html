@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clean Code — A Field Guide</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,700;1,9..144,400;1,9..144,500;1,9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #faf9f5;
+      --ink: #1a1714;
+      --muted: #6b655d;
+      --accent: #ff5a1f;
+      --accent-dark: #e04d16;
+      --hairline: #e5e1d8;
+      --card-hover: #f5f3ed;
+      --sidebar-w: 22rem;
+      --radius: 0.5rem;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 3rem;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* Sidebar */
+    .sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: var(--sidebar-w);
+      height: 100vh;
+      border-right: 1px solid var(--hairline);
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      padding: 2rem 1.5rem;
+      z-index: 100;
+    }
+
+    .brand {
+      margin-bottom: 2rem;
+    }
+
+    .brand-mark {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-family: 'Fraunces', Georgia, serif;
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-avatar {
+      width: 2.25rem;
+      height: 2.25rem;
+      background: var(--ink);
+      color: var(--bg);
+      display: grid;
+      place-items: center;
+      border-radius: 0.25rem;
+      font-size: 1.125rem;
+    }
+
+    .brand-subtitle {
+      font-family: 'Inter', sans-serif;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-top: 0.25rem;
+      padding-left: 3rem;
+    }
+
+    .search-wrap {
+      position: relative;
+      margin-bottom: 1.75rem;
+    }
+
+    .search-wrap::before {
+      content: "⌕";
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted);
+      font-size: 1.25rem;
+      line-height: 1;
+    }
+
+    #search {
+      width: 100%;
+      border: none;
+      border-bottom: 1px solid var(--ink);
+      background: transparent;
+      padding: 0.5rem 0 0.5rem 1.75rem;
+      font-size: 0.9375rem;
+      color: var(--ink);
+      outline: none;
+    }
+
+    #search::placeholder { color: var(--muted); }
+
+    .toc-label {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+
+    .toc {
+      list-style: none;
+      flex: 1;
+      overflow-y: auto;
+      padding-right: 0.25rem;
+    }
+
+    .toc li { margin-bottom: 0.125rem; }
+
+    .toc a {
+      display: flex;
+      align-items: baseline;
+      gap: 0.75rem;
+      padding: 0.5rem 0.5rem 0.5rem 0;
+      text-decoration: none;
+      color: var(--ink);
+      border-radius: 0.25rem;
+      transition: background 0.15s;
+    }
+
+    .toc a:hover { background: var(--card-hover); }
+
+    .toc a.active {
+      color: var(--accent);
+      background: rgba(255, 90, 31, 0.06);
+    }
+
+    .toc-num {
+      font-family: 'Fraunces', Georgia, serif;
+      font-style: italic;
+      font-size: 0.875rem;
+      min-width: 1.5rem;
+      color: var(--muted);
+    }
+
+    .toc a.active .toc-num { color: var(--accent); }
+
+    .toc-title {
+      font-size: 0.9375rem;
+      font-weight: 500;
+    }
+
+    .bookmarks {
+      border-top: 1px solid var(--hairline);
+      padding-top: 1.25rem;
+      margin-top: 1rem;
+    }
+
+    .bookmarks-count {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .bookmarks-hint {
+      font-size: 0.8125rem;
+      color: var(--muted);
+      margin-top: 0.25rem;
+      font-style: italic;
+    }
+
+    .menu-btn {
+      display: none;
+      position: fixed;
+      top: 1rem;
+      left: 1rem;
+      z-index: 110;
+      background: var(--bg);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius);
+      padding: 0.5rem 0.75rem;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+
+    /* Main */
+    main {
+      margin-left: var(--sidebar-w);
+      min-height: 100vh;
+      padding: 4rem 4rem 6rem;
+      max-width: calc(var(--sidebar-w) + 52rem);
+    }
+
+    section {
+      margin-bottom: 5rem;
+      scroll-margin-top: 3rem;
+    }
+
+    .chapter-label {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+
+    .chapter-label::before {
+      content: "";
+      width: 1.25rem;
+      height: 2px;
+      background: var(--accent);
+    }
+
+    h1, h2, h3, h4 {
+      font-family: 'Fraunces', Georgia, serif;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+    }
+
+    h1 {
+      font-size: clamp(2.5rem, 5vw, 4.5rem);
+      margin-bottom: 1.5rem;
+      max-width: 18ch;
+    }
+
+    h1 em, h2 em, h3 em {
+      font-style: italic;
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    h2 {
+      font-size: clamp(2rem, 4vw, 3.25rem);
+      margin-bottom: 1.25rem;
+      max-width: 22ch;
+    }
+
+    h3 {
+      font-size: clamp(1.25rem, 2vw, 1.75rem);
+      margin: 2.5rem 0 0.75rem;
+    }
+
+    p {
+      font-size: 1.125rem;
+      line-height: 1.7;
+      color: var(--ink);
+      max-width: 64ch;
+      margin-bottom: 1rem;
+    }
+
+    .lead {
+      font-size: 1.375rem;
+      line-height: 1.6;
+      color: var(--ink);
+      margin-bottom: 2rem;
+    }
+
+    .lead::first-letter {
+      float: left;
+      font-family: 'Fraunces', Georgia, serif;
+      font-size: 4.5rem;
+      line-height: 0.8;
+      padding-right: 0.5rem;
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .byline {
+      font-style: italic;
+      color: var(--muted);
+      border-top: 1px solid var(--hairline);
+      padding-top: 0.75rem;
+      max-width: 24ch;
+      margin-left: auto;
+      text-align: right;
+      position: absolute;
+      right: 0;
+      top: 0;
+    }
+
+    .section-head {
+      position: relative;
+    }
+
+    /* Filters */
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin: 1.5rem 0 1.75rem;
+    }
+
+    .filter-btn {
+      border: 1px solid var(--ink);
+      background: transparent;
+      color: var(--ink);
+      padding: 0.4rem 0.85rem;
+      border-radius: var(--radius);
+      font-size: 0.8125rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .filter-btn:hover { background: var(--card-hover); }
+
+    .filter-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .filter-btn .count {
+      font-family: 'Fraunces', Georgia, serif;
+      font-style: italic;
+      font-weight: 400;
+      margin-left: 0.35rem;
+      opacity: 0.9;
+    }
+
+    /* Cards */
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+      gap: 1.25rem;
+    }
+
+    .principle-card {
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      background: var(--bg);
+      position: relative;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .principle-card:hover {
+      background: var(--card-hover);
+      border-color: #d8d3ca;
+    }
+
+    .principle-card.hidden { display: none; }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 0.75rem;
+    }
+
+    .card-category {
+      font-size: 0.6875rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .bookmark-btn {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      font-size: 1.125rem;
+      color: var(--muted);
+      line-height: 1;
+      padding: 0.125rem;
+    }
+
+    .bookmark-btn:hover { color: var(--accent); }
+
+    .bookmark-btn.bookmarked { color: var(--accent); }
+
+    .card-title {
+      font-family: 'Fraunces', Georgia, serif;
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      line-height: 1.2;
+    }
+
+    .card-desc {
+      font-size: 0.9375rem;
+      color: var(--muted);
+      line-height: 1.55;
+      margin-bottom: 0.75rem;
+    }
+
+    .card-more {
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: var(--accent);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+    }
+
+    .card-detail {
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px dashed var(--hairline);
+      font-size: 0.9375rem;
+      color: var(--ink);
+      line-height: 1.6;
+      display: none;
+    }
+
+    .principle-card.expanded .card-detail { display: block; }
+
+    /* Lists */
+    ul.clean-list {
+      list-style: none;
+      margin: 1rem 0;
+      max-width: 64ch;
+    }
+
+    ul.clean-list li {
+      position: relative;
+      padding-left: 1.5rem;
+      margin-bottom: 0.75rem;
+      font-size: 1.0625rem;
+      line-height: 1.6;
+    }
+
+    ul.clean-list li::before {
+      content: "—";
+      position: absolute;
+      left: 0;
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.875em;
+    }
+
+    code {
+      background: rgba(26, 23, 20, 0.05);
+      padding: 0.125rem 0.35rem;
+      border-radius: 0.25rem;
+    }
+
+    pre {
+      background: var(--ink);
+      color: var(--bg);
+      padding: 1rem 1.25rem;
+      border-radius: var(--radius);
+      overflow-x: auto;
+      margin: 1rem 0;
+      max-width: 100%;
+    }
+
+    pre code { background: transparent; padding: 0; color: inherit; }
+
+    .no-results {
+      color: var(--muted);
+      font-style: italic;
+      padding: 2rem 0;
+    }
+
+    /* Mobile */
+    @media (max-width: 900px) {
+      .menu-btn { display: block; }
+      .sidebar {
+        transform: translateX(-100%);
+        transition: transform 0.2s ease;
+        box-shadow: 2px 0 8px rgba(0,0,0,0.08);
+      }
+      .sidebar.open { transform: translateX(0); }
+      main {
+        margin-left: 0;
+        padding: 4rem 1.5rem 5rem;
+      }
+      .byline {
+        position: static;
+        text-align: left;
+        margin: 1.5rem 0;
+        max-width: none;
+      }
+      .section-head { padding-top: 0; }
+    }
+
+    @media (max-width: 560px) {
+      h1 { font-size: 2.25rem; }
+      h2 { font-size: 1.75rem; }
+      .lead { font-size: 1.125rem; }
+      .lead::first-letter { font-size: 3.25rem; }
+    }
+
+    /* Focus */
+    a:focus-visible, button:focus-visible, input:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    /* Scrollbar */
+    .toc::-webkit-scrollbar { width: 4px; }
+    .toc::-webkit-scrollbar-thumb { background: var(--hairline); border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <button class="menu-btn" aria-label="Open menu">☰</button>
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark"><span class="brand-avatar">C</span> Clean Code.</div>
+      <div class="brand-subtitle">A Practitioner's Guide</div>
+    </div>
+
+    <div class="search-wrap">
+      <input id="search" type="search" placeholder="Search the guide…" autocomplete="off">
+    </div>
+
+    <div class="toc-label">Contents</div>
+    <ul class="toc" id="toc"></ul>
+
+    <div class="bookmarks">
+      <div class="bookmarks-count">Bookmarked · <span id="bookmark-count">0</span></div>
+      <div class="bookmarks-hint">Tap ☆ on a principle to save it here.</div>
+    </div>
+  </aside>
+
+  <main id="main">
+    <section id="intro" class="section-head">
+      <div class="byline">A practitioner's guide to writing code that is easy to read, easy to change, and easy to trust.</div>
+      <div class="chapter-label">Chapter 01 · Introduction</div>
+      <h1>Code that <em>cares</em> about the reader.</h1>
+      <p class="lead">Clean code is a controlled discipline: names reveal intent, functions do one thing, comments explain why, and structure guides the eye. Its essence is writing code that the next programmer can understand, modify, and extend without fear.</p>
+
+      <ul class="clean-list">
+        <li><strong>Readable.</strong> The code should tell its story plainly. Surprises are bugs in communication.</li>
+        <li><strong>Simple.</strong> Every line should fight for its right to exist. Less code, less risk.</li>
+        <li><strong>Focused.</strong> Each module, class, and function has one reason to change.</li>
+        <li><strong>Cared for.</strong> Clean code is not written once; it is continuously kept clean through small, safe improvements.</li>
+      </ul>
+    </section>
+
+    <section id="naming">
+      <div class="chapter-label">Chapter 02 · Naming</div>
+      <h2>Names that <em>reveal intent</em>.</h2>
+      <p class="lead">Names are the primary way a program communicates. A good name answers the big questions: what is this, why does it exist, and how is it used.</p>
+      <div class="filters" data-for="naming"></div>
+      <div class="card-grid" data-chapter="naming"></div>
+    </section>
+
+    <section id="functions">
+      <div class="chapter-label">Chapter 03 · Functions</div>
+      <h2>Functions that <em>do one thing</em>.</h2>
+      <p class="lead">Functions are the verbs of a codebase. They should be small, single-purpose, and composed at a consistent level of abstraction.</p>
+      <div class="filters" data-for="functions"></div>
+      <div class="card-grid" data-chapter="functions"></div>
+    </section>
+
+    <section id="comments">
+      <div class="chapter-label">Chapter 04 · Comments</div>
+      <h2>Comments that <em>explain why</em>.</h2>
+      <p class="lead">Comments are not a substitute for unclear code. The best comment is the one you managed not to write by making the code expressive.</p>
+      <div class="filters" data-for="comments"></div>
+      <div class="card-grid" data-chapter="comments"></div>
+    </section>
+
+    <section id="formatting">
+      <div class="chapter-label">Chapter 05 · Formatting</div>
+      <h2>Formatting that <em>guides the eye</em>.</h2>
+      <p class="lead">Visual structure is information. Good formatting exposes intent; bad formatting hides bugs.</p>
+      <div class="filters" data-for="formatting"></div>
+      <div class="card-grid" data-chapter="formatting"></div>
+    </section>
+
+    <section id="objects">
+      <div class="chapter-label">Chapter 06 · Objects & Data Structures</div>
+      <h2>Boundaries that <em>hide secrets</em>.</h2>
+      <p class="lead">Objects expose behavior and hide data. Data structures expose data and have no meaningful behavior. Choose the right tool for the job.</p>
+      <div class="filters" data-for="objects"></div>
+      <div class="card-grid" data-chapter="objects"></div>
+    </section>
+
+    <section id="errors">
+      <div class="chapter-label">Chapter 07 · Error Handling</div>
+      <h2>Errors handled <em>with exceptions</em>.</h2>
+      <p class="lead">Error handling is part of the main path, not an afterthought. Exceptions separate normal flow from failure, and null is a liability.</p>
+      <div class="filters" data-for="errors"></div>
+      <div class="card-grid" data-chapter="errors"></div>
+    </section>
+
+    <section id="boundaries">
+      <div class="chapter-label">Chapter 08 · Boundaries & Tests</div>
+      <h2>Tests that <em>protect change</em>.</h2>
+      <p class="lead">Clean code stays clean because tests make change safe. Tests and production code are written together, not as separate chores.</p>
+      <div class="filters" data-for="boundaries"></div>
+      <div class="card-grid" data-chapter="boundaries"></div>
+    </section>
+
+    <section id="classes">
+      <div class="chapter-label">Chapter 09 · Classes</div>
+      <h2>Classes that <em>stay small</em>.</h2>
+      <p class="lead">Classes should be cohesive, loosely coupled, and open for extension while closed for modification. SOLID is the grammar of clean objects.</p>
+      <div class="filters" data-for="classes"></div>
+      <div class="card-grid" data-chapter="classes"></div>
+    </section>
+
+    <section id="smells">
+      <div class="chapter-label">Chapter 10 · Smells & Emergence</div>
+      <h2>Code that <em>warns before</em> it breaks.</h2>
+      <p class="lead">A code smell is a surface indication of a deeper problem. Learn to recognize them early, and refactor before they compound.</p>
+      <div class="filters" data-for="smells"></div>
+      <div class="card-grid" data-chapter="smells"></div>
+    </section>
+
+    <section id="concurrency">
+      <div class="chapter-label">Chapter 11 · Concurrency</div>
+      <h2>Concurrency that <em>owns data</em>.</h2>
+      <p class="lead">Concurrent code is hard to write and harder to debug. Keep ownership clear, shared state small, and synchronization obvious.</p>
+      <div class="filters" data-for="concurrency"></div>
+      <div class="card-grid" data-chapter="concurrency"></div>
+    </section>
+
+    <section id="architecture">
+      <div class="chapter-label">Chapter 12 · Clean Architecture</div>
+      <h2>Architecture that <em>screams intent</em>.</h2>
+      <p class="lead">Good architecture leaves options open, defers details, and keeps high-level policy independent of frameworks, UI, and databases.</p>
+      <div class="filters" data-for="architecture"></div>
+      <div class="card-grid" data-chapter="architecture"></div>
+    </section>
+  </main>
+
+  <script>
+    const chapters = [
+      { id: "intro", number: "01", title: "Introduction" },
+      { id: "naming", number: "02", title: "Naming" },
+      { id: "functions", number: "03", title: "Functions" },
+      { id: "comments", number: "04", title: "Comments" },
+      { id: "formatting", number: "05", title: "Formatting" },
+      { id: "objects", number: "06", title: "Objects & Data" },
+      { id: "errors", number: "07", title: "Error Handling" },
+      { id: "boundaries", number: "08", title: "Tests & Boundaries" },
+      { id: "classes", number: "09", title: "Classes" },
+      { id: "smells", number: "10", title: "Smells" },
+      { id: "concurrency", number: "11", title: "Concurrency" },
+      { id: "architecture", number: "12", title: "Clean Architecture" }
+    ];
+
+    const principles = [
+      // Naming
+      { id: "naming-intent", chapter: "naming", category: "Naming", title: "Reveal intent", desc: "The name of a variable, function, or class should answer why it exists, what it does, and how it is used.", detail: "If you need a comment to explain a name, choose a better name. Prefer <code>elapsedTimeInDays</code> over <code>d</code> or <code>theData</code>." },
+      { id: "naming-disinfo", chapter: "naming", category: "Naming", title: "Avoid disinformation", desc: "Do not use names that carry meanings different from the underlying concept.", detail: "A variable called <code>accountList</code> had better be a list. Avoid encodings like <code>strName</code> or platform-specific prefixes." },
+      { id: "naming-pronounce", chapter: "naming", category: "Naming", title: "Make names pronounceable", desc: "Humans are good at words. If you cannot say it, you cannot reason about it in conversation.", detail: "<code>generationTimestamp</code> beats <code>genymdhms</code>. Discussion drives design; design needs names you can speak." },
+      { id: "naming-searchable", chapter: "naming", category: "Naming", title: "Make names searchable", desc: "Single-letter names and numeric constants are hard to grep. Name the magic.", detail: "A constant <code>const WORK_DAYS_PER_WEEK = 5</code> is discoverable; the literal <code>5</code> is not." },
+      { id: "naming-one-word", chapter: "naming", category: "Naming", title: "One word per concept", desc: "Pick one term for one abstraction and stick with it across the codebase.", detail: "Do not mix <code>fetch</code>, <code>retrieve</code>, and <code>get</code> for the same idea. A consistent lexicon is a shared mental model." },
+      { id: "naming-domain", chapter: "naming", category: "Naming", title: "Use problem-domain names", desc: "When the concept has no programming equivalent, use the term from the business domain.", detail: "An <code>Invoice</code> or <code>Order</code> name connects readers to the real-world workflow it models." },
+
+      // Functions
+      { id: "func-small", chapter: "functions", category: "Functions", title: "Keep functions small", desc: "Functions should be a few lines long. The smaller the function, the easier it is to name, test, and reason about.", detail: "If a function barely fits on screen, it probably does more than one thing." },
+      { id: "func-one-thing", chapter: "functions", category: "Functions", title: "Do one thing", desc: "A function should do one thing, do it well, and do it only.", detail: "You know it does one thing when you cannot meaningfully extract another function from it." },
+      { id: "func-abstraction", chapter: "functions", category: "Functions", title: "One level of abstraction", desc: "Mixing high-level orchestration with low-level detail is confusing.", detail: "Refactor so the function reads like a set of steps at the same altitude; delegate details downward." },
+      { id: "func-args", chapter: "functions", category: "Functions", title: "Limit arguments", desc: "The ideal number of arguments is zero, then one, then two. Three should be avoided.", detail: "More arguments mean more combinations to test and more cognitive load for callers. Use parameter objects or context objects when needed." },
+      { id: "func-side-effects", chapter: "functions", category: "Functions", title: "Avoid side effects", desc: "A function should do what its name says and nothing else.", detail: "A function called <code>checkPassword</code> should not initialize a session. Hidden side effects are lies." },
+      { id: "func-command-query", chapter: "functions", category: "Functions", title: "Command/Query separation", desc: "A function should either perform an action or answer a question, not both.", detail: "Returning a value and mutating state invites surprises. Split the command from the query." },
+      { id: "func-dry", chapter: "functions", category: "Functions", title: "Don't repeat yourself", desc: "Every duplication is a missed opportunity for a single, authoritative expression.", detail: "DRY reduces maintenance surface and ensures fixes propagate. Extract the repetition into a named abstraction." },
+      { id: "func-exceptions", chapter: "functions", category: "Functions", title: "Prefer exceptions to error codes", desc: "Error codes force callers to handle error paths immediately and clutter normal logic.", detail: "Exceptions separate the happy path from the error path, making each easier to follow." },
+
+      // Comments
+      { id: "comments-compensate", chapter: "comments", category: "Comments", title: "Don't comment bad code", desc: "If you need a comment to explain what the code does, rewrite the code.", detail: "A comment is not a Band-Aid for a confusing expression. Use the comment as a signal that the code needs renaming or restructuring." },
+      { id: "comments-why", chapter: "comments", category: "Comments", title: "Explain why, not what", desc: "Good comments impart information the code cannot say.", detail: "Explain the business reason behind a decision, warn of consequences, or clarify intent that is not obvious from the implementation." },
+      { id: "comments-noise", chapter: "comments", category: "Comments", title: "Remove noise", desc: "Javadoc for trivial getters, redundant restatements, and closing braces comments add clutter.", detail: "If the comment does not add value, delete it. Noise comments train readers to ignore all comments." },
+      { id: "comments-dead", chapter: "comments", category: "Comments", title: "Delete commented-out code", desc: "Source control remembers the code; commented-out code just rots.", detail: "If you need it back, check out the old version. Dead code is a distraction and a source of fear." },
+
+      // Formatting
+      { id: "fmt-vertical", chapter: "formatting", category: "Formatting", title: "Vertical separation", desc: "Related concepts should be close; unrelated concepts should be far apart.", detail: "Group variables, functions, and classes so readers can infer relationships from proximity." },
+      { id: "fmt-declare", chapter: "formatting", category: "Formatting", title: "Declare close to use", desc: "Variables should be declared just before they are used and in the smallest scope possible.", detail: "This minimizes the mental stack a reader must maintain while scanning the function." },
+      { id: "fmt-nesting", chapter: "formatting", category: "Formatting", title: "Avoid deep nesting", desc: "Excessive indentation is a sign that a function is doing too much.", detail: "Use early returns, guard clauses, and extraction to keep the main path flat and obvious." },
+      { id: "fmt-width", chapter: "formatting", category: "Formatting", title: "Keep lines short", desc: "Long lines strain the eye and discourage side-by-side diffing.", detail: "Aim for a reasonable maximum width so the code remains readable on smaller screens and during code review." },
+      { id: "fmt-consistency", chapter: "formatting", category: "Formatting", title: "Be consistent", desc: "A consistent style lets readers focus on meaning rather than formatting.", detail: "Whether your team prefers 2 or 4 spaces matters less than applying the choice everywhere. Automate it." },
+
+      // Objects
+      { id: "objects-encapsulation", chapter: "objects", category: "Objects", title: "Hide implementation", desc: "Objects should expose behavior and keep their data private.", detail: "Getters and setters that simply expose fields are not encapsulation; they break the abstraction." },
+      { id: "objects-law-d", chapter: "objects", category: "Objects", title: "Law of Demeter", desc: "Talk to friends, not strangers. A method should call only its immediate collaborators.", detail: "Avoid train wrecks like <code>context.getOptions().getDir().getAbsolutePath()</code>." },
+      { id: "objects-vs-structs", chapter: "objects", category: "Objects", title: "Objects vs data structures", desc: "Objects hide data behind operations; data structures expose data and have no behavior.", detail: "Use procedural shapes where data is passive and object shapes where behavior is the point. Do not hybridize blindly." },
+
+      // Errors
+      { id: "errors-exceptions", chapter: "errors", category: "Errors", title: "Use exceptions", desc: "Exceptions make error handling visible and separate it from normal logic.", detail: "Writing the try block first forces you to think about failure modes before you code the happy path." },
+      { id: "errors-null", chapter: "errors", category: "Errors", title: "Don't return null", desc: "Null forces every caller to defend against it, spreading null checks throughout the system.", detail: "Return empty collections, use Option/Maybe types, or throw a domain exception. Null is a billion-dollar mistake." },
+      { id: "errors-context", chapter: "errors", category: "Errors", title: "Provide context", desc: "An exception message should tell the reader where and why the failure happened.", detail: "Include enough detail to diagnose the problem without reading the source, but not so much that the message becomes noise." },
+
+      // Tests & Boundaries
+      { id: "tests-first", chapter: "boundaries", category: "Tests", title: "Test first or alongside", desc: "Tests are the specification of behavior. They should be written before or with the code.", detail: "Test-driven development is not a religion; it is a way to keep design honest and feedback fast." },
+      { id: "tests-fast", chapter: "boundaries", category: "Tests", title: "Keep tests FAST", desc: "Fast, independent, repeatable, self-validating, and timely tests are the safety net.", detail: "If tests are slow or flaky, they stop being run and the code rots." },
+      { id: "tests-boundaries", chapter: "boundaries", category: "Tests", title: "Isolate boundaries", desc: "Third-party APIs, libraries, and external services should live behind thin wrappers.", detail: "Wrappers keep your code from leaking vendor-specific semantics and make testing possible without the real dependency." },
+
+      // Classes
+      { id: "classes-srp", chapter: "classes", category: "Classes", title: "Single Responsibility", desc: "A class should have one, and only one, reason to change.", detail: "If you can describe a class with more than one 'and', split it. Cohesion is the goal." },
+      { id: "classes-ocp", chapter: "classes", category: "Classes", title: "Open/Closed", desc: "Be open for extension, closed for modification.", detail: "New behavior should arrive by adding code, not by editing proven, working code." },
+      { id: "classes-lsp", chapter: "classes", category: "Classes", title: "Liskov Substitution", desc: "Subtypes must be substitutable for their base types.", detail: "A derived class should not break the expectations set by the base class contract." },
+      { id: "classes-isp", chapter: "classes", category: "Classes", title: "Interface Segregation", desc: "Clients should not depend on interfaces they do not use.", detail: "Split fat interfaces into focused ones so a change in one method does not force unrelated clients to recompile." },
+      { id: "classes-dip", chapter: "classes", category: "Classes", title: "Dependency Inversion", desc: "Depend on abstractions, not concrete details.", detail: "High-level modules should not depend on low-level modules. Both should depend on abstractions." },
+      { id: "classes-cohesion", chapter: "classes", category: "Classes", title: "Maximize cohesion", desc: "The methods and fields of a class should belong together and depend on one another.", detail: "Low cohesion means the class is doing several unrelated things. Extract the outliers." },
+
+      // Smells
+      { id: "smells-long-method", chapter: "smells", category: "Smells", title: "Long Method", desc: "A method that has grown too large is hard to understand and risky to change.", detail: "Extract smaller methods until each has a single, clearly named purpose." },
+      { id: "smells-large-class", chapter: "smells", category: "Smells", title: "Large Class", desc: "A class trying to do too much is a sign of low cohesion.", detail: "Extract cohesive groups of fields and methods into new classes." },
+      { id: "smells-feature-envy", chapter: "smells", category: "Smells", title: "Feature Envy", desc: "A method that is more interested in another class than its own.", detail: "Move the method closer to the data it manipulates." },
+      { id: "smells-switch", chapter: "smells", category: "Smells", title: "Switch Statements", desc: "Repeated switches scattered across the code resist change.", detail: "Replace with polymorphism or another abstraction when the same decision appears in multiple places." },
+      { id: "smells-speculative", chapter: "smells", category: "Smells", title: "Speculative Generality", desc: "Code added now for a future that may never arrive.", detail: "Remove unused hooks, abstract base classes, and parameters. Solve today's problem." },
+      { id: "smells-dead", chapter: "smells", category: "Smells", title: "Dead Code", desc: "Methods, variables, and branches that are never executed.", detail: "Delete it. If it mattered, tests would fail." },
+
+      // Concurrency
+      { id: "concurrency-state", chapter: "concurrency", category: "Concurrency", title: "Minimize shared state", desc: "Shared mutable state is the root of most concurrency bugs.", detail: "Prefer immutable data, local variables, and message passing over locks on shared memory." },
+      { id: "concurrency-ownership", chapter: "concurrency", category: "Concurrency", title: "Clarify ownership", desc: "Every piece of mutable data should have a single owner responsible for synchronization.", detail: "Document which thread or actor owns the data and where handoffs occur." },
+      { id: "concurrency-shutdown", chapter: "concurrency", category: "Concurrency", title: "Design for shutdown", desc: "A concurrent system is not done until it can stop cleanly.", detail: "Consider how threads, pools, and actors terminate under normal load, errors, and signals." },
+
+      // Architecture (Clean Architecture, Robert C. Martin)
+      { id: "arch-clean-architecture", chapter: "architecture", category: "Architecture", title: "Clean Architecture", desc: "Integrates Hexagonal Architecture, DCI, and BCE into concentric circles. Systems are independent of frameworks, UI, database, and external agencies.", detail: "The clean architecture separates software into concentric circles: Entities, Use Cases, Interface Adapters, and Frameworks/Drivers. The overriding rule is the Dependency Rule: source code dependencies point only inward. Inner circles contain higher-level policies; outer circles contain low-level mechanisms." },
+      { id: "arch-dependency-rule", chapter: "architecture", category: "Architecture", title: "Dependency Rule", desc: "Source code dependencies point only inward, toward higher-level policies. Inner circles must not know anything about outer circles.", detail: "Nothing in an inner circle can know the name of anything declared in an outer circle. That includes functions, classes, variables, and data formats generated by outer frameworks." },
+      { id: "arch-entities", chapter: "architecture", category: "Architecture", title: "Entities", desc: "Encapsulate enterprise-wide Critical Business Rules. They are the most general and least likely to change when external details change.", detail: "An entity can be an object with methods or a set of data structures and functions. It encapsulates the most general, high-level rules and should not be affected by page navigation, security, or operational changes to a particular application." },
+      { id: "arch-use-cases", chapter: "architecture", category: "Architecture", title: "Use Cases", desc: "Contain application-specific business rules. Orchestrate data flow to and from entities, isolated from database, UI, and frameworks.", detail: "Use cases encapsulate and implement all the use cases of the system. They orchestrate the flow of data to and from entities and direct those entities to use their Critical Business Rules to achieve the goals of the use case." },
+      { id: "arch-interface-adapters", chapter: "architecture", category: "Architecture", title: "Interface Adapters", desc: "Convert data between the format convenient for use cases/entities and the format convenient for external agencies such as databases and the web.", detail: "This layer wholly contains the MVC architecture of a GUI. Presenters, views, and controllers belong here; models are data structures passed from controllers to use cases and back. All SQL is restricted to this layer if the database is SQL." },
+      { id: "arch-frameworks-drivers", chapter: "architecture", category: "Architecture", title: "Frameworks & Drivers", desc: "The outermost layer where all concrete details go. The web, database, and frameworks live here so they can do little harm to inner layers.", detail: "The frameworks and drivers layer is where all the details go. The web is a detail. The database is a detail. We keep these things on the outside where they can do little harm." },
+      { id: "arch-critical-business-rules", chapter: "architecture", category: "Architecture", title: "Critical Business Rules", desc: "Rules or procedures that make or save the business money, irrespective of whether implemented on a computer. They would exist even if executed manually.", detail: "Critical Business Rules are rules or procedures that make or save the business money. They usually require Critical Business Data to work with. The rules and data are inextricably bound, making them a good candidate for an Entity." },
+      { id: "arch-boundaries", chapter: "architecture", category: "Architecture", title: "Boundaries", desc: "Draw lines between things that matter and things that don't. Separate policy from detail using plugin architecture.", detail: "Boundaries separate software elements and restrict those on one side from knowing about those on the other. They are drawn to defer decisions and keep them from polluting core business logic." },
+      { id: "arch-humble-object-pattern", chapter: "architecture", category: "Architecture", title: "Humble Object Pattern", desc: "Split behaviors into testable and hard-to-test parts. Presenters format data; Views simply move it to the screen.", detail: "The Humble Object pattern splits behaviors into two modules: one humble module containing all the hard-to-test behaviors stripped to their barest essence, and another module containing all the testable behaviors stripped out of the humble object." },
+      { id: "arch-database-gateways", chapter: "architecture", category: "Architecture", title: "Database Gateways", desc: "Polymorphic interfaces between use case interactors and database. No SQL in use cases; gateways can be stubbed for testing.", detail: "Database gateways are polymorphic interfaces containing methods for every create, read, update, or delete operation the application can perform on the database. We do not allow SQL in the use cases layer; instead, we use gateway interfaces with appropriate methods." },
+      { id: "arch-database-is-a-detail", chapter: "architecture", category: "Architecture", title: "Database Is a Detail", desc: "The database is a low-level mechanism. Business rules should not depend on the schema or query language.", detail: "The database is just a mechanism we use to move data back and forth between the surface of the disk and RAM. From an architectural viewpoint, we should not care about the form that the data takes while it is on the disk." },
+      { id: "arch-web-is-a-detail", chapter: "architecture", category: "Architecture", title: "Web Is a Detail", desc: "The web is an IO device. High-level policy should be agnostic about whether the system is delivered over the web.", detail: "The web is an IO device. In the 1960s, we learned the value of writing applications that were device independent. The motivation for that independence has not changed; the web is not an exception to that rule." },
+      { id: "arch-what-is-architecture", chapter: "architecture", category: "Architecture", title: "What Is Architecture", desc: "The shape given to a system by its builders: division into components, their arrangement, and how they communicate. Purpose: facilitate development, deployment, operation, and maintenance.", detail: "The architecture of a software system is the shape given to that system by those who build it. The form of that shape is in the division of that system into components, the arrangement of those components, and the ways in which those components communicate with each other." },
+      { id: "arch-leave-options-open", chapter: "architecture", category: "Architecture", title: "Leave Options Open", desc: "A good architecture maximizes the number of decisions not made. Decisions about databases, web servers, REST, and frameworks should be deferred as long as possible.", detail: "A good architecture maximizes the number of decisions not made. If you can develop the high-level policy without committing to the details that surround it, you can delay and defer decisions about those details for a long time." },
+      { id: "arch-decoupling-layers", chapter: "architecture", category: "Architecture", title: "Decoupling Layers", desc: "Separate UI, application-specific business rules, application-independent business rules, and database so they can change independently.", detail: "The architect can employ the Single Responsibility Principle and the Common Closure Principle to separate those things that change for different reasons, and to collect those things that change for the same reasons." },
+      { id: "arch-decoupling-use-cases", chapter: "architecture", category: "Architecture", title: "Decoupling Use Cases", desc: "Use cases are vertical slices through horizontal layers. Keep use cases separate so adding one does not interfere with others.", detail: "Use cases are narrow vertical slices that cut through the horizontal layers of the system. Each use case uses some UI, some application-specific business rules, some application-independent business rules, and some database functionality." },
+      { id: "arch-policy-and-level", chapter: "architecture", category: "Architecture", title: "Policy and Level", desc: "Policy is the business logic. Level is the distance from inputs/outputs. High-level policy should not depend on lower-level details.", detail: "Software systems are statements of policy. A computer program is a detailed description of the policy by which inputs are transformed into outputs. Part of the art of architecture is carefully separating those policies and ensuring that lower-level policies do not affect higher-level ones." },
+      { id: "arch-screaming-architecture", chapter: "architecture", category: "Architecture", title: "Screaming Architecture", desc: "The architecture should scream the use cases of the system, not the framework used to build it.", detail: "Just as the plans for a house or a library scream about the use cases of those buildings, so should the architecture of a software application scream about the use cases of the application." },
+      { id: "arch-frameworks-are-details", chapter: "architecture", category: "Architecture", title: "Frameworks Are Details", desc: "Frameworks are tools, not ways of life. Keep them at arm's length and don't let them invade your core code.", detail: "Frameworks have become quite popular and many are free, powerful, and useful. However, frameworks are not architectures—though some try to be. Use them as tools, not as the shape of your system." }
+    ];
+
+    const tocEl = document.getElementById('toc');
+    const searchInput = document.getElementById('search');
+    const bookmarkCountEl = document.getElementById('bookmark-count');
+    const menuBtn = document.querySelector('.menu-btn');
+    const sidebar = document.querySelector('.sidebar');
+    const filterState = {};
+
+    function getBookmarks() {
+      try {
+        return JSON.parse(localStorage.getItem('cleanCodeBookmarks') || '[]');
+      } catch {
+        return [];
+      }
+    }
+
+    function saveBookmarks(list) {
+      localStorage.setItem('cleanCodeBookmarks', JSON.stringify(list));
+      updateBookmarkCount();
+    }
+
+    function toggleBookmark(id) {
+      const list = getBookmarks();
+      const idx = list.indexOf(id);
+      if (idx === -1) list.push(id);
+      else list.splice(idx, 1);
+      saveBookmarks(list);
+      renderStars();
+      applyFilters();
+    }
+
+    function updateBookmarkCount() {
+      bookmarkCountEl.textContent = getBookmarks().length;
+    }
+
+    function renderStars() {
+      const list = getBookmarks();
+      document.querySelectorAll('.bookmark-btn').forEach(btn => {
+        const id = btn.dataset.id;
+        const isOn = list.includes(id);
+        btn.classList.toggle('bookmarked', isOn);
+        btn.setAttribute('aria-pressed', isOn);
+        btn.textContent = isOn ? '★' : '☆';
+        btn.setAttribute('aria-label', isOn ? 'Remove bookmark' : 'Add bookmark');
+      });
+    }
+
+    function buildToc() {
+      tocEl.innerHTML = chapters.map(ch => `
+        <li><a href="#${ch.id}" data-chapter="${ch.id}">
+          <span class="toc-num">${ch.number}</span>
+          <span class="toc-title">${ch.title}</span>
+        </a></li>
+      `).join('');
+    }
+
+    function renderCards(chapterId, query = '', filterCat = 'all') {
+      const grid = document.querySelector(`.card-grid[data-chapter="${chapterId}"]`);
+      if (!grid) return;
+      const items = principles.filter(p => p.chapter === chapterId);
+      const bookmarks = getBookmarks();
+
+      grid.innerHTML = items.map(p => {
+        const isBookmarked = bookmarks.includes(p.id);
+        const match = !query || matches(p, query);
+        const catMatch = filterCat === 'all' || filterCat === 'bookmarks' || p.category === filterCat;
+        const bookmarkMatch = filterCat !== 'bookmarks' || isBookmarked;
+        const visible = match && catMatch && bookmarkMatch;
+        return `
+          <article class="principle-card ${visible ? '' : 'hidden'}" data-id="${p.id}" data-category="${p.category}">
+            <div class="card-header">
+              <span class="card-category">${p.category}</span>
+              <button class="bookmark-btn" data-id="${p.id}" aria-pressed="${isBookmarked}" aria-label="${isBookmarked ? 'Remove bookmark' : 'Add bookmark'}">${isBookmarked ? '★' : '☆'}</button>
+            </div>
+            <h4 class="card-title">${p.title}</h4>
+            <p class="card-desc">${p.desc}</p>
+            <button class="card-more" aria-expanded="false">Tell me more</button>
+            <div class="card-detail">${p.detail}</div>
+          </article>
+        `;
+      }).join('');
+
+      grid.querySelectorAll('.bookmark-btn').forEach(btn => {
+        btn.addEventListener('click', e => { e.stopPropagation(); toggleBookmark(btn.dataset.id); });
+      });
+
+      grid.querySelectorAll('.card-more').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const card = btn.closest('.principle-card');
+          card.classList.toggle('expanded');
+          const expanded = card.classList.contains('expanded');
+          btn.setAttribute('aria-expanded', expanded);
+          btn.textContent = expanded ? 'Show less' : 'Tell me more';
+        });
+      });
+
+      renderStars();
+    }
+
+    function matches(p, query) {
+      const q = query.toLowerCase();
+      return p.title.toLowerCase().includes(q) ||
+             p.desc.toLowerCase().includes(q) ||
+             p.detail.toLowerCase().includes(q) ||
+             p.category.toLowerCase().includes(q);
+    }
+
+    function buildFilters(chapterId) {
+      const container = document.querySelector(`.filters[data-for="${chapterId}"]`);
+      if (!container) return;
+      const items = principles.filter(p => p.chapter === chapterId);
+      const cats = [...new Set(items.map(p => p.category))];
+      const counts = {};
+      cats.forEach(c => counts[c] = items.filter(p => p.category === c).length);
+
+      container.innerHTML = `
+        <button class="filter-btn active" data-cat="all" data-chapter="${chapterId}">All <span class="count">${items.length}</span></button>
+        ${cats.map(c => `<button class="filter-btn" data-cat="${c}" data-chapter="${chapterId}">${c} <span class="count">${counts[c]}</span></button>`).join('')}
+        <button class="filter-btn" data-cat="bookmarks" data-chapter="${chapterId}">Bookmarked <span class="count">0</span></button>
+      `;
+
+      container.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          container.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          filterState[chapterId] = btn.dataset.cat;
+          applyFilters();
+        });
+      });
+    }
+
+    function applyFilters() {
+      const query = searchInput.value.trim();
+      chapters.forEach(ch => {
+        const cat = filterState[ch.id] || 'all';
+        renderCards(ch.id, query, cat);
+        updateFilterCounts(ch.id);
+      });
+      updateNoResults(query);
+    }
+
+    function updateFilterCounts(chapterId) {
+      const container = document.querySelector(`.filters[data-for="${chapterId}"]`);
+      if (!container) return;
+      const bookmarks = getBookmarks();
+      const btn = container.querySelector('[data-cat="bookmarks"]');
+      if (btn) btn.querySelector('.count').textContent = bookmarks.length;
+    }
+
+    function updateNoResults(query) {
+      if (!query) {
+        document.querySelectorAll('.no-results').forEach(el => el.remove());
+        return;
+      }
+      chapters.forEach(ch => {
+        const grid = document.querySelector(`.card-grid[data-chapter="${ch.id}"]`);
+        if (!grid) return;
+        const visible = grid.querySelectorAll('.principle-card:not(.hidden)');
+        const existing = grid.parentElement.querySelector('.no-results');
+        if (visible.length === 0 && grid.children.length > 0) {
+          if (!existing) {
+            const msg = document.createElement('div');
+            msg.className = 'no-results';
+            msg.textContent = `No principles matched "${query}".`;
+            grid.parentElement.appendChild(msg);
+          }
+        } else if (existing) {
+          existing.remove();
+        }
+      });
+    }
+
+    function updateActiveToc() {
+      const scrollPos = window.scrollY + window.innerHeight / 3;
+      let activeId = chapters[0].id;
+      document.querySelectorAll('section').forEach(sec => {
+        if (sec.offsetTop <= scrollPos) activeId = sec.id;
+      });
+      document.querySelectorAll('.toc a').forEach(a => {
+        a.classList.toggle('active', a.dataset.chapter === activeId);
+      });
+    }
+
+    function init() {
+      buildToc();
+      chapters.forEach(ch => {
+        buildFilters(ch.id);
+        renderCards(ch.id);
+      });
+      updateBookmarkCount();
+
+      searchInput.addEventListener('input', applyFilters);
+
+      menuBtn.addEventListener('click', () => sidebar.classList.toggle('open'));
+
+      document.querySelectorAll('.toc a').forEach(a => {
+        a.addEventListener('click', () => sidebar.classList.remove('open'));
+      });
+
+      window.addEventListener('scroll', updateActiveToc, { passive: true });
+      updateActiveToc();
+    }
+
+    init();
+  </script>
+</body>
+</html>
