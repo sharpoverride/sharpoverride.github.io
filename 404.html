@@ -6,7 +6,7 @@
     <script type="text/javascript">
       var pathSegmentsToKeep = 1;
       var l = window.location;
-      if (l.pathname.startsWith('/katalearnings')) {
+      if (l.pathname.startsWith('/katalearnings') || l.pathname.startsWith('/system-f')) {
         l.replace(
           l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
           l.pathname.split('/').slice(0, 1 + pathSegmentsToKeep).join('/') + '/?/' +
