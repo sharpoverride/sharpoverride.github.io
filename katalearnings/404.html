@@ -1,25 +1,47 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
   <head>
-    <meta charset="utf-8">
-    <title>Redirecting...</title>
-    <script type="text/javascript">
-      var pathSegmentsToKeep = 1;
-      var l = window.location;
-      if (l.pathname.startsWith('/katalearnings')) {
-        l.replace(
-          l.protocol + '//' + l.hostname + (l.port ? ':' + l.port : '') +
-          l.pathname.split('/').slice(0, 1 + pathSegmentsToKeep).join('/') + '/?/' +
-          l.pathname.slice(1).split('/').slice(pathSegmentsToKeep).join('/').replace(/&/g, '~and~') +
-          (l.search ? '&' + l.search.slice(1).replace(/&/g, '~and~') : '') +
-          l.hash
-        );
-      } else {
-        l.replace('/');
-      }
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/katalearnings/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Katabench Paths — curated, sourced learning paths for system design, foundations, distributed systems, data and the .NET stack."
+    />
+    <title>Katabench Paths</title>
+    <script>
+      // Single Page Apps for GitHub Pages
+      (function(l) {
+        if (l.search[1] === '/' ) {
+          var decoded = l.search.slice(1).split('&').map(function(s) { 
+            return s.replace(/~and~/g, '&')
+          }).join('?');
+          window.history.replaceState(null, null,
+              l.pathname.slice(0, -1) + decoded + l.hash
+          );
+        }
+      }(window.location))
     </script>
+    <script>
+      // Apply the persisted theme before first paint to avoid a flash.
+      (function () {
+        var root = document.documentElement
+        var theme = 'dark'
+        try {
+          var stored = window.localStorage.getItem('app:theme')
+          if (stored === 'light' || stored === 'dark') theme = stored
+        } catch (error) {
+          /* Storage may be unavailable; the dark default is fine. */
+        }
+        root.classList.remove('light', 'dark')
+        root.classList.add(theme)
+        root.style.colorScheme = theme
+      })()
+    </script>
+    <script type="module" crossorigin src="/katalearnings/assets/index-UMlmvjZM.js"></script>
+    <link rel="stylesheet" crossorigin href="/katalearnings/assets/index-DprRjvXL.css">
   </head>
   <body>
-    <p>Redirecting to <a href="/katalearnings/">KataLearnings</a>...</p>
+    <div id="root"></div>
   </body>
 </html>
